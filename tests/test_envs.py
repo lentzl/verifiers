@@ -149,7 +149,16 @@ def help_test_can_import_env(tmp_venv_dir: Path, env_dir: Path):
 
 def help_test_can_load_env(tmp_venv_dir: Path, env_dir: Path):
     """Test that the environment can be loaded."""
-    load_cmd = f"""cd {tmp_venv_dir} && source .venv/bin/activate && uv run python -c 'import verifiers as vf; vf.load_environment("{env_dir.name}")'"""
+    if env_dir.name == "tau2_bench_v1":
+        load_cmd = (
+            f"cd {tmp_venv_dir} && source .venv/bin/activate && "
+            "uv run python -c 'import verifiers.v1 as vf; "
+            "vf.Environment(vf.EnvConfig.model_validate({"
+            '"taskset": {"id": "tau2-bench-v1"}, '
+            '"harness": {"id": "tau2-bench-v1"}}))\''
+        )
+    else:
+        load_cmd = f"""cd {tmp_venv_dir} && source .venv/bin/activate && uv run python -c 'import verifiers as vf; vf.load_environment("{env_dir.name}")'"""
     try:
         process = subprocess.run(
             load_cmd,
@@ -170,6 +179,26 @@ def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
         pytest.skip(
             "Skipping tau2 default eval because PRIME_API_KEY is not configured"
         )
+    if env_dir.name == "tau2_bench_v1":
+        eval_cmd = (
+            f"cd {tmp_venv_dir} && source .venv/bin/activate && "
+            "uv run eval tau2-bench-v1 --harness.id tau2-bench-v1 "
+            "-m openai/gpt-4.1-mini -n 1 -r 1 --max-output-tokens 512 "
+            "--rich false"
+        )
+        try:
+            process = subprocess.run(
+                eval_cmd,
+                shell=True,
+                executable="/bin/bash",
+                capture_output=True,
+                text=True,
+                timeout=EVAL_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.fail(f"Timed out after {EVAL_TIMEOUT}s evaluating {env_dir.name}")
+        assert process.returncode == 0, "Failed to evaluate environment"
+        return
     if os.getenv("PRIME_API_KEY"):
         model_flags = "-m openai/gpt-4.1-mini -b https://api.pinference.ai/api/v1 -k PRIME_API_KEY"
     elif os.getenv("OPENAI_API_KEY"):
