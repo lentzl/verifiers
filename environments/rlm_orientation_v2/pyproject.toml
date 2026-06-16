@@ -1,0 +1,22 @@
+[project]
+name = "rlm-orientation-v2"
+version = "0.1.0"
+tags = ["rlm", "sandbox", "v2", "orientation"]
+license = "Apache-2.0"
+description = "RLM orientation environment for reasoning-through-IPython, helper creation, and recovery basics."
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.13.dev0",
+    "harnesses>=0.1.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["rlm_orientation_v2.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 3
+rollouts_per_example = 1
