@@ -11,6 +11,11 @@ needs a running vLLM engine.
 import json
 
 from openai import AsyncOpenAI, OpenAIError
+from openai.types import CompletionUsage
+from openai.types.completion_usage import (
+    CompletionTokensDetails,
+    PromptTokensDetails,
+)
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
@@ -57,15 +62,23 @@ def serialize_completion(response: Response, model: str) -> dict:
             }
             for c in response.message.tool_calls
         ]
-    usage = (
-        {
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
-        if response.usage
-        else None
-    )
+    usage: CompletionUsage | None = None
+    if response.usage:
+        usage = CompletionUsage(
+            prompt_tokens=response.usage.input_tokens,
+            completion_tokens=response.usage.completion_tokens,
+            total_tokens=response.usage.total_tokens,
+            prompt_tokens_details=PromptTokensDetails(
+                cached_tokens=response.usage.cached_input_tokens
+            )
+            if response.usage.cached_input_tokens is not None
+            else None,
+            completion_tokens_details=CompletionTokensDetails(
+                reasoning_tokens=response.usage.reasoning_tokens
+            )
+            if response.usage.reasoning_tokens is not None
+            else None,
+        )
     return {
         "id": response.id or "vf-intercept",
         "object": "chat.completion",
@@ -78,7 +91,7 @@ def serialize_completion(response: Response, model: str) -> dict:
                 "finish_reason": response.finish_reason or "stop",
             }
         ],
-        "usage": usage,
+        "usage": usage.model_dump(exclude_none=True) if usage is not None else None,
     }
 
 
@@ -119,6 +132,8 @@ def response_from_generate(result: dict, model: str) -> Response:
             tool_calls=tool_calls,
         ),
         finish_reason=finish,
+        # /inference/v1/generate returns exact token ids but no usage details, so the
+        # completion's reasoning-token subset is unknown.
         usage=Usage(
             prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
         ),
