@@ -29,6 +29,12 @@ def _answer(text: str) -> str:
     return matches[-1].strip() if matches else text.strip()
 
 
+def _canonical_answer(family: Family, value: str) -> str:
+    if family == "helper":
+        return ",".join(part.strip() for part in value.split(","))
+    return value
+
+
 def _ipython_cells(trace: vf.Trace) -> list[str]:
     cells = []
     for message in trace.assistant_messages:
@@ -101,7 +107,9 @@ class ReasoningOffloadOrientationTask(vf.Task[ReasoningOffloadOrientationData]):
 
     @vf.reward(weight=1.0)
     async def exact_match(self, trace: vf.Trace) -> float:
-        return float(_answer(trace.last_reply) == self.data.answer)
+        actual = _canonical_answer(self.data.family, _answer(trace.last_reply))
+        expected = _canonical_answer(self.data.family, self.data.answer)
+        return float(actual == expected)
 
     @vf.metric
     async def offload_behavior(self, trace: vf.Trace) -> dict[str, float]:
