@@ -22,6 +22,10 @@ from reasoning_offload_orientation_v1.generators import (
 
 ANSWER_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
 FAILURE_MARKERS = ("FAILED", "Traceback", "Exception", "Error:")
+INCORRECT_ANSWER_FEEDBACK = (
+    "The submitted answer is incorrect. Re-check the task using the available "
+    "environment and verify the result before answering again."
+)
 
 
 def _answer(text: str) -> str:
@@ -109,7 +113,10 @@ class ReasoningOffloadOrientationTask(vf.Task[ReasoningOffloadOrientationData]):
     async def exact_match(self, trace: vf.Trace) -> float:
         actual = _canonical_answer(self.data.family, _answer(trace.last_reply))
         expected = _canonical_answer(self.data.family, self.data.answer)
-        return float(actual == expected)
+        correct = actual == expected
+        if not correct:
+            trace.info["feedback"] = INCORRECT_ANSWER_FEEDBACK
+        return float(correct)
 
     @vf.metric
     async def offload_behavior(self, trace: vf.Trace) -> dict[str, float]:
@@ -161,6 +168,8 @@ class ReasoningOffloadOrientationTask(vf.Task[ReasoningOffloadOrientationData]):
 class ReasoningOffloadOrientationConfig(vf.TasksetConfig):
     split: Literal["train", "eval"] = "train"
     """Generator variants 0-3 train; held-out variants 4-5 evaluate."""
+    families: tuple[Family, ...] = Field(FAMILIES, min_length=1)
+    """Task families included in this curriculum stage."""
     instances_per_template: int = Field(4, ge=1)
     seed: int = 20260715
 
@@ -174,7 +183,7 @@ class ReasoningOffloadOrientationTaskset(
         idx = 0
         for instance in range(self.config.instances_per_template):
             for variant in variants:
-                for family in FAMILIES:
+                for family in self.config.families:
                     generated = generate(family, variant, instance, self.config.seed)
                     tasks.append(
                         ReasoningOffloadOrientationTask(
