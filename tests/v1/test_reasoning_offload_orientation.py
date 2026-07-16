@@ -1,5 +1,7 @@
 """Reasoning-offload task feedback used by feedback-conditioned trainers."""
 
+import ast
+
 import pytest
 
 import verifiers.v1 as vf
@@ -10,6 +12,7 @@ from reasoning_offload_orientation_v1.taskset import (
     ReasoningOffloadOrientationData,
     ReasoningOffloadOrientationTask,
     ReasoningOffloadOrientationTaskset,
+    _module_reused,
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -86,3 +89,24 @@ def test_taskset_filters_curriculum_families_without_changing_variants():
     assert {task.data.family for task in tasks} == {"inspection", "state"}
     assert {task.data.template_variant for task in tasks} == {0, 1, 2, 3}
     assert {task.data.system_prompt for task in tasks} == {ORIENTATION_SYSTEM_PROMPT}
+
+
+def test_module_family_requires_importing_and_calling_provided_transform():
+    config = ReasoningOffloadOrientationConfig(
+        split="train",
+        families=("module",),
+        instances_per_template=1,
+    )
+
+    tasks = ReasoningOffloadOrientationTaskset(config).load()
+
+    assert len(tasks) == 4
+    assert all("inputs/operation.py" in task.data.files for task in tasks)
+    assert all("Do not reimplement" in task.data.prompt for task in tasks)
+    assert _module_reused(
+        [ast.parse("from inputs.operation import transform\nresult = transform(target)")]
+    )
+    assert not _module_reused(
+        [ast.parse("import json\ndef transform(value): return value\ntransform(target)")]
+    )
+    assert not _module_reused([ast.parse("def transform(value): return value")])

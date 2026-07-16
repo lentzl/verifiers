@@ -13,6 +13,7 @@ Family = Literal[
     "inspection",
     "state",
     "helper",
+    "module",
     "verification",
     "repair",
 ]
@@ -22,6 +23,7 @@ FAMILIES: tuple[Family, ...] = (
     "inspection",
     "state",
     "helper",
+    "module",
     "verification",
     "repair",
 )
@@ -308,6 +310,26 @@ def _verification(rng: random.Random, variant: int) -> GeneratedTask:
     )
 
 
+def _module(rng: random.Random, variant: int) -> GeneratedTask:
+    source, _, transform = _verification_spec(rng, variant)
+    target = _target(rng, variant)
+    answer = _json(transform(target))
+    prompt = (
+        "Import transform from inputs/operation.py into IPython and call that provided "
+        "implementation on the JSON value in inputs/target.json. Do not reimplement or "
+        f"infer the transform. Report the resulting JSON value. {_answer_instruction()}"
+    )
+    return GeneratedTask(
+        prompt=prompt,
+        answer=answer,
+        files={
+            "inputs/__init__.py": "",
+            "inputs/operation.py": source,
+            "inputs/target.json": json.dumps(target),
+        },
+    )
+
+
 def _buggy_source(variant: int, correct: str) -> str:
     replacements = (
         ("i + 1", "i"),
@@ -348,6 +370,7 @@ BUILDERS: dict[Family, Callable[[random.Random, int], GeneratedTask]] = {
     "inspection": _inspection,
     "state": _state,
     "helper": _helper,
+    "module": _module,
     "verification": _verification,
     "repair": _repair,
 }

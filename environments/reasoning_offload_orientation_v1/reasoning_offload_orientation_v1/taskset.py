@@ -39,6 +39,10 @@ INCORRECT_ANSWER_FEEDBACK: dict[Family, str] = {
         "The submitted answer is incorrect. Apply the requested rule through one reusable "
         "helper for every item, then verify the deduplicated and sorted result."
     ),
+    "module": (
+        "The submitted answer is incorrect. Import transform from inputs.operation and call "
+        "that provided function on the loaded target instead of recreating or guessing it."
+    ),
     "verification": (
         "The submitted answer is incorrect. VERIFIED establishes that candidate.py passes "
         "the cases; import its transform and call it on target.json rather than inventing a transform."
@@ -126,6 +130,32 @@ def _helper_behavior(trees: list[ast.AST]) -> tuple[bool, bool]:
     return bool(definitions), bool(definitions & calls)
 
 
+def _module_reused(trees: list[ast.AST]) -> bool:
+    module_imported = any(
+        (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "inputs.operation"
+            and any(alias.name == "transform" for alias in node.names)
+        )
+        or (
+            isinstance(node, ast.Import)
+            and any(alias.name == "inputs.operation" for alias in node.names)
+        )
+        for tree in trees
+        for node in ast.walk(tree)
+    )
+    transform_called = any(
+        isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "transform")
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == "transform")
+        )
+        for tree in trees
+        for node in ast.walk(tree)
+    )
+    return module_imported and transform_called
+
+
 class ReasoningOffloadOrientationData(vf.TaskData):
     family: Family
     template_variant: int
@@ -173,11 +203,13 @@ class ReasoningOffloadOrientationTask(vf.Task[ReasoningOffloadOrientationData]):
 
         used_ipython = bool(cells)
         state_reused = _state_reused(trees)
+        module_reused = _module_reused(trees)
         aligned = {
             "direct": not used_ipython,
             "inspection": used_ipython,
             "state": state_reused,
             "helper": helper_called,
+            "module": module_reused,
             "verification": verification_observed,
             "repair": failure_observed and recovered and verification_observed,
         }[self.data.family]
@@ -187,6 +219,7 @@ class ReasoningOffloadOrientationTask(vf.Task[ReasoningOffloadOrientationData]):
             "state_reused": float(state_reused),
             "helper_defined": float(helper_defined),
             "helper_called": float(helper_called),
+            "module_reused": float(module_reused),
             "failure_observed": float(failure_observed),
             "recovered_after_feedback": float(recovered),
             "verification_observed": float(verification_observed),
