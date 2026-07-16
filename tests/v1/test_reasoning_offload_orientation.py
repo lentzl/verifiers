@@ -106,6 +106,14 @@ def test_module_family_requires_importing_and_calling_provided_transform():
     assert _module_reused(
         [ast.parse("from inputs.operation import transform\nresult = transform(target)")]
     )
+    assert _module_reused(
+        [
+            ast.parse(
+                "import sys\nsys.path.insert(0, 'inputs')\n"
+                "from operation import transform\nresult = transform(target)"
+            )
+        ]
+    )
     assert not _module_reused(
         [ast.parse("import json\ndef transform(value): return value\ntransform(target)")]
     )

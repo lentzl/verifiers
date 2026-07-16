@@ -134,12 +134,15 @@ def _module_reused(trees: list[ast.AST]) -> bool:
     module_imported = any(
         (
             isinstance(node, ast.ImportFrom)
-            and node.module == "inputs.operation"
+            and node.module in {"inputs.operation", "operation"}
             and any(alias.name == "transform" for alias in node.names)
         )
         or (
             isinstance(node, ast.Import)
-            and any(alias.name == "inputs.operation" for alias in node.names)
+            and any(
+                alias.name in {"inputs.operation", "operation"}
+                for alias in node.names
+            )
         )
         for tree in trees
         for node in ast.walk(tree)
