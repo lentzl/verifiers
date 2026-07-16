@@ -50,8 +50,16 @@ async def test_incorrect_answer_exposes_non_leaking_feedback():
     await task.score(trace)
 
     assert trace.reward == 0.0
-    assert trace.info["feedback"] == INCORRECT_ANSWER_FEEDBACK
+    assert trace.info["feedback"] == INCORRECT_ANSWER_FEEDBACK["direct"]
     assert task.data.answer not in trace.info["feedback"]
+
+
+@pytest.mark.parametrize("family", INCORRECT_ANSWER_FEEDBACK)
+def test_family_feedback_is_non_leaking_and_actionable(family):
+    feedback = INCORRECT_ANSWER_FEEDBACK[family]
+
+    assert "incorrect" in feedback
+    assert len(feedback) > 80
 
 
 @pytest.mark.asyncio

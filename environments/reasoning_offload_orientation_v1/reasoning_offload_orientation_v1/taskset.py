@@ -22,10 +22,32 @@ from reasoning_offload_orientation_v1.generators import (
 
 ANSWER_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
 FAILURE_MARKERS = ("FAILED", "Traceback", "Exception", "Error:")
-INCORRECT_ANSWER_FEEDBACK = (
-    "The submitted answer is incorrect. Re-check the task using the available "
-    "environment and verify the result before answering again."
-)
+INCORRECT_ANSWER_FEEDBACK: dict[Family, str] = {
+    "direct": (
+        "The submitted answer is incorrect. Copy the requested literal exactly and "
+        "return only that value in the answer tags."
+    ),
+    "inspection": (
+        "The submitted answer is incorrect. Read the exact file path named in the "
+        "prompt; if a lookup fails, inspect the working tree and retry instead of stopping."
+    ),
+    "state": (
+        "The submitted answer is incorrect. Inspect the actual keys in each JSONL "
+        "record, reuse the loaded records and computed state, and verify the requested aggregate."
+    ),
+    "helper": (
+        "The submitted answer is incorrect. Apply the requested rule through one reusable "
+        "helper for every item, then verify the deduplicated and sorted result."
+    ),
+    "verification": (
+        "The submitted answer is incorrect. VERIFIED establishes that candidate.py passes "
+        "the cases; import its transform and call it on target.json rather than inventing a transform."
+    ),
+    "repair": (
+        "The submitted answer is incorrect. Run the checker from the workspace root, repair "
+        "buggy.py without changing the checker, rerun until VERIFIED, then call the repaired transform."
+    ),
+}
 
 
 def _answer(text: str) -> str:
@@ -115,7 +137,7 @@ class ReasoningOffloadOrientationTask(vf.Task[ReasoningOffloadOrientationData]):
         expected = _canonical_answer(self.data.family, self.data.answer)
         correct = actual == expected
         if not correct:
-            trace.info["feedback"] = INCORRECT_ANSWER_FEEDBACK
+            trace.info["feedback"] = INCORRECT_ANSWER_FEEDBACK[self.data.family]
         return float(correct)
 
     @vf.metric
