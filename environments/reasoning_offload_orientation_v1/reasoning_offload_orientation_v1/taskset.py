@@ -48,6 +48,13 @@ INCORRECT_ANSWER_FEEDBACK: dict[Family, str] = {
         "buggy.py without changing the checker, rerun until VERIFIED, then call the repaired transform."
     ),
 }
+ORIENTATION_SYSTEM_PROMPT = (
+    "For this harness-orientation task, keep every assistant turn minimal. Produce "
+    "either exactly one IPython tool call or the final <answer> value, never a narrated "
+    "plan. Use file paths exactly as written. After a tool error, inspect or correct the "
+    "operation in the next tool call instead of stopping. Once the result is known, answer "
+    "immediately without explaining it."
+)
 
 
 def _answer(text: str) -> str:
@@ -213,6 +220,7 @@ class ReasoningOffloadOrientationTaskset(
                                 idx=idx,
                                 name=f"{family}-v{variant}-i{instance}",
                                 prompt=generated.prompt,
+                                system_prompt=ORIENTATION_SYSTEM_PROMPT,
                                 family=family,
                                 template_variant=variant,
                                 answer=generated.answer,

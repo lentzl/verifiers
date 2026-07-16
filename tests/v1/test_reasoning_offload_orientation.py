@@ -5,6 +5,7 @@ import pytest
 import verifiers.v1 as vf
 from reasoning_offload_orientation_v1.taskset import (
     INCORRECT_ANSWER_FEEDBACK,
+    ORIENTATION_SYSTEM_PROMPT,
     ReasoningOffloadOrientationConfig,
     ReasoningOffloadOrientationData,
     ReasoningOffloadOrientationTask,
@@ -84,3 +85,4 @@ def test_taskset_filters_curriculum_families_without_changing_variants():
     assert len(tasks) == 8
     assert {task.data.family for task in tasks} == {"inspection", "state"}
     assert {task.data.template_variant for task in tasks} == {0, 1, 2, 3}
+    assert {task.data.system_prompt for task in tasks} == {ORIENTATION_SYSTEM_PROMPT}
