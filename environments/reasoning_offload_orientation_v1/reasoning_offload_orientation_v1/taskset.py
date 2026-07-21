@@ -65,6 +65,11 @@ EXPLICIT_INSTRUCTIONS: dict[Family, str] = {
         "events variable and display events[0] to identify the exact schema. In the next "
         "call, derive balances from the retained events using event['delta']."
     ),
+    "verification": (
+        "Orientation hint: first run python3 inputs/check.py. After VERIFIED, import "
+        "transform from inputs.candidate, load inputs/target.json, call transform on "
+        "that loaded value, and return the result. Do not recreate the transform."
+    ),
     "repair": (
         "Orientation hint: do not list files or narrate. First run python3 inputs/check.py, "
         "then display inputs/buggy.py, edit that file based on the failure, and rerun the "
@@ -249,7 +254,7 @@ class ReasoningOffloadOrientationConfig(vf.TasksetConfig):
     families: tuple[Family, ...] = Field(FAMILIES, min_length=1)
     """Task families included in this curriculum stage."""
     instruction_level: Literal["standard", "explicit"] = "standard"
-    """Use explicit state and repair operation hints for early orientation training."""
+    """Use explicit state and feedback-operation hints for early orientation training."""
     instances_per_template: int = Field(4, ge=1)
     seed: int = 20260715
 
