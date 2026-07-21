@@ -59,6 +59,23 @@ ORIENTATION_SYSTEM_PROMPT = (
     "operation in the next tool call instead of stopping. Once the result is known, answer "
     "immediately without explaining it."
 )
+EXPLICIT_INSTRUCTIONS: dict[Family, str] = {
+    "state": (
+        "Orientation hint: first inspect one loaded event to identify its exact schema. "
+        "Keep the loaded events and derived balances in named variables across separate "
+        "IPython calls, then answer from that retained state."
+    ),
+    "verification": (
+        "Orientation hint: after the checker prints VERIFIED, import transform with "
+        "`from inputs.candidate import transform` and call it on the JSON target. Do not "
+        "write a substitute transformation."
+    ),
+    "repair": (
+        "Orientation hint: use the checker failure and module contents to edit "
+        "inputs/buggy.py itself, rerun the checker until VERIFIED, then import or reload "
+        "transform from inputs.buggy and call it on the JSON target."
+    ),
+}
 
 
 def _answer(text: str) -> str:
@@ -140,8 +157,7 @@ def _module_reused(trees: list[ast.AST]) -> bool:
         or (
             isinstance(node, ast.Import)
             and any(
-                alias.name in {"inputs.operation", "operation"}
-                for alias in node.names
+                alias.name in {"inputs.operation", "operation"} for alias in node.names
             )
         )
         for tree in trees
@@ -162,6 +178,7 @@ def _module_reused(trees: list[ast.AST]) -> bool:
 class ReasoningOffloadOrientationData(vf.TaskData):
     family: Family
     template_variant: int
+    instruction_level: Literal["standard", "explicit"] = "standard"
     answer: str
     files: dict[str, str]
 
@@ -235,6 +252,8 @@ class ReasoningOffloadOrientationConfig(vf.TasksetConfig):
     """Generator variants 0-3 train; held-out variants 4-5 evaluate."""
     families: tuple[Family, ...] = Field(FAMILIES, min_length=1)
     """Task families included in this curriculum stage."""
+    instruction_level: Literal["standard", "explicit"] = "standard"
+    """Use explicit environment-operation hints for early orientation training."""
     instances_per_template: int = Field(4, ge=1)
     seed: int = 20260715
 
@@ -250,15 +269,25 @@ class ReasoningOffloadOrientationTaskset(
             for variant in variants:
                 for family in self.config.families:
                     generated = generate(family, variant, instance, self.config.seed)
+                    prompt = generated.prompt
+                    if hint := EXPLICIT_INSTRUCTIONS.get(family):
+                        if self.config.instruction_level == "explicit":
+                            prompt = f"{hint} {prompt}"
+                    name_level = (
+                        "-explicit"
+                        if self.config.instruction_level == "explicit"
+                        else ""
+                    )
                     tasks.append(
                         ReasoningOffloadOrientationTask(
                             ReasoningOffloadOrientationData(
                                 idx=idx,
-                                name=f"{family}-v{variant}-i{instance}",
-                                prompt=generated.prompt,
+                                name=(f"{family}{name_level}-v{variant}-i{instance}"),
+                                prompt=prompt,
                                 system_prompt=ORIENTATION_SYSTEM_PROMPT,
                                 family=family,
                                 template_variant=variant,
+                                instruction_level=self.config.instruction_level,
                                 answer=generated.answer,
                                 files=generated.files,
                             ),

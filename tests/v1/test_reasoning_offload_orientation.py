@@ -91,6 +91,29 @@ def test_taskset_filters_curriculum_families_without_changing_variants():
     assert {task.data.system_prompt for task in tasks} == {ORIENTATION_SYSTEM_PROMPT}
 
 
+def test_explicit_instruction_level_guides_operations_without_changing_tasks():
+    common = {
+        "split": "train",
+        "families": ("state", "verification", "repair"),
+        "instances_per_template": 1,
+    }
+    standard = ReasoningOffloadOrientationTaskset(
+        ReasoningOffloadOrientationConfig(**common)
+    ).load()
+    explicit = ReasoningOffloadOrientationTaskset(
+        ReasoningOffloadOrientationConfig(**common, instruction_level="explicit")
+    ).load()
+
+    assert len(standard) == len(explicit) == 12
+    for standard_task, explicit_task in zip(standard, explicit, strict=True):
+        assert standard_task.data.answer == explicit_task.data.answer
+        assert standard_task.data.files == explicit_task.data.files
+        assert standard_task.data.instruction_level == "standard"
+        assert explicit_task.data.instruction_level == "explicit"
+        assert "Orientation hint:" not in standard_task.data.prompt
+        assert "Orientation hint:" in explicit_task.data.prompt
+
+
 def test_module_family_requires_importing_and_calling_provided_transform():
     config = ReasoningOffloadOrientationConfig(
         split="train",
@@ -104,7 +127,11 @@ def test_module_family_requires_importing_and_calling_provided_transform():
     assert all("inputs/operation.py" in task.data.files for task in tasks)
     assert all("Do not reimplement" in task.data.prompt for task in tasks)
     assert _module_reused(
-        [ast.parse("from inputs.operation import transform\nresult = transform(target)")]
+        [
+            ast.parse(
+                "from inputs.operation import transform\nresult = transform(target)"
+            )
+        ]
     )
     assert _module_reused(
         [
@@ -115,6 +142,10 @@ def test_module_family_requires_importing_and_calling_provided_transform():
         ]
     )
     assert not _module_reused(
-        [ast.parse("import json\ndef transform(value): return value\ntransform(target)")]
+        [
+            ast.parse(
+                "import json\ndef transform(value): return value\ntransform(target)"
+            )
+        ]
     )
     assert not _module_reused([ast.parse("def transform(value): return value")])
