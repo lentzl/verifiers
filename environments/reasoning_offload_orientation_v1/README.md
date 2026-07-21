@@ -10,10 +10,11 @@ an agent cannot improve reward merely by producing a longer trajectory. The trai
 and eval splits use disjoint generator variants.
 
 Early curriculum stages can set `taskset.instruction_level = "explicit"` to make
-the required environment operation concrete for state, verification, and repair
-tasks. The task contents and answers remain unchanged, allowing later stages to
-fade back to the default `"standard"` prompts without changing the capability
-being measured. Holdout evaluations should always use the standard level.
+the required environment operation concrete for state and repair tasks. The task
+contents and answers remain unchanged, while verification stays at standard
+difficulty to preserve mixed-success SDPO groups. Later stages can fade back to
+the default `"standard"` prompts without changing the capability being measured.
+Holdout evaluations should always use the standard level.
 
 ## Develop
 

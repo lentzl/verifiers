@@ -61,19 +61,15 @@ ORIENTATION_SYSTEM_PROMPT = (
 )
 EXPLICIT_INSTRUCTIONS: dict[Family, str] = {
     "state": (
-        "Orientation hint: first inspect one loaded event to identify its exact schema. "
-        "Keep the loaded events and derived balances in named variables across separate "
-        "IPython calls, then answer from that retained state."
-    ),
-    "verification": (
-        "Orientation hint: after the checker prints VERIFIED, import transform with "
-        "`from inputs.candidate import transform` and call it on the JSON target. Do not "
-        "write a substitute transformation."
+        "Orientation hint: in one short IPython call, load inputs/events.jsonl into an "
+        "events variable and display events[0] to identify the exact schema. In the next "
+        "call, derive balances from the retained events using event['delta']."
     ),
     "repair": (
-        "Orientation hint: use the checker failure and module contents to edit "
-        "inputs/buggy.py itself, rerun the checker until VERIFIED, then import or reload "
-        "transform from inputs.buggy and call it on the JSON target."
+        "Orientation hint: do not list files or narrate. First run python3 inputs/check.py, "
+        "then display inputs/buggy.py, edit that file based on the failure, and rerun the "
+        "checker. After VERIFIED, import or reload transform from inputs.buggy and call it "
+        "on the JSON target."
     ),
 }
 
@@ -253,7 +249,7 @@ class ReasoningOffloadOrientationConfig(vf.TasksetConfig):
     families: tuple[Family, ...] = Field(FAMILIES, min_length=1)
     """Task families included in this curriculum stage."""
     instruction_level: Literal["standard", "explicit"] = "standard"
-    """Use explicit environment-operation hints for early orientation training."""
+    """Use explicit state and repair operation hints for early orientation training."""
     instances_per_template: int = Field(4, ge=1)
     seed: int = 20260715
 

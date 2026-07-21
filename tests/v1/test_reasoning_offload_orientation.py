@@ -111,7 +111,10 @@ def test_explicit_instruction_level_guides_operations_without_changing_tasks():
         assert standard_task.data.instruction_level == "standard"
         assert explicit_task.data.instruction_level == "explicit"
         assert "Orientation hint:" not in standard_task.data.prompt
-        assert "Orientation hint:" in explicit_task.data.prompt
+        if explicit_task.data.family in {"state", "repair"}:
+            assert "Orientation hint:" in explicit_task.data.prompt
+        else:
+            assert explicit_task.data.prompt == standard_task.data.prompt
 
 
 def test_module_family_requires_importing_and_calling_provided_transform():
