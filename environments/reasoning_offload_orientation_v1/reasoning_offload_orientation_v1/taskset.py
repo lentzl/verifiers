@@ -72,9 +72,11 @@ EXPLICIT_INSTRUCTIONS: dict[Family, str] = {
     ),
     "repair": (
         "Orientation hint: do not list files or narrate. First run python3 inputs/check.py, "
-        "then display inputs/buggy.py, edit that file based on the failure, and rerun the "
-        "checker. After VERIFIED, import or reload transform from inputs.buggy and call it "
-        "on the JSON target."
+        "then display inputs/buggy.py. In the following IPython call, write the corrected "
+        "source back with `from pathlib import Path; "
+        "Path('inputs/buggy.py').write_text(corrected_source)`; defining or testing a "
+        "replacement only in IPython does not repair the file. Rerun the checker, and after "
+        "VERIFIED import or reload transform from inputs.buggy and call it on the JSON target."
     ),
 }
 
@@ -176,6 +178,90 @@ def _module_reused(trees: list[ast.AST]) -> bool:
     return module_imported and transform_called
 
 
+def _literal_path(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Path"
+        and node.args
+    ):
+        return _literal_path(node.args[0])
+    return None
+
+
+def _mutates_buggy_file(code: str) -> bool:
+    normalized = code.replace('"', "'")
+    shell_writes = (
+        "sed -i" in code and "inputs/buggy.py" in code,
+        "inputs/buggy.py" in code and "> inputs/buggy.py" in normalized,
+        "inputs/buggy.py" in code and "tee inputs/buggy.py" in normalized,
+    )
+    if any(shell_writes):
+        return True
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "open" and node.args:
+                path = _literal_path(node.args[0])
+                mode_node = node.args[1] if len(node.args) > 1 else None
+                for keyword in node.keywords:
+                    if keyword.arg == "mode":
+                        mode_node = keyword.value
+                mode = _literal_path(mode_node) if mode_node is not None else "r"
+                if (
+                    path == "inputs/buggy.py"
+                    and mode
+                    and any(marker in mode for marker in ("w", "a", "x", "+"))
+                ):
+                    return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in {"write_text", "write_bytes"}:
+                if _literal_path(node.func.value) == "inputs/buggy.py":
+                    return True
+            if node.func.attr == "open" and node.args:
+                path = _literal_path(node.func.value)
+                mode = _literal_path(node.args[0])
+                if (
+                    path == "inputs/buggy.py"
+                    and mode
+                    and any(marker in mode for marker in ("w", "a", "x", "+"))
+                ):
+                    return True
+    return False
+
+
+def _repair_progress(trace: vf.Trace) -> tuple[bool, bool]:
+    saw_failure = False
+    mutated_after_failure = False
+    verified_after_mutation = False
+    for node in trace.nodes:
+        message = node.message
+        if isinstance(message, vf.ToolMessage):
+            output = content_text(message.content)
+            if mutated_after_failure and "VERIFIED" in output:
+                verified_after_mutation = True
+            if any(marker in output for marker in FAILURE_MARKERS):
+                saw_failure = True
+        elif saw_failure and isinstance(message, vf.AssistantMessage):
+            for call in message.tool_calls or []:
+                if call.name != "ipython":
+                    continue
+                try:
+                    arguments = json.loads(call.arguments)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(code := arguments.get("code"), str):
+                    mutated_after_failure |= _mutates_buggy_file(code)
+    return mutated_after_failure, verified_after_mutation
+
+
 class ReasoningOffloadOrientationData(vf.TaskData):
     family: Family
     template_variant: int
@@ -225,6 +311,7 @@ class ReasoningOffloadOrientationTask(vf.Task[ReasoningOffloadOrientationData]):
         used_ipython = bool(cells)
         state_reused = _state_reused(trees)
         module_reused = _module_reused(trees)
+        file_mutated_after_feedback, verified_after_repair = _repair_progress(trace)
         aligned = {
             "direct": not used_ipython,
             "inspection": used_ipython,
@@ -232,7 +319,11 @@ class ReasoningOffloadOrientationTask(vf.Task[ReasoningOffloadOrientationData]):
             "helper": helper_called,
             "module": module_reused,
             "verification": verification_observed,
-            "repair": failure_observed and recovered and verification_observed,
+            "repair": (
+                failure_observed
+                and file_mutated_after_feedback
+                and verified_after_repair
+            ),
         }[self.data.family]
         return {
             "used_ipython": float(used_ipython),
@@ -244,6 +335,8 @@ class ReasoningOffloadOrientationTask(vf.Task[ReasoningOffloadOrientationData]):
             "failure_observed": float(failure_observed),
             "recovered_after_feedback": float(recovered),
             "verification_observed": float(verification_observed),
+            "file_mutated_after_feedback": float(file_mutated_after_feedback),
+            "verified_after_repair": float(verified_after_repair),
             "process_aligned": float(aligned),
         }
 

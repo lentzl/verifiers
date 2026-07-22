@@ -1,6 +1,7 @@
 """Reasoning-offload task feedback used by feedback-conditioned trainers."""
 
 import ast
+import json
 
 import pytest
 
@@ -13,9 +14,11 @@ from reasoning_offload_orientation_v1.taskset import (
     ReasoningOffloadOrientationTask,
     ReasoningOffloadOrientationTaskset,
     _module_reused,
+    _mutates_buggy_file,
+    _repair_progress,
 )
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1.types import AssistantMessage, ToolCall, ToolMessage, UserMessage
 
 
 def make_task_and_trace(reply: str):
@@ -152,3 +155,95 @@ def test_module_family_requires_importing_and_calling_provided_transform():
         ]
     )
     assert not _module_reused([ast.parse("def transform(value): return value")])
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "from pathlib import Path\nPath('inputs/buggy.py').write_text(source)",
+        "with open('inputs/buggy.py', 'w') as handle:\n    handle.write(source)",
+        "open('inputs/buggy.py', mode='w').write(source)",
+        "from pathlib import Path\nPath('inputs/buggy.py').open('w').write(source)",
+        "%%bash\nsed -i 's/wrong/right/' inputs/buggy.py",
+        "%%bash\nprintf '%s' \"$SOURCE\" > inputs/buggy.py",
+    ],
+)
+def test_repair_mutation_recognizes_writes_to_buggy_file(code):
+    assert _mutates_buggy_file(code)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "source = Path('inputs/buggy.py').read_text()",
+        "def transform(value): return value",
+        "Path('inputs/check.py').write_text(source)",
+        "open('inputs/target.json', 'w').write(value)",
+        "%%bash\nsed -i 's/wrong/right/' inputs/check.py",
+    ],
+)
+def test_repair_mutation_rejects_reads_and_unrelated_writes(code):
+    assert not _mutates_buggy_file(code)
+
+
+def _repair_trace(*messages):
+    data = ReasoningOffloadOrientationData(
+        idx=0,
+        name="repair-progress-test",
+        prompt="Repair inputs/buggy.py.",
+        family="repair",
+        template_variant=0,
+        answer="expected",
+        files={},
+    )
+    task = ReasoningOffloadOrientationTask(data)
+    nodes = [
+        MessageNode(
+            parent=None if index == 0 else index - 1,
+            message=message,
+            sampled=isinstance(message, AssistantMessage),
+        )
+        for index, message in enumerate((UserMessage(content=data.prompt), *messages))
+    ]
+    return vf.Trace(
+        task=vf.TraceTask(type=type(task).__name__, data=data),
+        nodes=nodes,
+    )
+
+
+def _ipython_call(call_id: str, code: str) -> AssistantMessage:
+    return AssistantMessage(
+        tool_calls=[
+            ToolCall(
+                id=call_id,
+                name="ipython",
+                arguments=json.dumps({"code": code}),
+            )
+        ]
+    )
+
+
+def test_repair_progress_requires_mutation_between_failure_and_verification():
+    trace = _repair_trace(
+        ToolMessage(tool_call_id="check-1", content="FAILED [(1, 2, 3)]"),
+        _ipython_call(
+            "edit",
+            "from pathlib import Path\n"
+            "Path('inputs/buggy.py').write_text(corrected_source)",
+        ),
+        ToolMessage(tool_call_id="edit", content=""),
+        _ipython_call("check-2", "%%bash\npython3 inputs/check.py"),
+        ToolMessage(tool_call_id="check-2", content="VERIFIED"),
+    )
+
+    assert _repair_progress(trace) == (True, True)
+
+
+def test_repair_progress_rejects_notebook_only_recovery():
+    trace = _repair_trace(
+        ToolMessage(tool_call_id="check-1", content="FAILED [(1, 2, 3)]"),
+        _ipython_call("experiment", "def transform(value): return value"),
+        ToolMessage(tool_call_id="experiment", content="VERIFIED"),
+    )
+
+    assert _repair_progress(trace) == (False, False)
