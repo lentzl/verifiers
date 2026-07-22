@@ -2,6 +2,8 @@
 
 import ast
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -68,6 +70,39 @@ def test_injected_defect_fails_at_least_one_checker_case(variant):
     assert any(
         value != case["expected"] for value, case in zip(actual, cases, strict=True)
     )
+
+
+@pytest.mark.parametrize("variant", range(6))
+def test_checker_fails_then_verifies_from_workspace_root(tmp_path, variant):
+    generated = generate(variant, 0, 20260722)
+    for relative_path, content in generated.files.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+
+    failed = subprocess.run(
+        [sys.executable, "inputs/check.py"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert failed.returncode == 1
+    assert "FAILED" in failed.stdout
+    assert "ModuleNotFoundError" not in failed.stderr
+
+    (tmp_path / "inputs/operations.py").write_text(generated.correct_source)
+    verified = subprocess.run(
+        [sys.executable, "inputs/check.py"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert verified.returncode == 0
+    assert verified.stdout.strip() == "VERIFIED"
 
 
 @pytest.mark.parametrize(

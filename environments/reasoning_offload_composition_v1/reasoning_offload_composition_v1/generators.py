@@ -236,14 +236,16 @@ BUG_REPLACEMENTS = (
 
 def _check_script() -> str:
     return """import json
-from inputs import operations
 
 steps = json.loads(open("inputs/pipeline.json").read())["steps"]
 cases = json.loads(open("inputs/cases.json").read())
+operations = {}
+source = open("inputs/operations.py").read()
+exec(compile(source, "inputs/operations.py", "exec"), operations)
 
 def run(value):
     for step in steps:
-        value = getattr(operations, step)(value)
+        value = operations[step](value)
     return value
 
 failures = []
