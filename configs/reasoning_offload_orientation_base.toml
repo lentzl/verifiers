@@ -1,0 +1,36 @@
+# Held-out RLM capability gate for the untouched Qwen3 4B Instruct model.
+# Start a local OpenAI-compatible server on port 8000, then run:
+#   uv run eval @ configs/reasoning_offload_orientation_base.toml
+
+model = "Qwen/Qwen3-4B-Instruct-2507"
+num_tasks = 24
+num_rollouts = 1
+max_turns = 12
+max_total_tokens = 8192
+max_concurrent = 4
+rich = false
+push = false
+
+[client]
+type = "eval"
+base_url = "http://127.0.0.1:8000/v1"
+
+[sampling]
+temperature = 0.0
+max_tokens = 1024
+
+[taskset]
+id = "reasoning-offload-orientation-v1"
+split = "eval"
+instances_per_template = 2
+
+[harness]
+id = "rlm"
+version = "9017836"
+runtime = { type = "subprocess" }
+
+[timeout]
+setup = 300
+rollout = 900
+finalize = 60
+scoring = 60
