@@ -7,15 +7,14 @@ import json
 from typing import Any
 
 import verifiers.v1 as vf
-from verifiers.v1.harnesses.null import NullHarnessConfig
-from verifiers.v1.harnesses.rlm import RLMHarnessConfig
-
 from reasoning_offload_skill_learning_v1.skill_package import (
     SkillCandidate,
     SkillPackageError,
     install_candidate,
     parse_candidate,
 )
+from verifiers.v1.harnesses.null import NullHarnessConfig
+from verifiers.v1.harnesses.rlm import RLMHarnessConfig
 
 AUTHOR_SYSTEM_PROMPT = (
     "Turn recurring work in past successful examples into one portable Agent Skill. "
@@ -45,14 +44,38 @@ fields:
 
 Scripts may use the Python standard library. They must not use networking,
 subprocesses, dynamic code execution, or external dependencies. Prefer a general
-command-line input contract over constants copied from the examples. Do not emit
+command-line input contract over constants copied from the examples. Every script
+must accept one or more task file paths as command-line arguments and read those files
+itself; do not require serialized file contents as arguments. Do not emit
 pyproject.toml, package imports, runtime entrypoints, or vendor-specific metadata.
+
+Follow this package shape literally. Replace the example values and program, retain
+the hyphenated name and the exact three-line YAML frontmatter delimiters, and mention
+the script path in the SKILL.md body:
+
+<skill_package>
+{{"name":"example-skill","skill_md":"---\\nname: example-skill\\ndescription: Use this skill when an example operation is needed.\\n---\\n\\nFrom this skill directory, run `python scripts/solve.py INPUT_PATH` and return the requested result.","files":{{"scripts/solve.py":"import sys\\nfrom pathlib import Path\\n\\nprint(Path(sys.argv[1]).read_text())\\n"}}}}
+</skill_package>
 """
 
-CONSUMER_SYSTEM_PROMPT = """A portable Agent Skill is available at {root}/SKILL.md.
-Treat it as progressively disclosed instructions: read SKILL.md first, inspect only
-the referenced bundled files you need, and execute a script when it is useful. The
-skill is advisory; preserve the task's exact requested output contract."""
+CONSUMER_SYSTEM_PROMPT = """This run evaluates a portable Agent Skill available at
+{root}/SKILL.md. You must inspect SKILL.md before solving the task, then inspect only
+the referenced bundled files you need and execute or adapt its script. Resolve every
+bundled relative path against {root}, never the task working directory. Pass task
+input files to scripts as absolute paths. Begin with a genuine IPython tool call that
+reads the skill. After that result, do not explain, restate, or inspect the script:
+your next assistant turn must be a genuine IPython tool call that executes the
+referenced script. Do not print tool-call JSON or a code fence. Preserve the task's
+exact requested output contract."""
+
+CONSUMER_PROMPT = """Before solving, make one genuine IPython tool call to read
+{root}/SKILL.md. Do not print code or tool-call JSON as text. Then follow the skill
+and resolve its bundled script paths against {root}. Pass task input files as absolute
+paths. Immediately execute the referenced script in your next genuine IPython tool
+call; do not describe or reproduce its code. Then preserve the requested answer
+format.
+
+{prompt}"""
 
 
 class SkillAuthorData(vf.TaskData):
@@ -98,9 +121,38 @@ def author_task(task: vf.Task) -> SkillAuthorTask:
 def consumer_task(task: vf.Task, root: str) -> vf.Task:
     system_parts = [task.data.system_prompt, CONSUMER_SYSTEM_PROMPT.format(root=root)]
     data = task.data.model_copy(
-        update={"system_prompt": "\n\n".join(part for part in system_parts if part)}
+        update={
+            "prompt": CONSUMER_PROMPT.format(root=root, prompt=task.data.prompt),
+            "system_prompt": "\n\n".join(part for part in system_parts if part),
+        }
     )
     return type(task)(data, config=task.config)
+
+
+def utility_tasks(task: vf.Task) -> tuple[vf.Task, ...]:
+    examples = getattr(task.data, "utility_examples", ())
+    if not examples:
+        return (task,)
+
+    fields = type(task.data).model_fields
+    tasks = []
+    for index, example in enumerate(examples):
+        updates = {
+            "idx": task.data.idx * 100 + index,
+            "name": example.name,
+            "prompt": example.prompt,
+            "system_prompt": example.system_prompt,
+            "template_variant": example.template_variant,
+            "answer": example.answer,
+            "files": example.files,
+            "experiences": (),
+            "utility_examples": (),
+        }
+        data = task.data.model_copy(
+            update={key: value for key, value in updates.items() if key in fields}
+        )
+        tasks.append(type(task)(data, config=task.config))
+    return tuple(tasks)
 
 
 def _same_consumer_policy(left: vf.AgentConfig, right: vf.AgentConfig) -> bool:
@@ -156,7 +208,17 @@ class ReasoningOffloadSkillLearningEnv(vf.Env[ReasoningOffloadSkillLearningConfi
         agents.baseline_user.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        baseline_future = asyncio.create_task(agents.baseline_user.run(task))
+        panel = utility_tasks(task)
+
+        async def run_baseline(index: int, utility_task: vf.Task) -> vf.Trace:
+            trace = await agents.baseline_user.run(utility_task)
+            trace.info["utility_case_index"] = index
+            return trace
+
+        baseline_futures = [
+            asyncio.create_task(run_baseline(index, utility_task))
+            for index, utility_task in enumerate(panel)
+        ]
         author = await agents.author.run(author_task(task))
 
         candidate: SkillCandidate | None = None
@@ -166,25 +228,51 @@ class ReasoningOffloadSkillLearningEnv(vf.Env[ReasoningOffloadSkillLearningConfi
             author.info["skill_package_error"] = str(exc)
             author.info["feedback"] = f"The proposed skill package was rejected: {exc}"
 
+        install_errors = []
         if candidate is not None:
             author.info["skill_name"] = candidate.name
-            try:
-                async with agents.skill_user.provision(task) as runtime:
-                    root = await install_candidate(runtime, candidate)
-                    skill_trace = await agents.skill_user.run(
-                        consumer_task(task, root), runtime=runtime
-                    )
-                    skill_trace.info["installed_skill"] = candidate.name
-                    skill_trace.info["installed_skill_root"] = root
-            except Exception as exc:
-                author.info["skill_install_error"] = f"{type(exc).__name__}: {exc}"
+
+            async def run_skill(index: int, utility_task: vf.Task) -> None:
+                try:
+                    async with agents.skill_user.provision(utility_task) as runtime:
+                        root = await install_candidate(runtime, candidate)
+                        skill_trace = await agents.skill_user.run(
+                            consumer_task(utility_task, root), runtime=runtime
+                        )
+                        skill_trace.info["installed_skill"] = candidate.name
+                        skill_trace.info["installed_skill_root"] = root
+                        skill_trace.info["utility_case_index"] = index
+                except Exception as exc:
+                    install_errors.append(f"{type(exc).__name__}: {exc}")
+
+            await asyncio.gather(
+                *(
+                    run_skill(index, utility_task)
+                    for index, utility_task in enumerate(panel)
+                )
+            )
+            if install_errors:
+                detail = "; ".join(install_errors)
+                author.info["skill_install_error"] = detail
                 author.info["feedback"] = (
                     "The package passed static validation but could not be installed "
-                    "or exercised by the downstream agent: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"or exercised by every downstream agent: {detail}"
                 )
 
-        await baseline_future
+        await asyncio.gather(*baseline_futures)
+
+    @staticmethod
+    def _by_case(traces: list[vf.Trace]) -> dict[int, vf.Trace]:
+        indexed = {}
+        for fallback, trace in enumerate(traces):
+            index = trace.info.get("utility_case_index", fallback)
+            if isinstance(index, int):
+                indexed[index] = trace
+        return indexed
+
+    @staticmethod
+    def _mean(values: list[float]) -> float:
+        return sum(values) / len(values) if values else 0.0
 
     @staticmethod
     def _score(trace: vf.Trace | None) -> float:
@@ -214,24 +302,33 @@ class ReasoningOffloadSkillLearningEnv(vf.Env[ReasoningOffloadSkillLearningConfi
         return 0.0
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
-        by_agent = {trace.agent.name: trace for trace in episode.traces}
-        author = by_agent.get("author")
-        baseline = by_agent.get("baseline_user")
-        skill_user = by_agent.get("skill_user")
-        if author is None or baseline is None:
+        by_agent = episode.by_agent
+        authors = by_agent.get("author", [])
+        baselines = self._by_case(by_agent.get("baseline_user", []))
+        skill_users = self._by_case(by_agent.get("skill_user", []))
+        if len(authors) != 1 or not baselines:
             raise ValueError("skill-learning episode is missing its author or baseline")
+        author = authors[0]
 
-        baseline_score = self._score(baseline)
-        skill_score = self._score(skill_user)
-        utility = skill_score - baseline_score
+        case_indices = sorted(baselines)
+        baseline_scores = [self._score(baselines[index]) for index in case_indices]
+        skill_scores = [self._score(skill_users.get(index)) for index in case_indices]
+        baseline_score = self._mean(baseline_scores)
+        skill_score = self._mean(skill_scores)
+        utility = self._mean(
+            [skill - baseline for skill, baseline in zip(skill_scores, baseline_scores)]
+        )
         package_valid = float(
             "skill_name" in author.info and "skill_install_error" not in author.info
         )
-        consulted = self._consulted(skill_user)
+        consulted = self._mean(
+            [self._consulted(skill_users.get(index)) for index in case_indices]
+        )
         author.record_metrics(
             {
                 "skill_package_valid": package_valid,
                 "skill_consulted": consulted,
+                "utility_panel_size": float(len(case_indices)),
                 "baseline_correct": baseline_score,
                 "skill_user_correct": skill_score,
                 "marginal_skill_utility": utility,
@@ -243,17 +340,18 @@ class ReasoningOffloadSkillLearningEnv(vf.Env[ReasoningOffloadSkillLearningConfi
             return
         if skill_score < baseline_score:
             author.info["feedback"] = (
-                "The candidate made a fresh downstream run worse than the matched "
-                "no-skill baseline. Generalize the operation and avoid changing the "
-                "requested output contract."
+                "The candidate made fresh downstream runs worse on average than the "
+                "matched no-skill baselines. Generalize the operation and avoid "
+                "changing the requested output contract."
             )
         elif not consulted:
             author.info["feedback"] = (
-                "The package installed, but the fresh agent did not consult it. Make "
+                "The package installed, but the fresh agents did not consult it. Make "
                 "SKILL.md's trigger and script interface easier to discover and use."
             )
         else:
             author.info["feedback"] = (
-                "The skill was consulted but produced no marginal correctness over the "
-                "matched baseline. Encode a more general, reliably useful operation."
+                "The skill was consulted but produced no average marginal correctness "
+                "over the matched baselines. Encode a more general, reliably useful "
+                "operation."
             )

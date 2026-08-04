@@ -9,7 +9,6 @@ import re
 from pydantic import BaseModel, Field
 
 import verifiers.v1 as vf
-
 from reasoning_offload_skill_acquisition_v1.generators import (
     FAMILIES,
     SPLIT_VARIANTS,
@@ -91,6 +90,17 @@ class SkillExperience(BaseModel):
     files: dict[str, str]
 
 
+class SkillUtilityExample(BaseModel):
+    """One hidden task used to measure whether an authored skill transfers."""
+
+    name: str
+    prompt: str
+    system_prompt: str
+    template_variant: int
+    answer: str
+    files: dict[str, str]
+
+
 class ReasoningOffloadSkillAcquisitionData(vf.TaskData):
     family: Family
     split: Split
@@ -98,6 +108,7 @@ class ReasoningOffloadSkillAcquisitionData(vf.TaskData):
     answer: str
     files: dict[str, str]
     experiences: tuple[SkillExperience, ...] = ()
+    utility_examples: tuple[SkillUtilityExample, ...] = ()
 
 
 class ReasoningOffloadSkillAcquisitionTask(
@@ -134,6 +145,8 @@ class ReasoningOffloadSkillAcquisitionConfig(vf.TasksetConfig):
     instances_per_template: int = Field(1, ge=1)
     experience_examples: int = Field(3, ge=0, le=len(SPLIT_VARIANTS["discovery"]))
     """Solved discovery examples carried as author evidence, never shown to the solver."""
+    utility_panel_size: int = Field(1, ge=1, le=3)
+    """Fresh same-family tasks used to average downstream skill utility."""
     seed: int = 20260803
 
 
@@ -147,7 +160,8 @@ class ReasoningOffloadSkillAcquisitionTaskset(
         tasks = []
         idx = 0
         for family in self.config.families:
-            for variant in SPLIT_VARIANTS[self.config.split]:
+            split_variants = list(SPLIT_VARIANTS[self.config.split])
+            for variant in split_variants:
                 for instance in range(self.config.instances_per_template):
                     generated = generate(
                         family,
@@ -173,6 +187,36 @@ class ReasoningOffloadSkillAcquisitionTaskset(
                             )
                         ]
                     )
+                    panel_variants = [
+                        variant,
+                        *(
+                            candidate
+                            for candidate in split_variants
+                            if candidate != variant
+                        ),
+                    ][: self.config.utility_panel_size]
+                    utility_examples = tuple(
+                        SkillUtilityExample(
+                            name=(
+                                f"skill-utility-{self.config.split}-{family}-"
+                                f"v{panel_variant}-i{instance}"
+                            ),
+                            prompt=example.prompt,
+                            system_prompt=SKILL_ACQUISITION_SYSTEM_PROMPT,
+                            template_variant=panel_variant,
+                            answer=example.answer,
+                            files=example.files,
+                        )
+                        for panel_variant in panel_variants
+                        for example in [
+                            generate(
+                                family,
+                                seed=self.config.seed,
+                                variant=panel_variant,
+                                instance=instance,
+                            )
+                        ]
+                    )
                     tasks.append(
                         ReasoningOffloadSkillAcquisitionTask(
                             ReasoningOffloadSkillAcquisitionData(
@@ -189,6 +233,7 @@ class ReasoningOffloadSkillAcquisitionTaskset(
                                 answer=generated.answer,
                                 files=generated.files,
                                 experiences=experiences,
+                                utility_examples=utility_examples,
                             )
                         )
                     )

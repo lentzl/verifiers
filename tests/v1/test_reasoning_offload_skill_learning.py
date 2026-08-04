@@ -3,8 +3,6 @@
 import json
 
 import pytest
-
-import verifiers.v1 as vf
 from reasoning_offload_skill_acquisition_v1.taskset import (
     ReasoningOffloadSkillAcquisitionConfig,
     ReasoningOffloadSkillAcquisitionData,
@@ -23,6 +21,8 @@ from reasoning_offload_skill_learning_v1.skill_package import (
     parse_candidate,
     render_candidate,
 )
+
+import verifiers.v1 as vf
 
 VALID_SCRIPT = """from __future__ import annotations
 
@@ -160,6 +160,9 @@ def test_author_sees_past_examples_but_not_the_held_out_task():
     assert "Prime" not in authored.data.prompt
     assert "Anthropic" not in authored.data.prompt
     assert "OpenAI" not in authored.data.prompt
+    assert '"name":"example-skill"' in authored.data.prompt
+    assert "---\\nname: example-skill\\ndescription:" in authored.data.prompt
+    assert "task file paths as command-line arguments" in authored.data.prompt
     assert authored.data.source_task_name == "held-out-task"
 
 
@@ -167,10 +170,16 @@ def test_consumer_discovers_the_skill_without_changing_the_task():
     task = _task()
     adapted = consumer_task(task, "/task/agent-skills/compact-json")
 
-    assert adapted.data.prompt == task.data.prompt
+    assert adapted.data.prompt.endswith(task.data.prompt)
+    assert "/task/agent-skills/compact-json/SKILL.md" in adapted.data.prompt
     assert adapted.data.answer == task.data.answer
     assert "Keep the answer exact." in adapted.data.system_prompt
     assert "/task/agent-skills/compact-json/SKILL.md" in adapted.data.system_prompt
+    assert "must inspect SKILL.md before solving" in adapted.data.system_prompt
+    assert "never the task working directory" in adapted.data.system_prompt
+    assert "next assistant turn must be a genuine IPython tool call" in (
+        adapted.data.system_prompt
+    )
     assert adapted.data is not task.data
 
 
@@ -188,6 +197,28 @@ def test_taskset_carries_disjoint_bootstrap_evidence():
         for task in tasks
         for experience in task.data.experiences
     )
+
+
+def test_taskset_builds_a_hidden_same_family_utility_panel():
+    tasks = ReasoningOffloadSkillAcquisitionTaskset(
+        ReasoningOffloadSkillAcquisitionConfig(
+            split="validation",
+            families=("ledger",),
+            experience_examples=2,
+            utility_panel_size=3,
+        )
+    ).load()
+
+    assert len(tasks) == 3
+    assert all(len(task.data.utility_examples) == 3 for task in tasks)
+    for task in tasks:
+        authored = author_task(task)
+        for utility_example in task.data.utility_examples:
+            assert utility_example.answer not in authored.data.prompt
+            assert all(
+                utility_example.files != experience.files
+                for experience in task.data.experiences
+            )
 
 
 class RecordingRuntime:
@@ -227,6 +258,27 @@ async def test_author_reward_is_marginal_downstream_utility():
     assert author.metrics["skill_package_valid"] == 1.0
     assert author.metrics["skill_consulted"] == 0.0
     assert "feedback" not in author.info
+
+
+@pytest.mark.asyncio
+async def test_author_reward_averages_marginal_utility_across_hidden_panel():
+    author = _trace("author")
+    author.info["skill_name"] = "compact-json"
+    skill_users = [_trace("skill_user", score=1.0), _trace("skill_user", score=0.0)]
+    baselines = [_trace("baseline_user", score=0.0), _trace("baseline_user", score=1.0)]
+    for index, trace in enumerate(skill_users):
+        trace.info["utility_case_index"] = index
+    for index, trace in enumerate(baselines):
+        trace.info["utility_case_index"] = index
+    episode = vf.Episode(traces=[author, *skill_users, *baselines])
+    env = object.__new__(ReasoningOffloadSkillLearningEnv)
+
+    await env.finalize(_task(), episode)
+
+    assert author.rewards["skill_utility"].score == 0.0
+    assert author.metrics["utility_panel_size"] == 2.0
+    assert author.metrics["baseline_correct"] == 0.5
+    assert author.metrics["skill_user_correct"] == 0.5
 
 
 @pytest.mark.asyncio
