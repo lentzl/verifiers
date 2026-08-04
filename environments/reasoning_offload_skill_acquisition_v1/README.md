@@ -18,6 +18,10 @@ current RLM-backed experiments; the task data and scoring are harness-independen
 Persistent skills are supplied by the selected environment rather than owned by the
 taskset.
 
+Set `variants_per_family = 1` when one author proposal per family is enough. This
+removes duplicate author prompts without reducing `utility_panel_size`, so a proposal
+can still be judged against all three hidden variants.
+
 ```bash
 uv run eval reasoning-offload-skill-acquisition-v1 \
   --env.taskset.split discovery \

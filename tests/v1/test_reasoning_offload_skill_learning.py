@@ -221,6 +221,33 @@ def test_taskset_builds_a_hidden_same_family_utility_panel():
             )
 
 
+def test_taskset_can_limit_author_prompts_without_shrinking_utility_panel():
+    tasks = ReasoningOffloadSkillAcquisitionTaskset(
+        ReasoningOffloadSkillAcquisitionConfig(
+            split="validation",
+            families=("ledger", "frontier"),
+            instances_per_template=2,
+            variants_per_family=1,
+            utility_panel_size=3,
+        )
+    ).load()
+
+    assert len(tasks) == 4
+    assert [task.data.family for task in tasks] == [
+        "ledger",
+        "ledger",
+        "frontier",
+        "frontier",
+    ]
+    assert all(task.data.template_variant == 6 for task in tasks)
+    assert all(len(task.data.utility_examples) == 3 for task in tasks)
+    assert all(
+        {example.template_variant for example in task.data.utility_examples}
+        == {6, 7, 8}
+        for task in tasks
+    )
+
+
 class RecordingRuntime:
     def __init__(self):
         self.files = {}
