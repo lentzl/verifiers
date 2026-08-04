@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 BuiltinSkill = Literal["edit", "search"]
 
-RLM_REPO = "github.com/PrimeIntellect-ai/rlm.git"
+RLM_REPOSITORY = "https://github.com/PrimeIntellect-ai/rlm.git"
 # rlm writes its session under $RLM_HOME/sessions/<id>/; point it at a workdir-
 # relative dir so it stays in the runtime (and is cleaned up with the workdir).
 RLM_HOME = ".rlm"
@@ -31,6 +31,8 @@ SKILLS_DIR = "/task/rlm-skills"
 
 
 class RLMHarnessConfig(HarnessConfig):
+    repository: str = RLM_REPOSITORY
+    """Git repository containing the rlm version to install."""
     version: str = "main"
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0
@@ -85,7 +87,8 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         install = (
             "command -v git >/dev/null 2>&1 || "
             "{ apt-get update -qq && apt-get install -y -qq git; } && "
-            f"rm -rf /tmp/rlm && git clone https://{RLM_REPO} /tmp/rlm && "
+            f"rm -rf /tmp/rlm && "
+            f"git clone {shlex.quote(self.config.repository)} /tmp/rlm && "
             f"git -C /tmp/rlm checkout {shlex.quote(self.config.version)} && "
             f"UV_INSTALL_DIR={RLM_DIR}/bin UV_TOOL_BIN_DIR={RLM_DIR}/bin "
             f"RLM_CHECKOUT_PATH=/tmp/rlm bash /tmp/rlm/install.sh"
