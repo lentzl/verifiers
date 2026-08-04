@@ -1,0 +1,71 @@
+# End-to-end bootstrap run: author a portable Agent Skill, expose it to a fresh
+# consumer through the current RLM backend, and reward only its accuracy lift over
+# a matched no-skill context.
+
+model = "lentzl/rlm-prime-librarian-sft-orientation-step12-20260803o"
+num_tasks = 12
+num_rollouts = 4
+shuffle = false
+max_concurrent = 4
+rich = false
+server = false
+push = false
+
+[env]
+id = "reasoning-offload-skill-learning-v1"
+
+[env.taskset]
+id = "reasoning-offload-skill-acquisition-v1"
+split = "validation"
+families = ["ledger", "canonicalization", "frontier", "windows"]
+instances_per_template = 1
+experience_examples = 3
+seed = 20260803
+
+[env.timeout]
+episode = 1800.0
+finalize = 60.0
+
+[env.author]
+max_turns = 1
+max_output_tokens = 4096
+max_total_tokens = 6144
+
+[env.author.harness]
+id = "null"
+
+[env.skill_user]
+max_turns = 8
+max_total_tokens = 8192
+
+[env.skill_user.harness]
+id = "rlm"
+version = "main"
+max_depth = 0
+
+[env.skill_user.runtime]
+type = "docker"
+image = "python:3.11-slim"
+
+[env.baseline_user]
+max_turns = 8
+max_total_tokens = 8192
+
+[env.baseline_user.harness]
+id = "rlm"
+version = "main"
+max_depth = 0
+
+[env.baseline_user.runtime]
+type = "docker"
+image = "python:3.11-slim"
+
+[client]
+type = "eval"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_var = "VLLM_API_KEY"
+
+[sampling]
+temperature = 0.6
+top_p = 0.95
+max_tokens = 4096

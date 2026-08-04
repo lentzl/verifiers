@@ -1,0 +1,13 @@
+[project]
+name = "reasoning-offload-skill-learning-v1"
+version = "0.1.0"
+description = "Train portable Agent Skills from measured downstream utility."
+requires-python = ">=3.11"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["reasoning_offload_skill_learning_v1"]

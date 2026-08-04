@@ -21,6 +21,12 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolCall, ToolMessage, UserMessage
 
 
+def _agent_info() -> vf.AgentInfo:
+    return vf.AgentInfo(
+        config=vf.AgentConfig(model="test", harness={"id": "null"})
+    )
+
+
 def make_task_and_trace(reply: str):
     data = ReasoningOffloadOrientationData(
         idx=0,
@@ -34,6 +40,7 @@ def make_task_and_trace(reply: str):
     task = ReasoningOffloadOrientationTask(data)
     trace = vf.Trace(
         task=vf.TraceTask(type=type(task).__name__, data=data),
+        agent=_agent_info(),
         nodes=[
             MessageNode(
                 parent=None,
@@ -207,6 +214,7 @@ def _repair_trace(*messages):
     ]
     return vf.Trace(
         task=vf.TraceTask(type=type(task).__name__, data=data),
+        agent=_agent_info(),
         nodes=nodes,
     )
 

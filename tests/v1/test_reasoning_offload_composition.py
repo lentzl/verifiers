@@ -20,6 +20,12 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 
+def _agent_info() -> vf.AgentInfo:
+    return vf.AgentInfo(
+        config=vf.AgentConfig(model="test", harness={"id": "null"})
+    )
+
+
 def test_train_and_eval_use_disjoint_pipeline_variants():
     train = ReasoningOffloadCompositionTaskset(
         ReasoningOffloadCompositionConfig(split="train", instances_per_template=1)
@@ -146,6 +152,7 @@ async def test_unquoted_string_answer_is_accepted_as_json_string():
     expected = json.loads(task.data.answer)
     trace = vf.Trace(
         task=vf.TraceTask(type=type(task).__name__, data=task.data),
+        agent=_agent_info(),
         nodes=[
             MessageNode(
                 parent=None,
@@ -172,6 +179,7 @@ async def test_incorrect_answer_adds_non_leaking_feedback():
     ).load()[0]
     trace = vf.Trace(
         task=vf.TraceTask(type=type(task).__name__, data=task.data),
+        agent=_agent_info(),
         nodes=[
             MessageNode(
                 parent=None,
