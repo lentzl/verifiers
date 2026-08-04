@@ -49,6 +49,14 @@ must accept one or more task file paths as command-line arguments and read those
 itself; do not require serialized file contents as arguments. Do not emit
 pyproject.toml, package imports, runtime entrypoints, or vendor-specific metadata.
 
+Separate the reusable operation from incidental literals in the examples. Do not
+bake observed thresholds, identifiers, labels, or answer values into the program.
+Match the demonstrated top-level file shape rather than inventing wrapper keys. If a
+future invocation needs a scalar stated in its task prompt but absent from its input
+file, expose that scalar as a documented command-line argument. The script must print
+only the answer payload in the same serialization shown by the successful examples,
+without tags, labels, commentary, or debug output.
+
 Follow this package shape literally. Replace the example values and program, retain
 the hyphenated name and the exact three-line YAML frontmatter delimiters, and mention
 the script path in the SKILL.md body:

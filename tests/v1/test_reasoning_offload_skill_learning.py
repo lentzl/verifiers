@@ -184,6 +184,10 @@ def test_author_sees_past_examples_but_not_the_held_out_task():
     assert '"name":"example-skill"' in authored.data.prompt
     assert "---\\nname: example-skill\\ndescription:" in authored.data.prompt
     assert "task file paths as command-line arguments" in authored.data.prompt
+    assert "bake observed thresholds" in authored.data.prompt
+    assert "Match the demonstrated top-level file shape" in authored.data.prompt
+    assert "documented command-line argument" in authored.data.prompt
+    assert "only the answer payload" in authored.data.prompt
     assert authored.data.source_task_name == "held-out-task"
 
 
