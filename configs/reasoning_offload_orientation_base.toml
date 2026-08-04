@@ -5,11 +5,31 @@
 model = "Qwen/Qwen3-4B-Instruct-2507"
 num_tasks = 24
 num_rollouts = 1
-max_turns = 12
-max_total_tokens = 8192
 max_concurrent = 4
 rich = false
 push = false
+
+[env.agent]
+max_turns = 12
+max_total_tokens = 8192
+
+[env.taskset]
+id = "reasoning-offload-orientation-v1"
+split = "eval"
+instances_per_template = 2
+
+[env.agent.harness]
+id = "rlm"
+version = "9017836"
+
+[env.agent.runtime]
+type = "subprocess"
+
+[env.agent.timeout]
+setup = 300
+rollout = 900
+finalize = 60
+scoring = 60
 
 [client]
 type = "eval"
@@ -18,19 +38,3 @@ base_url = "http://127.0.0.1:8000/v1"
 [sampling]
 temperature = 0.0
 max_tokens = 1024
-
-[taskset]
-id = "reasoning-offload-orientation-v1"
-split = "eval"
-instances_per_template = 2
-
-[harness]
-id = "rlm"
-version = "9017836"
-runtime = { type = "subprocess" }
-
-[timeout]
-setup = 300
-rollout = 900
-finalize = 60
-scoring = 60

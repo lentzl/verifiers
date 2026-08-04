@@ -1,3 +1,4 @@
+import shlex
 from types import SimpleNamespace
 
 from verifiers.v1.harnesses.rlm.harness import RLMHarness, RLMHarnessConfig
@@ -23,5 +24,6 @@ async def test_rlm_setup_uses_configured_repository():
     await harness.setup(runtime)
 
     command = calls[0][0][-1]
-    assert "git clone 'https://github.com/example/rlm fork.git' /tmp/rlm" in command
-    assert "git -C /tmp/rlm checkout exact-commit" in command
+    install = shlex.split(command)[-1]
+    assert "git clone 'https://github.com/example/rlm fork.git' /tmp/rlm" in install
+    assert "git -C /tmp/rlm checkout exact-commit" in install

@@ -3912,6 +3912,38 @@ wheels = [
 ]
 
 [[package]]
+name = "reasoning-offload-composition-v1"
+version = "0.1.0"
+source = { editable = "environments/reasoning_offload_composition_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[[package]]
+name = "reasoning-offload-orientation-v1"
+version = "0.1.0"
+source = { editable = "environments/reasoning_offload_orientation_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[[package]]
+name = "reasoning-offload-skill-acquisition-v1"
+version = "0.1.0"
+source = { editable = "environments/reasoning_offload_skill_acquisition_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[[package]]
+name = "reasoning-offload-skill-learning-v1"
+version = "0.1.0"
+source = { editable = "environments/reasoning_offload_skill_learning_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4912,6 +4944,10 @@ examples = [
     { name = "kuhn-poker-v1" },
     { name = "openenv-wordle-v1" },
     { name = "proposer-solver-v1" },
+    { name = "reasoning-offload-composition-v1" },
+    { name = "reasoning-offload-orientation-v1" },
+    { name = "reasoning-offload-skill-acquisition-v1" },
+    { name = "reasoning-offload-skill-learning-v1" },
     { name = "reverse-text-v1" },
     { name = "scratchpad-v1" },
     { name = "wiki-search-v1" },

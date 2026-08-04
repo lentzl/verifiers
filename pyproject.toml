@@ -79,7 +79,9 @@ examples = [
     "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
     "proposer-solver-v1", "reverse-text-v1", "color-codeword-v1",
     "wordle-v1", "openenv-wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
-    "kuhn-poker-v1",
+    "kuhn-poker-v1", "reasoning-offload-orientation-v1",
+    "reasoning-offload-composition-v1", "reasoning-offload-skill-acquisition-v1",
+    "reasoning-offload-skill-learning-v1",
 ]
 
 [project.optional-dependencies]
@@ -133,6 +135,10 @@ color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
 kuhn-poker-v1 = { path = "environments/kuhn_poker_v1", editable = true }
+reasoning-offload-orientation-v1 = { path = "environments/reasoning_offload_orientation_v1", editable = true }
+reasoning-offload-composition-v1 = { path = "environments/reasoning_offload_composition_v1", editable = true }
+reasoning-offload-skill-acquisition-v1 = { path = "environments/reasoning_offload_skill_acquisition_v1", editable = true }
+reasoning-offload-skill-learning-v1 = { path = "environments/reasoning_offload_skill_learning_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # Bounded cutoffs for the explicitly requested tool upgrades.
