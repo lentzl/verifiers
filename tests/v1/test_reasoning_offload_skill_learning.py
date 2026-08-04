@@ -12,6 +12,7 @@ from reasoning_offload_skill_acquisition_v1.taskset import (
 )
 from reasoning_offload_skill_learning_v1.env import (
     ReasoningOffloadSkillLearningEnv,
+    _score_bounded_failure,
     author_task,
     consumer_task,
 )
@@ -102,6 +103,26 @@ def _trace(role: str, *, score: float | None = None) -> vf.Trace:
     if score is not None:
         trace.record_reward("exact_match", score)
     return trace
+
+
+def test_bounded_consumer_failure_becomes_a_scored_miss():
+    trace = _trace("baseline_user")
+    trace.ok = False
+    trace.errors.append(vf.Error(type="HarnessError", message="agent timeout"))
+
+    normalized = _score_bounded_failure(trace, 2)
+
+    assert normalized.ok
+    assert not normalized.errors
+    assert normalized.info["utility_case_index"] == 2
+    assert normalized.info["utility_arm_errors"] == [
+        {
+            "type": "HarnessError",
+            "message": "agent timeout",
+            "status_code": None,
+            "traceback": None,
+        }
+    ]
 
 
 def test_candidate_renders_only_the_portable_agent_skill_core():
@@ -306,6 +327,26 @@ async def test_author_reward_averages_marginal_utility_across_hidden_panel():
     assert author.metrics["utility_panel_size"] == 2.0
     assert author.metrics["baseline_correct"] == 0.5
     assert author.metrics["skill_user_correct"] == 0.5
+    assert author.metrics["utility_evaluation_complete"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_incomplete_baseline_suppresses_candidate_reward():
+    author = _trace("author")
+    author.info["skill_name"] = "compact-json"
+    skill_user = _trace("skill_user", score=1.0)
+    baseline = _trace("baseline_user", score=0.0)
+    baseline.info["utility_arm_errors"] = [
+        {"type": "HarnessError", "message": "agent timeout"}
+    ]
+    episode = vf.Episode(traces=[author, skill_user, baseline])
+    env = object.__new__(ReasoningOffloadSkillLearningEnv)
+
+    await env.finalize(_task(), episode)
+
+    assert author.rewards["skill_utility"].score == 0.0
+    assert author.metrics["utility_evaluation_complete"] == 0.0
+    assert "received no learning signal" in author.info["feedback"]
 
 
 @pytest.mark.asyncio

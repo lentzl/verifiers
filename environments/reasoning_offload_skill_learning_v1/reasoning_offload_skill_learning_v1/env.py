@@ -170,6 +170,19 @@ def _same_consumer_policy(left: vf.AgentConfig, right: vf.AgentConfig) -> bool:
     return all(getattr(left, field) == getattr(right, field) for field in fields)
 
 
+def _score_bounded_failure(trace: vf.Trace, index: int) -> vf.Trace:
+    """Turn a downstream budget failure into a scored miss, not an episode fault."""
+    trace.info["utility_case_index"] = index
+    if trace.ok:
+        return trace
+    trace.info["utility_arm_errors"] = [
+        error.model_dump(mode="json") for error in trace.errors
+    ]
+    trace.errors.clear()
+    trace.ok = True
+    return trace
+
+
 class ReasoningOffloadSkillLearningConfig(vf.EnvConfig):
     author: vf.AgentConfig = vf.AgentConfig(
         harness=NullHarnessConfig(id="null"),
@@ -196,7 +209,7 @@ class ReasoningOffloadSkillLearningEnv(vf.Env[ReasoningOffloadSkillLearningConfi
         super().__init__(config)
         for role in ("skill_user", "baseline_user"):
             if isinstance(getattr(self.config, role).runtime, vf.SubprocessConfig):
-                raise ValueError(f"{role} must run in an isolated container runtime")
+                raise TypeError(f"{role} must run in an isolated container runtime")
         if not _same_consumer_policy(config.skill_user, config.baseline_user):
             raise ValueError(
                 "skill_user and baseline_user must have identical policies, limits, "
@@ -212,8 +225,7 @@ class ReasoningOffloadSkillLearningEnv(vf.Env[ReasoningOffloadSkillLearningConfi
 
         async def run_baseline(index: int, utility_task: vf.Task) -> vf.Trace:
             trace = await agents.baseline_user.run(utility_task)
-            trace.info["utility_case_index"] = index
-            return trace
+            return _score_bounded_failure(trace, index)
 
         baseline_futures = [
             asyncio.create_task(run_baseline(index, utility_task))
@@ -241,8 +253,8 @@ class ReasoningOffloadSkillLearningEnv(vf.Env[ReasoningOffloadSkillLearningConfi
                         )
                         skill_trace.info["installed_skill"] = candidate.name
                         skill_trace.info["installed_skill_root"] = root
-                        skill_trace.info["utility_case_index"] = index
-                except Exception as exc:
+                        _score_bounded_failure(skill_trace, index)
+                except Exception as exc:  # noqa: BLE001 - score candidate failures
                     install_errors.append(f"{type(exc).__name__}: {exc}")
 
             await asyncio.gather(
@@ -310,14 +322,20 @@ class ReasoningOffloadSkillLearningEnv(vf.Env[ReasoningOffloadSkillLearningConfi
             raise ValueError("skill-learning episode is missing its author or baseline")
         author = authors[0]
 
-        case_indices = sorted(baselines)
+        observed_size = max((*baselines, *skill_users), default=-1) + 1
+        case_indices = list(range(max(len(utility_tasks(task)), observed_size)))
         baseline_scores = [self._score(baselines[index]) for index in case_indices]
         skill_scores = [self._score(skill_users.get(index)) for index in case_indices]
         baseline_score = self._mean(baseline_scores)
         skill_score = self._mean(skill_scores)
-        utility = self._mean(
+        raw_utility = self._mean(
             [skill - baseline for skill, baseline in zip(skill_scores, baseline_scores)]
         )
+        baseline_complete = len(baselines) == len(case_indices) and all(
+            index in baselines and "utility_arm_errors" not in baselines[index].info
+            for index in case_indices
+        )
+        utility = raw_utility if baseline_complete else 0.0
         package_valid = float(
             "skill_name" in author.info and "skill_install_error" not in author.info
         )
@@ -332,10 +350,17 @@ class ReasoningOffloadSkillLearningEnv(vf.Env[ReasoningOffloadSkillLearningConfi
                 "baseline_correct": baseline_score,
                 "skill_user_correct": skill_score,
                 "marginal_skill_utility": utility,
+                "utility_evaluation_complete": float(baseline_complete),
             }
         )
         author.record_reward("skill_utility", utility)
 
+        if not baseline_complete:
+            author.info["feedback"] = (
+                "The matched no-skill evaluation did not complete, so this candidate "
+                "received no learning signal."
+            )
+            return
         if "feedback" in author.info or utility > 0:
             return
         if skill_score < baseline_score:

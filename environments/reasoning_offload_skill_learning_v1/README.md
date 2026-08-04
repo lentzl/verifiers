@@ -19,6 +19,12 @@ receives zero and a harmful skill receives a negative score. Package validity,
 consultation rate, panel size, and both arm scores are retained as metrics. Invalid
 packages become non-leaking author feedback instead of failing the episode.
 
+A downstream agent that exhausts its configured execution budget is scored as an
+incorrect arm rather than failing every sibling trace in the episode. The original
+error remains in trace metadata. A failed skill user can therefore penalize the
+candidate, while a failed matched baseline suppresses the author reward because its
+marginal utility is not identifiable.
+
 The learned contract deliberately uses only the common Agent Skills core: a kebab-case
 directory, SKILL.md with name and description frontmatter, and progressively disclosed
 files under scripts/, references/, or assets/. The model does not author Prime Python
