@@ -1,0 +1,97 @@
+# First real orientation run. Consume this config with PrimeRL's `rl` entrypoint.
+# Four calibrated families provide non-zero within-group reward variance for the
+# untouched Qwen3.5-2B policy; state, verification, and repair remain held out
+# until the model can solve at least one rollout in those families.
+
+max_steps = 48
+seq_len = 8192
+output_dir = "/ephemeral/outputs/prime-agent-qwen35-orientation-r1"
+clean_output_dir = true
+
+[deployment]
+gpus_per_node = 1
+num_train_gpus = 1
+num_infer_gpus = 0
+
+[weight_broadcast]
+type = "filesystem"
+
+[ckpt]
+interval = 8
+keep_last = 2
+keep_interval = 24
+
+[file_monitor]
+filename = "metrics.jsonl"
+
+[model]
+name = "Qwen/Qwen3.5-2B"
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+freeze_vision_encoder = true
+
+[trainer.model]
+impl = "custom"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 16
+alpha = 32
+
+[trainer.optim]
+lr = 1e-5
+
+[orchestrator]
+batch_size = 16
+group_size = 4
+
+[orchestrator.model.client]
+base_url = ["http://127.0.0.1:8000/v1"]
+admin_base_url = ["http://127.0.0.1:8100/v1"]
+
+[orchestrator.train.sampling]
+temperature = 0.8
+max_completion_tokens = 2048
+
+[[orchestrator.train.source]]
+name = "prime-agent-orientation-core"
+
+[orchestrator.train.source.env.taskset]
+id = "reasoning-offload-orientation-v1"
+split = "train"
+families = ["direct", "inspection", "helper", "module"]
+instruction_level = "standard"
+instances_per_template = 4
+
+[orchestrator.train.source.env.agent]
+max_turns = 8
+max_output_tokens = 2048
+max_total_tokens = 8192
+
+[orchestrator.train.source.env.agent.timeout]
+setup = 300.0
+rollout = 300.0
+finalize = 60.0
+scoring = 60.0
+
+[orchestrator.train.source.env.agent.harness]
+id = "prime-agent"
+version = "0.7.0"
+max_depth = 0
+
+[orchestrator.train.source.env.agent.runtime]
+type = "docker"
+image = "python:3.11-slim"
+
+[orchestrator.train.source.serve.pool]
+type = "static"
+num_workers = 1
+
+[orchestrator.train.source.serve]
+max_concurrent = 4

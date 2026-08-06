@@ -1,0 +1,43 @@
+# Held-out capability calibration for Qwen3.5-2B running through Prime Agent.
+# Start an OpenAI-compatible server on port 8000, then run:
+#   uv run eval @ configs/reasoning_offload_orientation_prime_agent.toml
+
+model = "Qwen/Qwen3.5-2B"
+num_tasks = 14
+num_rollouts = 4
+max_concurrent = 4
+rich = false
+push = false
+
+[client]
+type = "eval"
+base_url = "http://127.0.0.1:8000/v1"
+
+[sampling]
+temperature = 0.8
+max_tokens = 2048
+
+[env.taskset]
+id = "reasoning-offload-orientation-v1"
+split = "eval"
+instances_per_template = 1
+
+[env.agent]
+max_turns = 8
+max_output_tokens = 2048
+max_total_tokens = 8192
+
+[env.agent.timeout]
+setup = 300.0
+rollout = 300.0
+finalize = 60.0
+scoring = 60.0
+
+[env.agent.harness]
+id = "prime-agent"
+version = "0.7.0"
+max_depth = 0
+
+[env.agent.runtime]
+type = "docker"
+image = "python:3.11-slim"
