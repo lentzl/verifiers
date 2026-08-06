@@ -65,6 +65,12 @@ uv run python deps/verifiers/scripts/merge_hf_lora_checkpoint.py \
   /ephemeral/models/qwen35-orientation-r1-merged
 ```
 
+The merge resolves the EOS ID by tokenizing the source tokenizer's declared EOS
+token, applies it to the merged model metadata, and validates every numeric
+`eos_token_id` in the exported JSON files. Do not upload a model if this
+validation fails; generation runtimes rely on these fields to stop at the chat
+template's assistant-turn boundary.
+
 Run these commands from the PrimeRL repository root after updating its
 `deps/verifiers` submodule. Install this environment into the same environment
 used by the PrimeRL orchestrator, then launch from that root so the configured
