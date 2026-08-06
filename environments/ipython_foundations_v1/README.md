@@ -7,10 +7,14 @@ three related requests.
 - `assignment` makes a deliberately silent assignment useful in a later call;
 - `state` removes the source file after the first request, forcing cross-turn reuse;
 - `recovery` raises a real schema error after loading data, then requires correction
-  with the state that survived the traceback.
+  with the state that survived the traceback;
+- `subprocess` preserves a downloaded document path, exposes a real nonzero process
+  result, and requires complete result inspection plus an error-directed CLI repair.
 
 Stream answer accuracy is the primary reward. A smaller notebook-semantics reward
 requires the family-specific state behavior and rejects consecutive identical cells.
+Subprocess streams also reject raw-byte PDF fallbacks and require the corrected
+`pdftotext` stdout convention.
 Training uses explicit operational scaffolding without revealing answers; held-out
 variants use standard instructions.
 
@@ -23,7 +27,7 @@ uv run eval ipython-foundations-v1 \
   --env.agent.harness.save-session true \
   --env.agent.runtime.type docker \
   --taskset.split eval \
-  -n 6
+  -n 8
 ```
 
 ## First Run

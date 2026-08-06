@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import random
 from dataclasses import dataclass
 from typing import Literal
 
-Family = Literal["assignment", "state", "recovery"]
-FAMILIES: tuple[Family, ...] = ("assignment", "state", "recovery")
+Family = Literal["assignment", "state", "recovery", "subprocess"]
+FAMILIES: tuple[Family, ...] = ("assignment", "state", "recovery", "subprocess")
 TRAIN_VARIANTS = range(4)
 EVAL_VARIANTS = range(4, 6)
 
@@ -150,10 +151,109 @@ def _recovery_stream(rng: random.Random, variant: int) -> GeneratedStream:
     return GeneratedStream(state_variable="rows", rounds=tuple(rounds))
 
 
+def _subprocess_stream(
+    rng: random.Random, variant: int, instance: int
+) -> GeneratedStream:
+    subjects = (
+        "harbor sensor calibration",
+        "orchard irrigation coverage",
+        "warehouse inventory sampling",
+        "wetland bird monitoring",
+        "rail platform accessibility",
+        "community heat-pump adoption",
+    )
+    subject = subjects[variant % len(subjects)]
+    observed = rng.randint(11, 27)
+    total = observed + rng.randint(2, 8)
+    title = f"Field Report {variant}-{instance}"
+    path_variable = ("pdf_path", "document_path")[variant % 2]
+    path = f"/workspace/inbox/report-{variant}-{instance}.pdf"
+    first_page = (
+        f"Title: {title}\n"
+        f"Subject: {subject}\n"
+        f"Finding: {observed} of {total} sampled sites met the target.\n"
+    )
+    document = first_page + "\fAppendix: calibration and sampling notes.\n"
+    malformed = (
+        "subprocess.run(['/workspace/bin/pdftotext', '-layout', '-text', "
+        f"{path_variable}], capture_output=True, text=True)"
+    )
+    return GeneratedStream(
+        state_variable=path_variable,
+        rounds=(
+            GeneratedRound(
+                instruction=(
+                    f"Store the already downloaded absolute document path `{path}` in "
+                    f"persistent variable `{path_variable}`, verify that it exists, and "
+                    "return the absolute path as a JSON string. Keep the variable for "
+                    "the extraction request that follows."
+                ),
+                explicit_operation=(
+                    f"Assign `{path_variable} = {path!r}` and display "
+                    f"`{{'path': {path_variable}, 'exists': Path({path_variable}).exists()}}` "
+                    "to verify the retained value. Return only the path JSON string."
+                ),
+                answer=path,
+                files={path: base64.b64encode(document.encode()).decode()},
+            ),
+            GeneratedRound(
+                instruction=(
+                    "Reuse the retained path and run the inherited malformed extraction "
+                    f"once with `{malformed}`. Because `check=False` is the default, inspect "
+                    "the returned process rather than assuming no exception means success. "
+                    "Return a JSON object containing its exact `returncode`, `stdout`, and "
+                    "`stderr`. Do not repeat or repair the command in this request."
+                ),
+                explicit_operation=(
+                    f"Execute `import subprocess; result = {malformed}` once, then "
+                    "display and return "
+                    "`{'returncode': result.returncode, 'stdout': result.stdout, "
+                    "'stderr': result.stderr}`. A nonzero return code is failure even "
+                    "though `subprocess.run` did not raise."
+                ),
+                answer={
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": (
+                        "I/O Error: Couldn't open file '-text': No such file or directory.\n"
+                    ),
+                },
+                files={},
+            ),
+            GeneratedRound(
+                instruction=(
+                    f"Preserve and reuse `{path_variable}`. Diagnose the failed invocation "
+                    "from its return code and stderr, then change the operation instead of "
+                    "repeating it: this `pdftotext`-compatible CLI takes an input path "
+                    "followed by an output path, with `-` selecting stdout. Extract the "
+                    "text successfully and return a structured JSON summary of the first "
+                    "page with keys `title`, `subject`, `observed`, and `total`. Prefer this "
+                    "evidence-based repair; do not try to decode raw PDF bytes."
+                ),
+                explicit_operation=(
+                    "Run a changed command equivalent to "
+                    f"`subprocess.run(['/workspace/bin/pdftotext', '-layout', {path_variable}, '-'], "
+                    "capture_output=True, text=True)`, verify all three process fields again, "
+                    "and parse its stdout only after `returncode == 0`."
+                ),
+                answer={
+                    "title": title,
+                    "subject": subject,
+                    "observed": observed,
+                    "total": total,
+                },
+                files={},
+            ),
+        ),
+    )
+
+
 def generate(family: Family, variant: int, instance: int, seed: int) -> GeneratedStream:
     rng = random.Random((seed * 1_000_003) + (variant * 10_007) + instance)
     if family == "assignment":
         return _assignment_stream(rng, variant)
     if family == "state":
         return _state_stream(rng, variant)
-    return _recovery_stream(rng, variant)
+    if family == "recovery":
+        return _recovery_stream(rng, variant)
+    return _subprocess_stream(rng, variant, instance)

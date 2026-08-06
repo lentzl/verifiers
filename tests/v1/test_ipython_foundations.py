@@ -1,7 +1,9 @@
 import json
+import subprocess
 
 import pytest
 from ipython_foundations_v1.taskset import (
+    PDFTOTEXT_COMPAT,
     IpythonFoundationsConfig,
     IpythonFoundationsTaskset,
     _behavior,
@@ -69,12 +71,13 @@ def test_taskset_balances_families_and_holds_out_variants():
         IpythonFoundationsConfig(split="eval", instances_per_template=1)
     ).load()
 
-    assert len(train) == 12
-    assert len(evaluation) == 6
+    assert len(train) == 16
+    assert len(evaluation) == 8
     assert {task.data.family for task in train} == {
         "assignment",
         "state",
         "recovery",
+        "subprocess",
     }
     assert {task.data.template_variant for task in train} == {0, 1, 2, 3}
     assert {task.data.template_variant for task in evaluation} == {4, 5}
@@ -94,6 +97,53 @@ def test_state_stream_removes_source_and_requires_later_notebook_reuse():
     assert not task.data.rounds[1].files
     assert not task.data.rounds[2].files
     assert "retained `records`" in task.data.rounds[2].instruction
+
+
+def test_subprocess_stream_preserves_path_and_requires_error_directed_repair():
+    task = next(
+        task
+        for task in IpythonFoundationsTaskset(
+            IpythonFoundationsConfig(instances_per_template=1)
+        ).load()
+        if task.data.family == "subprocess"
+    )
+
+    path = task.data.rounds[0].answer
+    assert "Title:" not in task.data.rounds[0].files[path]
+    assert task.data.rounds[1].answer["returncode"] == 1
+    assert "'-text'" in task.data.rounds[1].answer["stderr"]
+    assert not task.data.rounds[1].files
+    assert not task.data.rounds[2].files
+    assert "output path" in task.data.rounds[2].instruction
+    assert "raw PDF bytes" in task.data.rounds[2].instruction
+
+
+def test_pdftotext_fixture_exposes_real_failure_and_stdout_repair(tmp_path):
+    executable = tmp_path / "pdftotext"
+    executable.write_text(PDFTOTEXT_COMPAT)
+    executable.chmod(0o755)
+    source = tmp_path / "report.pdf"
+    source.write_text("VGl0bGU6IFJlcG9ydAo=")
+
+    failed = subprocess.run(
+        [executable, "-layout", "-text", source],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    repaired = subprocess.run(
+        [executable, "-layout", source, "-"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert failed.returncode == 1
+    assert failed.stdout == ""
+    assert "'-text'" in failed.stderr
+    assert repaired.returncode == 0
+    assert repaired.stdout == "Title: Report\n"
+    assert repaired.stderr == ""
 
 
 def test_explicit_scaffolding_describes_operations_without_leaking_answers():
@@ -140,6 +190,27 @@ def test_explicit_scaffolding_describes_operations_without_leaking_answers():
                 (0, "sum(row['amount'] for row in rows)", "2"),
             ],
         ),
+        (
+            "subprocess",
+            "pdf_path",
+            [
+                (
+                    0,
+                    "from pathlib import Path\npdf_path = '/workspace/inbox/report.pdf'\nPath(pdf_path).exists()",
+                    "True",
+                ),
+                (
+                    1,
+                    "result = subprocess.run(['pdftotext', '-layout', '-text', pdf_path], capture_output=True, text=True)\n{'returncode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}",
+                    "{'returncode': 1, 'stdout': '', 'stderr': \"I/O Error: Couldn't open file '-text'\"}",
+                ),
+                (
+                    2,
+                    "result = subprocess.run(['pdftotext', '-layout', pdf_path, '-'], capture_output=True, text=True)\n(result.returncode, result.stdout, result.stderr)",
+                    "(0, 'Title: Report', '')",
+                ),
+            ],
+        ),
     ],
 )
 def test_process_alignment_recognizes_family_specific_notebook_semantics(
@@ -150,6 +221,26 @@ def test_process_alignment_recognizes_family_specific_notebook_semantics(
     assert behavior["process_aligned"] == 1.0
     assert behavior["state_reused"] == 1.0
     assert behavior["identical_consecutive_calls"] == 0.0
+
+
+def test_subprocess_loop_and_raw_byte_fallback_are_not_rewarded():
+    failed = "result = subprocess.run(['pdftotext', '-text', pdf_path], capture_output=True, text=True)\n(result.returncode, result.stdout, result.stderr)"
+    trace = _trace(
+        [
+            (0, "pdf_path = '/workspace/inbox/report.pdf'", ""),
+            (1, failed, "(1, '', \"I/O Error: Couldn't open file '-text'\")"),
+            (1, failed, "(1, '', \"I/O Error: Couldn't open file '-text'\")"),
+            (1, "Path(pdf_path).read_bytes().decode()", "UnicodeDecodeError"),
+        ]
+    )
+
+    behavior = _behavior(trace, "subprocess", "pdf_path")
+
+    assert behavior["subprocess_result_observed"] == 1.0
+    assert behavior["identical_consecutive_calls"] == 1.0
+    assert behavior["subprocess_failure_retries"] == 1.0
+    assert behavior["raw_pdf_fallback_used"] == 1.0
+    assert behavior["process_aligned"] == 0.0
 
 
 def test_identical_empty_assignment_loop_is_not_rewarded():

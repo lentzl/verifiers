@@ -28,8 +28,40 @@ SYSTEM_PROMPT = (
     "does not mean the cell should be repeated. Inspect or use the retained variable in "
     "a later call. After a traceback, preserve any state created before the failing "
     "statement and correct only the failed operation. End each request with the requested "
-    "JSON value only, without Markdown or explanation."
+    "JSON value only, without Markdown or explanation. For subprocess results, always "
+    "inspect returncode, stdout, and stderr; check=False does not make a nonzero return "
+    "code successful. Use the reported error to change a failed operation instead of "
+    "repeating it, and choose fallbacks from evidence rather than bypassing structured "
+    "formats with raw-byte decoding."
 )
+
+PDFTOTEXT_COMPAT = r"""#!/usr/bin/env python3
+import base64
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if "-text" in args:
+    sys.stderr.write("I/O Error: Couldn't open file '-text': No such file or directory.\n")
+    raise SystemExit(1)
+
+positional = [arg for arg in args if arg != "-layout"]
+if not positional:
+    sys.stderr.write("Syntax Error: No input file specified.\n")
+    raise SystemExit(1)
+
+source = Path(positional[0])
+if not source.is_file():
+    sys.stderr.write(f"I/O Error: Couldn't open file '{source}': No such file or directory.\n")
+    raise SystemExit(1)
+
+text = base64.b64decode(source.read_bytes()).decode()
+output = positional[1] if len(positional) > 1 else str(source.with_suffix(".txt"))
+if output == "-":
+    sys.stdout.write(text)
+else:
+    Path(output).write_text(text)
+"""
 
 
 class FoundationRound(BaseModel):
@@ -138,9 +170,60 @@ def _name_contexts(code: str, name: str) -> tuple[bool, bool]:
     return assigned, loaded
 
 
+def _code_attributes(code: str) -> set[str]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+    return {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+
+
+def _uses_stdout_convention(code: str) -> bool:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    strings = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    return "pdftotext" in code and "-" in strings
+
+
+def _uses_raw_pdf_fallback(code: str) -> bool:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    attributes = {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    if attributes & {"read_bytes", "decode"}:
+        return True
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id != "open":
+            continue
+        mode = node.args[1] if len(node.args) > 1 else None
+        mode = next(
+            (keyword.value for keyword in node.keywords if keyword.arg == "mode"),
+            mode,
+        )
+        if (
+            isinstance(mode, ast.Constant)
+            and isinstance(mode.value, str)
+            and "b" in mode.value
+        ):
+            return True
+    return False
+
+
 def _behavior(trace: vf.Trace, family: Family, state_variable: str) -> dict[str, float]:
     events = _ipython_events(trace)
     contexts = [_name_contexts(event.code, state_variable) for event in events]
+    attributes = [_code_attributes(event.code) for event in events]
     assignment_indices = [
         index for index, (assigned, _) in enumerate(contexts) if assigned
     ]
@@ -180,10 +263,51 @@ def _behavior(trace: vf.Trace, family: Family, state_variable: str) -> dict[str,
     repeated = sum(
         left.code.strip() == right.code.strip() for left, right in pairwise(events)
     )
+    subprocess_observed = any(
+        {"returncode", "stdout", "stderr"} <= event_attributes
+        for event_attributes in attributes
+    )
+    subprocess_failure_index = next(
+        (
+            index
+            for index, event in enumerate(events)
+            if "returncode" in event.code
+            and "stderr" in event.code
+            and "I/O Error" in event.output
+        ),
+        None,
+    )
+    subprocess_failures = sum(
+        "pdftotext" in event.code and "I/O Error" in event.output for event in events
+    )
+    subprocess_failure_retries = max(subprocess_failures - 1, 0)
+    subprocess_revised = bool(
+        subprocess_failure_index is not None
+        and any(
+            index > subprocess_failure_index
+            and "pdftotext" in event.code
+            and event.code.strip() != events[subprocess_failure_index].code.strip()
+            for index, event in enumerate(events)
+        )
+    )
+    cli_stdout_used = any(
+        _uses_stdout_convention(event.code)
+        for index, event in enumerate(events)
+        if subprocess_failure_index is not None and index > subprocess_failure_index
+    )
+    raw_pdf_fallback = any(_uses_raw_pdf_fallback(event.code) for event in events)
     family_aligned = {
         "assignment": silent_assignment_recovered,
         "state": cross_turn_reuse,
         "recovery": recovered_after_error,
+        "subprocess": (
+            later_reuse is not None
+            and subprocess_observed
+            and subprocess_revised
+            and cli_stdout_used
+            and not raw_pdf_fallback
+            and subprocess_failure_retries == 0
+        ),
     }[family]
     return {
         "ipython_calls": float(len(events)),
@@ -193,6 +317,11 @@ def _behavior(trace: vf.Trace, family: Family, state_variable: str) -> dict[str,
         "cross_turn_state_reused": float(cross_turn_reuse),
         "error_observed": float(error_index is not None),
         "recovered_after_error": float(recovered_after_error),
+        "subprocess_result_observed": float(subprocess_observed),
+        "subprocess_operation_revised": float(subprocess_revised),
+        "subprocess_failure_retries": float(subprocess_failure_retries),
+        "cli_stdout_convention_used": float(cli_stdout_used),
+        "raw_pdf_fallback_used": float(raw_pdf_fallback),
         "identical_consecutive_calls": float(repeated),
         "process_aligned": float(family_aligned and repeated == 0),
     }
@@ -200,9 +329,17 @@ def _behavior(trace: vf.Trace, family: Family, state_variable: str) -> dict[str,
 
 class IpythonFoundationsTask(vf.Task[IpythonFoundationsData]):
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        result = await runtime.run(["mkdir", "-p", f"{WORKSPACE}/inbox"], {})
+        result = await runtime.run(
+            ["mkdir", "-p", f"{WORKSPACE}/inbox", f"{WORKSPACE}/bin"], {}
+        )
         if result.exit_code != 0:
             raise RuntimeError(f"workspace setup failed: {result.stderr[-500:]}")
+        await runtime.write(f"{WORKSPACE}/bin/pdftotext", PDFTOTEXT_COMPAT.encode())
+        executable = await runtime.run(
+            ["chmod", "755", f"{WORKSPACE}/bin/pdftotext"], {}
+        )
+        if executable.exit_code != 0:
+            raise RuntimeError(f"extractor setup failed: {executable.stderr[-500:]}")
 
     @vf.reward(weight=0.2)
     async def notebook_semantics(self, trace: vf.Trace) -> float:
