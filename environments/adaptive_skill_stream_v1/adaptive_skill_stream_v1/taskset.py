@@ -58,10 +58,12 @@ EXPLICIT_OPERATIONS: dict[Family, str] = {
         "dictionary. Reply with that dictionary as plain JSON immediately."
     ),
     "stable": (
-        "Orientation operation: in one IPython call load the graph and compute sorted "
-        "names satisfying name not in completed, name not in blocked, and "
-        "set(requirements[name]) <= set(completed). Retain that helper for later batches "
-        "and reply with its list immediately."
+        "Orientation operation: in one IPython call load the graph, iterate "
+        "`for name in graph['requirements']`, and compute sorted names satisfying "
+        "name not in completed, name not in blocked, and "
+        "set(requirements[name]) <= set(completed). Retain that helper for later "
+        "batches, print `json.dumps(result)`, and reply with that exact JSON list and "
+        "nothing else."
     ),
     "ephemeral": (
         "Orientation operation: in one IPython call load the payload and evaluate "
