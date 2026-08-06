@@ -64,7 +64,7 @@ uv run rl @ configs/debug/ipython-foundations/rl.toml \
   --output-dir /ephemeral/outputs/prime-agent-qwen35-ipython-foundations-smoke-r1
 ```
 
-The smoke gate must complete all four optimizer steps and the six held-out streams
+The smoke gate must complete all four optimizer steps and the ten held-out streams
 before the full 48-step recipe is launched. The colocated inference profile reserves
 `0.19` of the GPU, uses a 32768-token context, and enables rank-16 LoRA weight updates.
 The environment provides no installed task skill: this rung measures the model's use
