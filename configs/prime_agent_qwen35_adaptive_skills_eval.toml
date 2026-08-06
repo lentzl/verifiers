@@ -1,0 +1,55 @@
+# Six-task pre-training gate for the linked adaptation curriculum.
+
+model = "hf-final"
+num_tasks = 6
+num_rollouts = 1
+shuffle = false
+max_concurrent = 3
+verbose = false
+rich = false
+server = false
+push = false
+output_dir = "/ephemeral/evals/qwen35-adaptive-skills-baseline"
+
+[env]
+max_concurrent_agents = 1
+
+[env.taskset]
+id = "adaptive-skill-stream-v1"
+split = "eval"
+families = ["installed", "stable", "ephemeral"]
+instances_per_template = 1
+seed = 20260806
+
+[env.agent]
+max_turns = 24
+max_output_tokens = 8192
+max_total_tokens = 16384
+
+[env.agent.harness]
+id = "prime-agent"
+version = "0.7.0"
+save_session = true
+max_depth = 0
+skills = [
+  "deps/verifiers/environments/adaptive_skill_stream_v1/skills/portable_record_normalization",
+]
+
+[env.agent.runtime]
+type = "docker"
+image = "python:3.11-slim"
+
+[env.agent.timeout]
+setup = 300.0
+rollout = 600.0
+finalize = 60.0
+scoring = 60.0
+
+[client]
+base_url = "http://127.0.0.1:8000/v1"
+api_key_var = "PRIME_API_KEY"
+type = "eval"
+
+[sampling]
+temperature = 0.8
+max_tokens = 2048

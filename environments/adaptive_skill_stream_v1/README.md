@@ -33,6 +33,13 @@ uv run eval adaptive-skill-stream-v1 \
   -n 6
 ```
 
+On the rented training host, the reproducible pre-training gate is:
+
+```bash
+uv run eval @ \
+  deps/verifiers/configs/prime_agent_qwen35_adaptive_skills_eval.toml
+```
+
 ## First Real Run
 
 The starting checkpoint
