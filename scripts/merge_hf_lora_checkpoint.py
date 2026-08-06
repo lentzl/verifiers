@@ -52,7 +52,9 @@ def main() -> None:
     )
     from safetensors.torch import load_file
     from transformers import (
+        AutoConfig,
         AutoModelForCausalLM,
+        AutoModelForImageTextToText,
         AutoProcessor,
         AutoTokenizer,
     )
@@ -64,8 +66,15 @@ def main() -> None:
     if not base_name:
         raise ValueError("adapter_config.json does not declare base_model_name_or_path")
 
-    base = AutoModelForCausalLM.from_pretrained(
+    base_config = AutoConfig.from_pretrained(base_name, trust_remote_code=True)
+    model_class = (
+        AutoModelForImageTextToText
+        if hasattr(base_config, "vision_config")
+        else AutoModelForCausalLM
+    )
+    base = model_class.from_pretrained(
         base_name,
+        config=base_config,
         dtype=torch.bfloat16,
         trust_remote_code=True,
     )
