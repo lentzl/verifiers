@@ -260,6 +260,7 @@ def test_process_alignment_recognizes_family_specific_notebook_semantics(
     behavior = _behavior(_trace(calls), family, variable)
 
     assert behavior["process_aligned"] == 1.0
+    assert behavior["process_score"] == 1.0
     assert behavior["state_reused"] == 1.0
     assert behavior["identical_consecutive_calls"] == 0.0
 
@@ -281,6 +282,7 @@ def test_subprocess_loop_and_raw_byte_fallback_are_not_rewarded():
     assert behavior["identical_consecutive_calls"] == 1.0
     assert behavior["subprocess_failure_retries"] == 1.0
     assert behavior["raw_pdf_fallback_used"] == 1.0
+    assert 0.0 < behavior["process_score"] < 0.5
     assert behavior["process_aligned"] == 0.0
 
 
@@ -306,6 +308,7 @@ def test_recovery_process_reward_requires_feedback_repair_in_every_segment():
     assert behavior["recovery_error_segments"] == 2.0
     assert behavior["recovery_repaired_segments"] == 1.0
     assert behavior["recovery_round_coverage"] == pytest.approx(0.5)
+    assert behavior["process_score"] == pytest.approx(0.5)
     assert behavior["process_aligned"] == 0.0
 
 
@@ -322,7 +325,33 @@ def test_identical_empty_assignment_loop_is_not_rewarded():
 
     assert behavior["silent_assignment_recovered"] == 1.0
     assert behavior["identical_consecutive_calls"] == 1.0
+    assert behavior["process_score"] == pytest.approx(0.5)
     assert behavior["process_aligned"] == 0.0
+
+
+def test_reassigning_state_does_not_count_as_reuse():
+    trace = _trace(
+        [
+            (0, "values = [2, 3]", ""),
+            (1, "values = [4, 5]\nsum(values)", "9"),
+        ]
+    )
+
+    behavior = _behavior(trace, "state", "values")
+
+    assert behavior["state_reused"] == 0.0
+    assert behavior["cross_turn_state_reused"] == 0.0
+    assert behavior["process_score"] == 0.0
+
+
+def test_subprocess_process_score_requires_positive_milestones():
+    trace = _trace([(0, "pdf_path = '/workspace/inbox/report.pdf'", "")])
+
+    behavior = _behavior(trace, "subprocess", "pdf_path")
+
+    assert behavior["raw_pdf_fallback_used"] == 0.0
+    assert behavior["subprocess_failure_retries"] == 0.0
+    assert behavior["process_score"] == 0.0
 
 
 @pytest.mark.parametrize(

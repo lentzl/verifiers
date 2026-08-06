@@ -238,8 +238,13 @@ def _behavior(
     later_reuse = next(
         (
             index
-            for index, (_, loaded) in enumerate(contexts)
-            if loaded and first_assignment is not None and index > first_assignment
+            for index, (assigned, loaded) in enumerate(contexts)
+            if (
+                loaded
+                and not assigned
+                and first_assignment is not None
+                and index > first_assignment
+            )
         ),
         None,
     )
@@ -337,6 +342,33 @@ def _behavior(
         if subprocess_failure_index is not None and index > subprocess_failure_index
     )
     raw_pdf_fallback = any(_uses_raw_pdf_fallback(event.code) for event in events)
+    recovery_round_coverage = (
+        len(recovery_repaired_segments) / len(required_recovery_segments)
+        if required_recovery_segments
+        else 0.0
+    )
+    subprocess_progress = (
+        sum(
+            (
+                later_reuse is not None,
+                subprocess_observed,
+                subprocess_revised,
+                cli_stdout_used,
+            )
+        )
+        / 4
+    )
+    if raw_pdf_fallback:
+        subprocess_progress *= 0.5
+    if subprocess_failure_retries:
+        subprocess_progress /= subprocess_failure_retries + 1
+    family_progress = {
+        "assignment": float(silent_assignment_recovered),
+        "state": float(cross_turn_reuse),
+        "recovery": recovery_round_coverage,
+        "subprocess": subprocess_progress,
+    }[family]
+    process_score = family_progress / (repeated + 1)
     family_aligned = {
         "assignment": silent_assignment_recovered,
         "state": cross_turn_reuse,
@@ -362,17 +394,14 @@ def _behavior(
             sum(index is not None for index in recovery_error_indices.values())
         ),
         "recovery_repaired_segments": float(len(recovery_repaired_segments)),
-        "recovery_round_coverage": (
-            len(recovery_repaired_segments) / len(required_recovery_segments)
-            if required_recovery_segments
-            else 0.0
-        ),
+        "recovery_round_coverage": recovery_round_coverage,
         "subprocess_result_observed": float(subprocess_observed),
         "subprocess_operation_revised": float(subprocess_revised),
         "subprocess_failure_retries": float(subprocess_failure_retries),
         "cli_stdout_convention_used": float(cli_stdout_used),
         "raw_pdf_fallback_used": float(raw_pdf_fallback),
         "identical_consecutive_calls": float(repeated),
+        "process_score": process_score,
         "process_aligned": float(family_aligned and repeated == 0),
     }
 
@@ -391,7 +420,7 @@ class IpythonFoundationsTask(vf.Task[IpythonFoundationsData]):
         if executable.exit_code != 0:
             raise RuntimeError(f"extractor setup failed: {executable.stderr[-500:]}")
 
-    @vf.reward(weight=0.2)
+    @vf.reward(weight=1.0)
     async def notebook_semantics(self, trace: vf.Trace) -> float:
         behavior = _behavior(
             trace,
@@ -399,7 +428,7 @@ class IpythonFoundationsTask(vf.Task[IpythonFoundationsData]):
             self.data.state_variable,
             expected_segments=len(self.data.rounds),
         )
-        return behavior["process_aligned"]
+        return behavior["process_score"]
 
     @vf.metric
     async def notebook_behavior(self, trace: vf.Trace) -> dict[str, float]:
@@ -479,7 +508,7 @@ class IpythonFoundationsEnv(vf.SingleAgentEnv):
 
         total_rounds = len(task.data.rounds)
         padded = [*scores, *([0.0] * (total_rounds - len(scores)))]
-        trace.record_reward("stream_accuracy", sum(padded) / total_rounds)
+        trace.record_reward("stream_accuracy", sum(padded) / total_rounds, weight=0.5)
         trace.record_metric("first_request_correct", float(padded[0] == 1.0))
         trace.record_metric("final_request_correct", float(padded[-1] == 1.0))
         trace.record_metric("completed_stream", float(len(scores) == total_rounds))

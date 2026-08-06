@@ -11,10 +11,13 @@ three related requests.
 - `subprocess` preserves a downloaded document path, exposes a real nonzero process
   result, and requires complete result inspection plus an error-directed CLI repair.
 
-Stream answer accuracy is the primary reward. A smaller notebook-semantics reward
-requires the family-specific state behavior and rejects consecutive identical cells.
-Subprocess streams also reject raw-byte PDF fallbacks and require the corrected
-`pdftotext` stdout convention.
+Notebook process is the primary reward; answer accuracy has half its weight. The
+process score gives partial credit for completed repair stages and discounts repeated
+unchanged cells, while `process_aligned` remains the strict diagnostic. This prevents
+correct answers produced by rereading or recomputing from dominating trajectories that
+actually use persistent state. Subprocess streams also penalize raw-byte PDF fallbacks
+and repeated failures while rewarding complete result inspection, a changed operation,
+and the corrected `pdftotext` stdout convention.
 Training uses explicit operational scaffolding without revealing answers; held-out
 variants use standard instructions.
 
@@ -56,16 +59,19 @@ uv run inference @ \
 ```
 
 After the inference router is healthy on port 8000 and its engine is healthy on
-port 8100, launch the bounded smoke:
+port 8100, evaluate the held-out continuity tasks and launch the bounded smoke:
 
 ```bash
-uv run rl @ configs/debug/ipython-foundations/rl.toml \
+uv run eval @ \
+  deps/verifiers/configs/prime_agent_qwen35_ipython_continuity_eval.toml
+uv run rl @ configs/debug/ipython-foundations/continuity-rl.toml \
   --max-steps 4 \
-  --output-dir /ephemeral/outputs/prime-agent-qwen35-ipython-foundations-smoke-r1
+  --output-dir /ephemeral/outputs/prime-agent-qwen35-ipython-continuity-smoke-r1
 ```
 
-The smoke gate must complete all four optimizer steps and the ten held-out streams
-before the full 48-step recipe is launched. The colocated inference profile reserves
-`0.19` of the GPU, uses a 32768-token context, and enables rank-16 LoRA weight updates.
-The environment provides no installed task skill: this rung measures the model's use
-of Prime Agent's native persistent IPython kernel.
+The continuity smoke gate must complete all four optimizer steps and improve held-out
+cross-turn state reuse or silent-assignment recovery before the 16-step recipe is
+launched. Recovery and subprocess families are introduced only after that gate. The
+colocated inference profile reserves `0.19` of the GPU and enables rank-16 LoRA weight
+updates. The environment provides no installed task skill: this rung measures the
+model's use of Prime Agent's native persistent IPython kernel.
