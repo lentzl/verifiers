@@ -14,7 +14,7 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RenderedTokens, Renderer, RendererConfig
 
 from verifiers.v1.clients.base import build_async_openai
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
+from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.configs.client import TrainClientConfig
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
 from verifiers.v1.dialects.chat import message_to_wire
@@ -93,6 +93,44 @@ def serialize_completion(response: Response, model: str) -> dict:
         ],
         "usage": usage,
     }
+
+
+def serialize_completion_stream(response: Response, model: str) -> tuple[bytes, ...]:
+    """Serialize a generated response as a buffered Chat Completions SSE stream."""
+    completion = serialize_completion(response, model)
+    choice = completion["choices"][0]
+    delta = choice["message"]
+    if tool_calls := delta.get("tool_calls"):
+        delta["tool_calls"] = [
+            {"index": index, **tool_call} for index, tool_call in enumerate(tool_calls)
+        ]
+    head = {
+        "id": completion["id"],
+        "object": "chat.completion.chunk",
+        "created": completion["created"],
+        "model": completion["model"],
+    }
+    events = (
+        {
+            **head,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+        },
+        {
+            **head,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": choice["finish_reason"],
+                }
+            ],
+            "usage": completion["usage"],
+        },
+    )
+    return tuple(
+        b"data: " + json.dumps(event, separators=(",", ":")).encode() + b"\n\n"
+        for event in events
+    ) + (b"data: [DONE]\n\n",)
 
 
 def response_from_generate(
@@ -433,6 +471,40 @@ class TrainClient(Client):
         # interception server hands `Response.raw` back regardless of client.
         response.raw = serialize_completion(response, model)
         return response
+
+    async def relay(
+        self,
+        dialect: Dialect,
+        body: dict,
+        model: str,
+        sampling_args: SamplingConfig,
+        session_id: str | None = None,
+        turn: PendingTurn | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> RelayReply:
+        response = await self.get_response(
+            dialect,
+            body,
+            model,
+            sampling_args,
+            session_id=session_id,
+            turn=turn,
+            headers=headers,
+        )
+
+        async def chunks() -> AsyncIterator[bytes]:
+            for chunk in serialize_completion_stream(response, model):
+                yield chunk
+
+        async def close() -> None:
+            pass
+
+        return RelayReply(
+            content_type="text/event-stream",
+            chunks=chunks(),
+            close=close,
+            response=response,
+        )
 
     async def close(self) -> None:
         await self.client.close()

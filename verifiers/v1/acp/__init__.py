@@ -284,6 +284,10 @@ class ACPHarnessSession(HarnessSession):
                 await run_shielded(self._stop(graceful=False))
                 raise
         if not response.get("ok"):
+            if self.trace.stop_condition is not None:
+                # The interception server refused this model call intentionally. Match the
+                # base harness contract: a framework stop ends the segment without failing it.
+                return ProgramResult(exit_code=0, stdout="", stderr="")
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"

@@ -39,7 +39,7 @@ class PrimeAgentResumeEnv(vf.SingleAgentEnv):
             ]
 
 
-class PrimeAgentResumeTaskset(vf.Taskset):
+class PrimeAgentResumeTaskset(vf.Taskset[PrimeAgentResumeTask, vf.TasksetConfig]):
     def load(self) -> list[PrimeAgentResumeTask]:
         return [
             PrimeAgentResumeTask(

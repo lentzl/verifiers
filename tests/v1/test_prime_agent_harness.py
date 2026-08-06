@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from prime_agent_acp_resume_v1 import PrimeAgentResumeTask, PrimeAgentResumeTaskset
 
 from verifiers.v1.acp import ACP_SOURCE, ACPHarnessSession, _new_segment, _packet
 from verifiers.v1.harnesses.prime_agent.harness import (
@@ -25,6 +26,10 @@ from verifiers.v1.harnesses.prime_agent.harness import (
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import AssistantMessage, UserMessage
+
+
+def test_prime_agent_resume_taskset_preserves_scoring_type() -> None:
+    assert PrimeAgentResumeTaskset.task_type() is PrimeAgentResumeTask
 
 
 def test_trace_root_encodes_untrusted_trace_id() -> None:
@@ -303,6 +308,58 @@ async def test_acp_reader_ignores_process_keepalives() -> None:
     result = await session._run(None)
 
     assert result.stdout == "finished"
+
+
+@pytest.mark.asyncio
+async def test_acp_session_treats_framework_stop_as_clean_termination() -> None:
+    async def stream(*chunks: bytes):
+        for chunk in chunks:
+            yield chunk
+
+    class Process:
+        stdout = stream(
+            _packet(
+                {
+                    "ok": False,
+                    "error": "RuntimeError: rollout stopped: max_turns",
+                }
+            )
+        )
+        stderr = stream()
+
+        async def write(self, data: bytes) -> None:
+            del data
+
+    class Runtime:
+        async def prepare_uv_script(self, source: str, env: dict[str, str]):
+            del source, env
+            return ["acp-runner"]
+
+        async def open_process(self, argv: list[str], env: dict[str, str]):
+            del argv, env
+            return Process()
+
+    trace = Trace.model_construct(id="trace", stop_condition="max_turns")
+    session = ACPHarnessSession(
+        SimpleNamespace(config=SimpleNamespace(id="prime-agent")),
+        SimpleNamespace(),
+        trace,
+        Runtime(),
+        "http://intercept",
+        "secret",
+        {},
+        TaskData(prompt="hello"),
+        env={},
+        command=["prime-agent", "--mode", "acp"],
+        prompt="hello",
+        system_prompt=None,
+    )
+
+    result = await session._run(None)
+
+    assert result.exit_code == 0
+    assert result.stdout == ""
+    assert session._completed_turns == 0
 
 
 @pytest.mark.asyncio
