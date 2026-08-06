@@ -72,9 +72,10 @@ def test_taskset_balances_families_and_holds_out_variants():
         IpythonFoundationsConfig(split="eval", instances_per_template=1)
     ).load()
 
-    assert len(train) == 16
-    assert len(evaluation) == 10
+    assert len(train) == 20
+    assert len(evaluation) == 12
     assert {task.data.family for task in train} == {
+        "completion",
         "assignment",
         "state",
         "recovery",
@@ -91,7 +92,37 @@ def test_taskset_balances_families_and_holds_out_variants():
         for task in evaluation
         if task.data.family == "recovery"
     } == {4, 5, 6, 7}
-    assert all(len(task.data.rounds) == 3 for task in [*train, *evaluation])
+    assert all(
+        len(task.data.rounds) == (1 if task.data.family == "completion" else 3)
+        for task in [*train, *evaluation]
+    )
+
+
+def test_round_limit_isolates_single_request_assignment_rung():
+    tasks = IpythonFoundationsTaskset(
+        IpythonFoundationsConfig(
+            families=("assignment",),
+            rounds_per_task=1,
+            instances_per_template=1,
+        )
+    ).load()
+
+    assert len(tasks) == 4
+    assert all(len(task.data.rounds) == 1 for task in tasks)
+
+
+def test_completion_stream_requires_one_result_then_immediate_answer():
+    task = next(
+        task
+        for task in IpythonFoundationsTaskset(
+            IpythonFoundationsConfig(instances_per_template=1)
+        ).load()
+        if task.data.family == "completion"
+    )
+
+    assert len(task.data.rounds) == 1
+    assert "one IPython call" in task.data.rounds[0].instruction
+    assert "return" in task.data.rounds[0].explicit_operation
 
 
 def test_state_stream_removes_source_and_requires_later_notebook_reuse():
@@ -203,6 +234,11 @@ def test_explicit_scaffolding_describes_operations_without_leaking_answers():
     ("family", "variable", "calls"),
     [
         (
+            "completion",
+            "result",
+            [(0, "sum([2, 3])", "5")],
+        ),
+        (
             "assignment",
             "values",
             [
@@ -261,7 +297,7 @@ def test_process_alignment_recognizes_family_specific_notebook_semantics(
 
     assert behavior["process_aligned"] == 1.0
     assert behavior["process_score"] == 1.0
-    assert behavior["state_reused"] == 1.0
+    assert behavior["state_reused"] == float(family != "completion")
     assert behavior["identical_consecutive_calls"] == 0.0
 
 
@@ -312,6 +348,17 @@ def test_recovery_process_reward_requires_feedback_repair_in_every_segment():
     assert behavior["process_aligned"] == 0.0
 
 
+def test_completion_process_reward_decays_when_agent_keeps_calling_ipython():
+    trace = _trace([(0, "sum([2, 3])", "5")] * 4)
+
+    behavior = _behavior(trace, "completion", "result")
+
+    assert behavior["successful_result_observed"] == 1.0
+    assert behavior["ipython_call_efficiency"] == pytest.approx(0.25)
+    assert behavior["process_score"] == pytest.approx(1 / 16)
+    assert behavior["process_aligned"] == 0.0
+
+
 def test_identical_empty_assignment_loop_is_not_rewarded():
     trace = _trace(
         [
@@ -325,7 +372,7 @@ def test_identical_empty_assignment_loop_is_not_rewarded():
 
     assert behavior["silent_assignment_recovered"] == 1.0
     assert behavior["identical_consecutive_calls"] == 1.0
-    assert behavior["process_score"] == pytest.approx(0.5)
+    assert behavior["process_score"] == pytest.approx(1 / 3)
     assert behavior["process_aligned"] == 0.0
 
 

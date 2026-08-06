@@ -342,6 +342,22 @@ def _behavior(
         if subprocess_failure_index is not None and index > subprocess_failure_index
     )
     raw_pdf_fallback = any(_uses_raw_pdf_fallback(event.code) for event in events)
+    successful_result_observed = any(
+        event.output.strip()
+        and "Traceback" not in event.output
+        and "Error" not in event.output
+        for event in events
+    )
+    observed_segments = max(len(active_segments), 1)
+    expected_rounds = expected_segments or observed_segments
+    efficient_call_budget = {
+        "completion": expected_rounds,
+        "assignment": 2 * expected_rounds,
+        "state": expected_rounds,
+        "recovery": 3 * expected_rounds,
+        "subprocess": expected_rounds,
+    }[family]
+    call_efficiency = min(efficient_call_budget / max(len(events), 1), 1.0)
     recovery_round_coverage = (
         len(recovery_repaired_segments) / len(required_recovery_segments)
         if required_recovery_segments
@@ -363,13 +379,15 @@ def _behavior(
     if subprocess_failure_retries:
         subprocess_progress /= subprocess_failure_retries + 1
     family_progress = {
+        "completion": float(successful_result_observed),
         "assignment": float(silent_assignment_recovered),
         "state": float(cross_turn_reuse),
         "recovery": recovery_round_coverage,
         "subprocess": subprocess_progress,
     }[family]
-    process_score = family_progress / (repeated + 1)
+    process_score = family_progress * call_efficiency / (repeated + 1)
     family_aligned = {
+        "completion": successful_result_observed and len(events) == expected_rounds,
         "assignment": silent_assignment_recovered,
         "state": cross_turn_reuse,
         "recovery": recovery_rounds_aligned,
@@ -401,8 +419,12 @@ def _behavior(
         "cli_stdout_convention_used": float(cli_stdout_used),
         "raw_pdf_fallback_used": float(raw_pdf_fallback),
         "identical_consecutive_calls": float(repeated),
+        "successful_result_observed": float(successful_result_observed),
+        "ipython_call_efficiency": call_efficiency,
         "process_score": process_score,
-        "process_aligned": float(family_aligned and repeated == 0),
+        "process_aligned": float(
+            family_aligned and repeated == 0 and len(events) <= efficient_call_budget
+        ),
     }
 
 
@@ -519,6 +541,7 @@ class IpythonFoundationsConfig(vf.TasksetConfig):
     families: tuple[Family, ...] = Field(FAMILIES, min_length=1)
     instruction_level: Literal["standard", "explicit"] = "standard"
     instances_per_template: int = Field(4, ge=1)
+    rounds_per_task: int | None = Field(None, ge=1)
     seed: int = 20260806
 
 
@@ -541,6 +564,7 @@ class IpythonFoundationsTaskset(
         for instance in range(self.config.instances_per_template):
             for family, variant in templates:
                 generated = generate(family, variant, instance, self.config.seed)
+                rounds = generated.rounds[: self.config.rounds_per_task]
                 tasks.append(
                     IpythonFoundationsTask(
                         IpythonFoundationsData(
@@ -562,7 +586,7 @@ class IpythonFoundationsTaskset(
                                     remove_after=round_.remove_after,
                                     recovery_kind=round_.recovery_kind,
                                 )
-                                for round_ in generated.rounds
+                                for round_ in rounds
                             ),
                         ),
                         self.config.task,

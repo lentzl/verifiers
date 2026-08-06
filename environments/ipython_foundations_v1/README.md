@@ -1,9 +1,10 @@
 # ipython-foundations-v1
 
 This curriculum trains the notebook semantics that later Prime Agent capabilities
-depend on. Each rollout keeps one Prime Agent session and IPython kernel alive across
-three related requests.
+depend on. The first two families isolate one-request control behavior; the remaining
+families keep one Prime Agent session and IPython kernel alive across related requests.
 
+- `completion` obtains one non-empty IPython result and returns it immediately;
 - `assignment` makes a deliberately silent assignment useful in a later call;
 - `state` removes the source file after the first request, forcing cross-turn reuse;
 - `recovery` executes stale Python operations, exposes their real IPython errors, and
@@ -13,7 +14,8 @@ three related requests.
 
 Notebook process is the primary reward; answer accuracy has half its weight. The
 process score gives partial credit for completed repair stages and discounts repeated
-unchanged cells, while `process_aligned` remains the strict diagnostic. This prevents
+unchanged cells and unnecessary extra calls, while `process_aligned` remains the strict
+diagnostic. This prevents
 correct answers produced by rereading or recomputing from dominating trajectories that
 actually use persistent state. Subprocess streams also penalize raw-byte PDF fallbacks
 and repeated failures while rewarding complete result inspection, a changed operation,
@@ -69,9 +71,11 @@ uv run rl @ configs/debug/ipython-foundations/continuity-rl.toml \
   --output-dir /ephemeral/outputs/prime-agent-qwen35-ipython-continuity-smoke-r1
 ```
 
-The continuity smoke gate must complete all four optimizer steps and improve held-out
-cross-turn state reuse or silent-assignment recovery before the 16-step recipe is
-launched. Recovery and subprocess families are introduced only after that gate. The
+The foundations are trained as three separate gates: immediate completion, one-request
+silent assignment recovery, and cross-request state reuse. Each next rung starts from
+the previous rung's merged weight snapshot only after held-out standard-instruction
+evaluation improves its family-specific process metric without increasing tool calls.
+Recovery and subprocess families are introduced only after all three gates. The
 colocated inference profile reserves `0.19` of the GPU and enables rank-16 LoRA weight
 updates. The environment provides no installed task skill: this rung measures the
 model's use of Prime Agent's native persistent IPython kernel.

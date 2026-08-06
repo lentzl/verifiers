@@ -10,8 +10,14 @@ from typing import Literal
 
 from ipython_foundations_v1.python_recovery_cases import generate_recovery_case
 
-Family = Literal["assignment", "state", "recovery", "subprocess"]
-FAMILIES: tuple[Family, ...] = ("assignment", "state", "recovery", "subprocess")
+Family = Literal["completion", "assignment", "state", "recovery", "subprocess"]
+FAMILIES: tuple[Family, ...] = (
+    "completion",
+    "assignment",
+    "state",
+    "recovery",
+    "subprocess",
+)
 TRAIN_VARIANTS = range(4)
 EVAL_VARIANTS = range(4, 6)
 RECOVERY_EVAL_VARIANTS = range(4, 8)
@@ -35,6 +41,33 @@ class GeneratedStream:
 
 def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _completion_stream(rng: random.Random, variant: int) -> GeneratedStream:
+    values = [rng.randint(-30, 50) for _ in range(6)]
+    offset = rng.randint(2, 9)
+    answer = sum((index + offset) * value for index, value in enumerate(values))
+    expression = (
+        f"sum((index + {offset}) * value for index, value in enumerate({values!r}))"
+    )
+    return GeneratedStream(
+        state_variable="result",
+        rounds=(
+            GeneratedRound(
+                instruction=(
+                    "Use one IPython call to evaluate the requested position-weighted "
+                    f"calculation `{expression}`. Once IPython displays the result, stop "
+                    "calling tools and return that integer as JSON immediately."
+                ),
+                explicit_operation=(
+                    f"Execute exactly `{expression}` once. Its non-empty IPython output "
+                    "is the result; return it immediately without another tool call."
+                ),
+                answer=answer,
+                files={},
+            ),
+        ),
+    )
 
 
 def _assignment_stream(rng: random.Random, variant: int) -> GeneratedStream:
@@ -238,6 +271,8 @@ def _subprocess_stream(
 
 def generate(family: Family, variant: int, instance: int, seed: int) -> GeneratedStream:
     rng = random.Random((seed * 1_000_003) + (variant * 10_007) + instance)
+    if family == "completion":
+        return _completion_stream(rng, variant)
     if family == "assignment":
         return _assignment_stream(rng, variant)
     if family == "state":
