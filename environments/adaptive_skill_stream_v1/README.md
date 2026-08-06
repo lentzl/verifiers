@@ -71,9 +71,14 @@ used by the PrimeRL orchestrator, then launch from that root so the configured
 skill path resolves correctly:
 
 ```bash
+uv sync --all-extras
 uv pip install -e deps/verifiers/environments/adaptive_skill_stream_v1
 uv run rl @ deps/verifiers/configs/prime_agent_qwen35_adaptive_skills_r2.toml
 ```
+
+The `--all-extras` setup is required on x86_64 CUDA hosts. In particular, the
+trainer imports `ring_flash_attn`, which imports `flash_attn` during startup.
+A core-only sync can pass configuration validation but fail before model loading.
 
 The run uses BF16 model and reduction dtypes, rank-16 LoRA, one GPU, and no
 recursive child agents. The Qwen3.5 renderer is pinned with thinking disabled;
@@ -92,3 +97,24 @@ do not serve vanilla Qwen plus the old orientation adapter, because vLLM cannot
 stack that adapter underneath the fresh training adapter. Set the server's model
 context length to at least 32768; the four-batch Prime Agent trajectory does not
 fit the orientation server's earlier 8192-token limit.
+
+When the model is served from a local path, specify
+`--model.tool-call-parser qwen3_coder`. Automatic parser selection cannot infer
+Qwen from the path, and harness-based evals otherwise receive an HTTP 400 for
+`tool_choice="auto"`. PrimeRL training uses its direct renderer client and does
+not expose this omission, so retain the held-out eval as a setup gate.
+
+## First Smoke Result
+
+The four-step GRPO gate on 2026-08-06 completed on one RTX 6000 Ada in 37
+minutes. All four optimizer steps were finite, mismatch KL stayed at or below
+0.0002, peak trainer memory was 10.1 GiB, and no rollout errored. Two initially
+sampled batches had zero within-group advantage and were safely resampled.
+
+On the six held-out `standard` tasks, mean stream accuracy increased from about
+0.02 before training to 0.25 after Step 4. Installed-skill transfer improved
+most; stable-procedure transfer produced one partially correct stream. Ephemeral
+adaptation remained at zero, and no rollout authored a valid portable skill.
+This validates the end-to-end training path but also sets the next gate: increase
+reward density and bootstrap evidence-based skill promotion before committing to
+the 64-step recipe.
