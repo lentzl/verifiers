@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from adaptive_skill_stream_v1.taskset import (
+    SYSTEM_PROMPT,
     AdaptiveSkillStreamConfig,
     AdaptiveSkillStreamData,
     AdaptiveSkillStreamTask,
@@ -118,6 +119,13 @@ def test_generated_streams_have_distinct_persistence_contracts():
 )
 def test_extract_answer_requires_json(reply, expected):
     assert _extract_answer(reply) == expected
+
+
+def test_system_prompt_uses_plain_json_without_colliding_with_tool_parser():
+    assert "JSON value only" in SYSTEM_PROMPT
+    assert "<answer>" not in SYSTEM_PROMPT
+    assert "future batches do not exist" in SYSTEM_PROMPT
+    assert "never call tools named answer" in SYSTEM_PROMPT
 
 
 def test_frontier_promotion_requires_portable_metadata_and_procedure():

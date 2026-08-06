@@ -23,14 +23,17 @@ FRONTMATTER_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 WORKSPACE = "/workspace"
 SKILLS_ROOT = f"{WORKSPACE}/.agents/skills"
 SYSTEM_PROMPT = (
-    "Treat this conversation as one continuing project session. Use the coding "
-    "environment and persistent IPython state to solve each batch, and use concise "
-    "validator feedback to improve later attempts. Prefer an applicable installed "
-    "skill over recreating it. Keep task-specific discoveries local. Only after a "
-    "procedure has demonstrated stable reuse, promote it as a standard Agent Skill "
-    "package under /workspace/.agents/skills/<name>/SKILL.md so future OpenAI, "
-    "Anthropic, and Prime-compatible agents can discover it. End every batch with "
-    "exactly one JSON value inside <answer> tags."
+    "Treat this conversation as one continuing project session. Each user message "
+    "introduces exactly one current batch; future batches do not exist until after "
+    "you answer, so never search for them. Use the coding environment and persistent "
+    "IPython state to solve the current batch, with at most three concise IPython "
+    "calls before answering. IPython is the only tool: never call tools named answer "
+    "or tool. Prefer an applicable installed skill over recreating it. Keep "
+    "task-specific discoveries local. Only after a procedure has demonstrated stable "
+    "reuse, promote it as a standard Agent Skill package under "
+    "/workspace/.agents/skills/<name>/SKILL.md so future OpenAI, Anthropic, and "
+    "Prime-compatible agents can discover it. End every batch by replying with the "
+    "JSON value only, without XML tags, Markdown, analysis, or explanation."
 )
 
 
@@ -260,9 +263,9 @@ def _round_prompt(
     parts = []
     if previous_correct is None:
         parts.append(
-            "We will process four related batches in this project session. Read "
-            "/workspace/PROJECT_CONTEXT.md before deciding what should remain local "
-            "and what, if anything, is durable."
+            "Related batches will arrive sequentially, one per user message. Only the "
+            "current batch file exists now. Read /workspace/PROJECT_CONTEXT.md before "
+            "deciding what should remain local and what, if anything, is durable."
         )
     else:
         verdict = "passed" if previous_correct else "failed"

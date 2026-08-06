@@ -12,6 +12,9 @@ correctness is the primary reward. A smaller lifecycle reward checks whether an
 installed skill was reused, a stable frontier procedure was packaged with valid
 `SKILL.md` metadata, or an ephemeral codebook was correctly left unpromoted.
 Calls to Prime Agent's `refine` skill and continual-harness CRUD are metrics only.
+Answers are plain JSON rather than XML-tagged: Qwen3.5's native tool parser treats
+an `<answer>` element as a tool invocation, which prevents Prime Agent from
+yielding a final textual reply.
 
 The promoted artifact uses the common `.agents/skills/<name>/SKILL.md` layout and
 the portable Agent Skills frontmatter shared by current OpenAI, Anthropic, and
@@ -80,4 +83,6 @@ As in the one-GPU orientation run, the TOML expects a separately launched
 OpenAI-compatible student server at ports 8000/8100. For the real run, serve
 `/ephemeral/models/qwen35-orientation-r1-merged` as the base with LoRA enabled;
 do not serve vanilla Qwen plus the old orientation adapter, because vLLM cannot
-stack that adapter underneath the fresh training adapter.
+stack that adapter underneath the fresh training adapter. Set the server's model
+context length to at least 32768; the four-batch Prime Agent trajectory does not
+fit the orientation server's earlier 8192-token limit.

@@ -2,7 +2,7 @@
 # merge the orientation adapter as documented in the environment README.
 
 max_steps = 64
-seq_len = 16384
+seq_len = 32768
 output_dir = "/ephemeral/outputs/prime-agent-qwen35-adaptive-skills-r2"
 clean_output_dir = true
 
@@ -75,8 +75,8 @@ instances_per_template = 4
 
 [orchestrator.train.source.env.agent]
 max_turns = 24
-max_output_tokens = 8192
-max_total_tokens = 16384
+max_output_tokens = 16384
+max_total_tokens = 32768
 
 [orchestrator.train.source.env.agent.timeout]
 setup = 300.0
