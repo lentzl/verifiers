@@ -60,8 +60,17 @@ uv run rl @ deps/verifiers/configs/prime_agent_qwen35_adaptive_skills_r2.toml
 ```
 
 The run uses BF16 model and reduction dtypes, rank-16 LoRA, one GPU, and no
-recursive child agents. `save_session = true` gives Prime Agent a real
-session-local continual harness; every rollout remains isolated and the task
-harvests its harness metrics before cleanup. Four batches per rollout make this
-materially more expensive than the orientation curriculum, so the first gate is
-a six-task held-out eval and a short four-step smoke run before all 64 steps.
+recursive child agents. The Qwen3.5 renderer is pinned with thinking disabled;
+the local merged model path cannot be auto-mapped, and the 2B checkpoint's
+Instruct-style default is the concise behavior we intend to preserve.
+`save_session = true` gives Prime Agent a real session-local continual harness;
+every rollout remains isolated and the task harvests its harness metrics before
+cleanup. Four batches per rollout make this materially more expensive than the
+orientation curriculum, so the first gate is a six-task held-out eval and a
+short four-step smoke run before all 64 steps.
+
+As in the one-GPU orientation run, the TOML expects a separately launched
+OpenAI-compatible student server at ports 8000/8100. For the real run, serve
+`/ephemeral/models/qwen35-orientation-r1-merged` as the base with LoRA enabled;
+do not serve vanilla Qwen plus the old orientation adapter, because vLLM cannot
+stack that adapter underneath the fresh training adapter.
