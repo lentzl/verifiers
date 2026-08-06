@@ -20,8 +20,10 @@ correct answers produced by rereading or recomputing from dominating trajectorie
 actually use persistent state. Subprocess streams also penalize raw-byte PDF fallbacks
 and repeated failures while rewarding complete result inspection, a changed operation,
 and the corrected `pdftotext` stdout convention.
-Training uses explicit operational scaffolding without revealing answers; held-out
-variants use standard instructions.
+Training can use guided invariant-level hints or explicit operational scaffolding
+without revealing answers; held-out variants use standard instructions. Guided hints
+name the notebook behavior but deliberately omit executable code so a rung can fade
+exact demonstrations before its held-out gate.
 
 The recovery matrix covers `NameError`, missing imports, omitted `await`, bytes/text
 mismatches, confusing `CompletedProcess` with its stdout, path quoting, missing files,

@@ -230,6 +230,26 @@ def test_explicit_scaffolding_describes_operations_without_leaking_answers():
         assert json.dumps(task.data.rounds[0].answer) not in prompt
 
 
+def test_guided_scaffolding_names_invariant_without_supplying_code():
+    task = next(
+        task
+        for task in IpythonFoundationsTaskset(
+            IpythonFoundationsConfig(
+                families=("assignment",),
+                instruction_level="guided",
+                instances_per_template=1,
+                rounds_per_task=1,
+            )
+        ).load()
+    )
+
+    prompt = _round_prompt(task, 0, None)
+    assert "Foundation hint:" in prompt
+    assert "two separate IPython calls" in prompt
+    assert task.data.rounds[0].explicit_operation not in prompt
+    assert json.dumps(task.data.rounds[0].answer) not in prompt
+
+
 @pytest.mark.parametrize(
     ("family", "variable", "calls"),
     [

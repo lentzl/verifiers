@@ -35,6 +35,29 @@ SYSTEM_PROMPT = (
     "repeating it, and choose fallbacks from evidence rather than bypassing structured "
     "formats with raw-byte decoding."
 )
+GUIDED_OPERATIONS = {
+    "completion": (
+        "Use one IPython call, observe its non-empty result, then return that result "
+        "immediately without another tool call."
+    ),
+    "assignment": (
+        "Use two separate IPython calls. First assign the requested variable and accept "
+        "the empty result as success. In the next call, read that variable without "
+        "reassigning it, then return the computed JSON value."
+    ),
+    "state": (
+        "Answer the current request, retain the requested variable, and read that same "
+        "variable in later requests without reloading or reconstructing the source."
+    ),
+    "recovery": (
+        "Run the failing operation once, inspect the real traceback, then change only "
+        "the failed operation while reusing state created before the error."
+    ),
+    "subprocess": (
+        "Inspect returncode, stdout, and stderr, then revise the failed command from "
+        "that evidence without repeating it or decoding raw document bytes."
+    ),
+}
 
 PDFTOTEXT_COMPAT = r"""#!/usr/bin/env python3
 import base64
@@ -77,7 +100,7 @@ class FoundationRound(BaseModel):
 class IpythonFoundationsData(vf.TaskData):
     family: Family
     template_variant: int
-    instruction_level: Literal["standard", "explicit"] = "standard"
+    instruction_level: Literal["standard", "guided", "explicit"] = "standard"
     state_variable: str
     rounds: tuple[FoundationRound, ...]
 
@@ -481,7 +504,9 @@ def _round_prompt(
             "revealed; continue from the existing notebook state."
         )
     parts.append(current.instruction)
-    if task.data.instruction_level == "explicit":
+    if task.data.instruction_level == "guided":
+        parts.append(f"Foundation hint: {GUIDED_OPERATIONS[task.data.family]}")
+    elif task.data.instruction_level == "explicit":
         parts.append(f"Foundation exercise: {current.explicit_operation}")
     return "\n\n".join(parts)
 
@@ -539,7 +564,7 @@ class IpythonFoundationsEnv(vf.SingleAgentEnv):
 class IpythonFoundationsConfig(vf.TasksetConfig):
     split: Literal["train", "eval"] = "train"
     families: tuple[Family, ...] = Field(FAMILIES, min_length=1)
-    instruction_level: Literal["standard", "explicit"] = "standard"
+    instruction_level: Literal["standard", "guided", "explicit"] = "standard"
     instances_per_template: int = Field(4, ge=1)
     rounds_per_task: int | None = Field(None, ge=1)
     seed: int = 20260806
