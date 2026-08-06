@@ -1,6 +1,6 @@
 # Six standard-instruction holdouts for persistent IPython semantics.
 
-model = "hf-final"
+model = "/ephemeral/models/qwen35-adaptive-skills-smoke-r1"
 num_tasks = 6
 num_rollouts = 1
 shuffle = false
