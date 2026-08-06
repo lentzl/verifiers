@@ -16,6 +16,12 @@ Answers are plain JSON rather than XML-tagged: Qwen3.5's native tool parser trea
 an `<answer>` element as a tool invocation, which prevents Prime Agent from
 yielding a final textual reply.
 
+The training recipe starts with `instruction_level = "explicit"`. These hints
+name the exact installed-skill call or one-cell operation, but never expose a
+batch answer. The held-out eval remains `standard`. This gives early GRPO groups
+non-zero outcome variance while preserving a clear fade-out gate: switch training
+back to standard once concise four-batch completion is reliable.
+
 The promoted artifact uses the common `.agents/skills/<name>/SKILL.md` layout and
 the portable Agent Skills frontmatter shared by current OpenAI, Anthropic, and
 Prime-compatible harnesses. The bundled record-normalization fixture additionally

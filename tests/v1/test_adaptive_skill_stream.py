@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from adaptive_skill_stream_v1.taskset import (
+    EXPLICIT_OPERATIONS,
     SYSTEM_PROMPT,
     AdaptiveSkillStreamConfig,
     AdaptiveSkillStreamData,
@@ -92,6 +93,19 @@ def test_taskset_balances_lifecycle_families_and_holds_out_variants():
     assert {task.data.template_variant for task in train} == {0, 1, 2, 3}
     assert {task.data.template_variant for task in evaluation} == {4, 5}
     assert all(len(task.data.rounds) == 4 for task in [*train, *evaluation])
+
+
+def test_explicit_instruction_level_names_operations_without_exposing_answers():
+    config = AdaptiveSkillStreamConfig(
+        split="train", instruction_level="explicit", instances_per_template=1
+    )
+    tasks = AdaptiveSkillStreamTaskset(config).load()
+
+    for task in tasks[:3]:
+        prompt = _round_prompt(task, 0, None)
+        assert EXPLICIT_OPERATIONS[task.data.family] in prompt
+        assert json.dumps(task.data.rounds[0].answer) not in prompt
+        assert task.data.instruction_level == "explicit"
 
 
 def test_generated_streams_have_distinct_persistence_contracts():

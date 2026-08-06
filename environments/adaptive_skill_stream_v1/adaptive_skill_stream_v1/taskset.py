@@ -46,8 +46,29 @@ class SkillStreamRound(BaseModel):
 class AdaptiveSkillStreamData(vf.TaskData):
     family: Family
     template_variant: int
+    instruction_level: Literal["standard", "explicit"] = "standard"
     project_context: str
     rounds: tuple[SkillStreamRound, ...]
+
+
+EXPLICIT_OPERATIONS: dict[Family, str] = {
+    "installed": (
+        "Orientation operation: in one IPython call load the JSON records, call "
+        "portable_record_normalization.summarize(records), and display the returned "
+        "dictionary. Reply with that dictionary as plain JSON immediately."
+    ),
+    "stable": (
+        "Orientation operation: in one IPython call load the graph and compute sorted "
+        "names satisfying name not in completed, name not in blocked, and "
+        "set(requirements[name]) <= set(completed). Retain that helper for later batches "
+        "and reply with its list immediately."
+    ),
+    "ephemeral": (
+        "Orientation operation: in one IPython call load the payload and evaluate "
+        "[payload['codebook'][token] for token in payload['sequence']]. Reply with that "
+        "list immediately; do not persist the rotating mapping."
+    ),
+}
 
 
 def _extract_answer(reply: str) -> object | None:
@@ -317,6 +338,8 @@ def _round_prompt(
         )
     files = ", ".join(sorted(current.files))
     parts.append(f"Batch {round_idx + 1} files: {files}. {current.instruction}")
+    if task.data.instruction_level == "explicit":
+        parts.append(EXPLICIT_OPERATIONS[task.data.family])
     return "\n\n".join(parts)
 
 
@@ -369,6 +392,7 @@ class AdaptiveSkillStreamEnv(vf.SingleAgentEnv):
 class AdaptiveSkillStreamConfig(vf.TasksetConfig):
     split: Literal["train", "eval"] = "train"
     families: tuple[Family, ...] = Field(FAMILIES, min_length=1)
+    instruction_level: Literal["standard", "explicit"] = "standard"
     instances_per_template: int = Field(4, ge=1)
     seed: int = 20260806
 
@@ -394,6 +418,7 @@ class AdaptiveSkillStreamTaskset(
                                 workdir=WORKSPACE,
                                 family=family,
                                 template_variant=variant,
+                                instruction_level=self.config.instruction_level,
                                 project_context=generated.project_context,
                                 rounds=tuple(
                                     SkillStreamRound(

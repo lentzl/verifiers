@@ -71,6 +71,7 @@ name = "prime-agent-adaptive-skills"
 id = "adaptive-skill-stream-v1"
 split = "train"
 families = ["installed", "stable", "ephemeral"]
+instruction_level = "explicit"
 instances_per_template = 4
 
 [orchestrator.train.source.env.agent]
