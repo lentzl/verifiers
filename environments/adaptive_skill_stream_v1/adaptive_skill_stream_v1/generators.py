@@ -60,7 +60,8 @@ def _installed_stream(rng: random.Random, variant: int) -> GeneratedStream:
                     "Normalize every label, sum amount by normalized label, and return "
                     "the resulting JSON object. A relevant installed skill may already "
                     "provide this exact operation; inspect and reuse it instead of "
-                    "reimplementing it when applicable."
+                    "reimplementing it when applicable. Return the totals object "
+                    'directly, for example {"north-red":12}, with no result wrapper.'
                 ),
                 answer=expected,
                 files={"/workspace/inbox/batch.json": _json(records)},
@@ -117,7 +118,8 @@ def _stable_stream(rng: random.Random, variant: int) -> GeneratedStream:
             GeneratedRound(
                 instruction=(
                     "Apply the project frontier policy to the current graph and return "
-                    "the sorted JSON list of tasks that are ready now."
+                    "the sorted JSON list of tasks that are ready now. Each list element "
+                    'must be a string, for example ["task-a","task-b"], not an object.'
                 ),
                 answer=frontier,
                 files={"/workspace/inbox/graph.json": _json(payload)},
@@ -147,8 +149,8 @@ def _ephemeral_stream(rng: random.Random, variant: int) -> GeneratedStream:
             GeneratedRound(
                 instruction=(
                     "Decode sequence with this batch's codebook and return the decoded "
-                    "values as a JSON list. The codebook is intentionally temporary and "
-                    "is replaced for every batch."
+                    "values directly as a JSON list of strings. The codebook is "
+                    "intentionally temporary and is replaced for every batch."
                 ),
                 answer=[codebook[token] for token in sequence],
                 files={"/workspace/inbox/codebook.json": _json(payload)},

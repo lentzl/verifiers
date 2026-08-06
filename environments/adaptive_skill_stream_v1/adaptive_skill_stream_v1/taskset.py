@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
@@ -59,8 +59,45 @@ def _extract_answer(reply: str) -> object | None:
         return None
 
 
-def _canonical(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+def _round_score(family: Family, actual: object, expected: object) -> float:
+    if family == "installed":
+        if isinstance(actual, dict):
+            actual_mapping = cast(dict[str, object], actual)
+            if set(actual_mapping) == {"result"}:
+                actual = actual_mapping["result"]
+        if not isinstance(actual, dict) or not isinstance(expected, dict):
+            return 0.0
+        if not expected:
+            return float(not actual)
+        return sum(actual.get(key) == value for key, value in expected.items()) / len(
+            expected
+        )
+
+    if family == "stable":
+        if not isinstance(actual, list) or not isinstance(expected, list):
+            return 0.0
+        actual_names = {
+            item
+            if isinstance(item, str)
+            else item.get("name")
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+            else None
+            for item in actual
+        } - {None}
+        expected_names = {item for item in expected if isinstance(item, str)}
+        union = actual_names | expected_names
+        return len(actual_names & expected_names) / len(union) if union else 1.0
+
+    if not isinstance(actual, list) or not isinstance(expected, list):
+        return 0.0
+    if not expected:
+        return float(not actual)
+    matches = sum(
+        actual[index] == value
+        for index, value in enumerate(expected)
+        if index < len(actual)
+    )
+    return matches / len(expected)
 
 
 def _ipython_cells(trace: vf.Trace) -> list[str]:
@@ -288,6 +325,7 @@ class AdaptiveSkillStreamEnv(vf.SingleAgentEnv):
 
     async def run(self, task, agents):
         correct: list[bool] = []
+        scores: list[float] = []
         replies: list[object | None] = []
         async with agents.agent.provision(task) as runtime:
             async with agents.agent.interaction(task, runtime=runtime) as interaction:
@@ -301,12 +339,15 @@ class AdaptiveSkillStreamEnv(vf.SingleAgentEnv):
                     if segment.terminated:
                         break
                     actual = _extract_answer(segment.last_reply)
-                    passed = _canonical(actual) == _canonical(current.answer)
+                    score = _round_score(task.data.family, actual, current.answer)
+                    passed = score == 1.0
                     replies.append(actual)
                     correct.append(passed)
+                    scores.append(score)
                     previous = passed
                 interaction.trace.info["adaptive_skill_stream"] = {
                     "correct": correct,
+                    "scores": scores,
                     "replies": replies,
                     "rounds_completed": len(correct),
                 }
@@ -314,10 +355,13 @@ class AdaptiveSkillStreamEnv(vf.SingleAgentEnv):
 
         total_rounds = len(task.data.rounds)
         padded = [*correct, *([False] * (total_rounds - len(correct)))]
-        accuracy = sum(padded) / total_rounds
+        padded_scores = [*scores, *([0.0] * (total_rounds - len(scores)))]
+        accuracy = sum(padded_scores) / total_rounds
         trace.record_reward("stream_accuracy", accuracy)
         trace.record_metric("first_batch_correct", float(padded[0]))
-        trace.record_metric("late_batch_accuracy", sum(padded[1:]) / (total_rounds - 1))
+        trace.record_metric(
+            "late_batch_accuracy", sum(padded_scores[1:]) / (total_rounds - 1)
+        )
         trace.record_metric("final_batch_correct", float(padded[-1]))
         trace.record_metric("completed_stream", float(len(correct) == total_rounds))
 

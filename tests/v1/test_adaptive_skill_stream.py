@@ -11,6 +11,7 @@ from adaptive_skill_stream_v1.taskset import (
     SkillStreamRound,
     _extract_answer,
     _round_prompt,
+    _round_score,
     _valid_frontier_skill,
 )
 
@@ -126,6 +127,23 @@ def test_system_prompt_uses_plain_json_without_colliding_with_tool_parser():
     assert "<answer>" not in SYSTEM_PROMPT
     assert "future batches do not exist" in SYSTEM_PROMPT
     assert "never call tools named answer" in SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize(
+    ("family", "actual", "expected", "score"),
+    [
+        ("installed", {"a": 1, "b": 2}, {"a": 1, "b": 2}, 1.0),
+        ("installed", {"result": {"a": 1}}, {"a": 1, "b": 2}, 0.5),
+        ("stable", ["a", "b"], ["a", "b"], 1.0),
+        ("stable", [{"name": "a"}], ["a", "b"], 0.5),
+        ("ephemeral", ["x", "wrong", "z"], ["x", "y", "z"], 2 / 3),
+        ("ephemeral", None, ["x"], 0.0),
+    ],
+)
+def test_round_score_provides_semantic_family_specific_credit(
+    family, actual, expected, score
+):
+    assert _round_score(family, actual, expected) == pytest.approx(score)
 
 
 def test_frontier_promotion_requires_portable_metadata_and_procedure():
