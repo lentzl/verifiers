@@ -1,0 +1,15 @@
+[project]
+name = "portable-record-normalization"
+version = "0.1.0"
+description = "Canonicalize record labels and aggregate amounts."
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/portable_record_normalization"]
+
+[tool.prime_agent.skill]
+import = "portable_record_normalization"
