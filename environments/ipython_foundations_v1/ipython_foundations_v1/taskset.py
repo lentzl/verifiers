@@ -14,6 +14,7 @@ import verifiers.v1 as vf
 from ipython_foundations_v1.generators import (
     EVAL_VARIANTS,
     FAMILIES,
+    RECOVERY_EVAL_VARIANTS,
     TRAIN_VARIANTS,
     Family,
     generate,
@@ -70,6 +71,7 @@ class FoundationRound(BaseModel):
     answer: Any
     files: dict[str, str]
     remove_after: tuple[str, ...] = ()
+    recovery_kind: str | None = None
 
 
 class IpythonFoundationsData(vf.TaskData):
@@ -220,7 +222,12 @@ def _uses_raw_pdf_fallback(code: str) -> bool:
     return False
 
 
-def _behavior(trace: vf.Trace, family: Family, state_variable: str) -> dict[str, float]:
+def _behavior(
+    trace: vf.Trace,
+    family: Family,
+    state_variable: str,
+    expected_segments: int | None = None,
+) -> dict[str, float]:
     events = _ipython_events(trace)
     contexts = [_name_contexts(event.code, state_variable) for event in events]
     attributes = [_code_attributes(event.code) for event in events]
@@ -259,6 +266,40 @@ def _behavior(trace: vf.Trace, family: Family, state_variable: str) -> dict[str,
         and any(
             loaded and index > error_index for index, (_, loaded) in enumerate(contexts)
         )
+    )
+    active_segments = {event.segment for event in events}
+    recovery_error_indices = {
+        segment: next(
+            (
+                index
+                for index, event in enumerate(events)
+                if event.segment == segment
+                and ("Traceback" in event.output or "Error" in event.output)
+            ),
+            None,
+        )
+        for segment in active_segments
+    }
+    recovery_repaired_segments = {
+        segment
+        for segment, segment_error_index in recovery_error_indices.items()
+        if segment_error_index is not None
+        and any(
+            index > segment_error_index
+            and event.segment == segment
+            and contexts[index][1]
+            and event.code.strip() != events[segment_error_index].code.strip()
+            for index, event in enumerate(events)
+        )
+    }
+    required_recovery_segments = (
+        set(range(expected_segments))
+        if expected_segments is not None
+        else active_segments
+    )
+    recovery_rounds_aligned = bool(
+        required_recovery_segments
+        and required_recovery_segments <= recovery_repaired_segments
     )
     repeated = sum(
         left.code.strip() == right.code.strip() for left, right in pairwise(events)
@@ -299,7 +340,7 @@ def _behavior(trace: vf.Trace, family: Family, state_variable: str) -> dict[str,
     family_aligned = {
         "assignment": silent_assignment_recovered,
         "state": cross_turn_reuse,
-        "recovery": recovered_after_error,
+        "recovery": recovery_rounds_aligned,
         "subprocess": (
             later_reuse is not None
             and subprocess_observed
@@ -317,6 +358,15 @@ def _behavior(trace: vf.Trace, family: Family, state_variable: str) -> dict[str,
         "cross_turn_state_reused": float(cross_turn_reuse),
         "error_observed": float(error_index is not None),
         "recovered_after_error": float(recovered_after_error),
+        "recovery_error_segments": float(
+            sum(index is not None for index in recovery_error_indices.values())
+        ),
+        "recovery_repaired_segments": float(len(recovery_repaired_segments)),
+        "recovery_round_coverage": (
+            len(recovery_repaired_segments) / len(required_recovery_segments)
+            if required_recovery_segments
+            else 0.0
+        ),
         "subprocess_result_observed": float(subprocess_observed),
         "subprocess_operation_revised": float(subprocess_revised),
         "subprocess_failure_retries": float(subprocess_failure_retries),
@@ -343,12 +393,22 @@ class IpythonFoundationsTask(vf.Task[IpythonFoundationsData]):
 
     @vf.reward(weight=0.2)
     async def notebook_semantics(self, trace: vf.Trace) -> float:
-        behavior = _behavior(trace, self.data.family, self.data.state_variable)
+        behavior = _behavior(
+            trace,
+            self.data.family,
+            self.data.state_variable,
+            expected_segments=len(self.data.rounds),
+        )
         return behavior["process_aligned"]
 
     @vf.metric
     async def notebook_behavior(self, trace: vf.Trace) -> dict[str, float]:
-        return _behavior(trace, self.data.family, self.data.state_variable)
+        return _behavior(
+            trace,
+            self.data.family,
+            self.data.state_variable,
+            expected_segments=len(self.data.rounds),
+        )
 
 
 def _round_prompt(
@@ -409,6 +469,11 @@ class IpythonFoundationsEnv(vf.SingleAgentEnv):
                     "scores": scores,
                     "replies": replies,
                     "rounds_completed": len(scores),
+                    "recovery_kinds": [
+                        round_.recovery_kind
+                        for round_ in task.data.rounds
+                        if round_.recovery_kind is not None
+                    ],
                 }
             trace = interaction.trace
 
@@ -433,39 +498,48 @@ class IpythonFoundationsTaskset(
 ):
     def load(self) -> list[IpythonFoundationsTask]:
         variants = TRAIN_VARIANTS if self.config.split == "train" else EVAL_VARIANTS
+        templates = [
+            (family, variant) for variant in variants for family in self.config.families
+        ]
+        if self.config.split == "eval" and "recovery" in self.config.families:
+            templates.extend(
+                ("recovery", variant)
+                for variant in RECOVERY_EVAL_VARIANTS
+                if variant not in variants
+            )
         tasks = []
         idx = 0
         for instance in range(self.config.instances_per_template):
-            for variant in variants:
-                for family in self.config.families:
-                    generated = generate(family, variant, instance, self.config.seed)
-                    tasks.append(
-                        IpythonFoundationsTask(
-                            IpythonFoundationsData(
-                                idx=idx,
-                                name=f"{family}-v{variant}-i{instance}",
-                                prompt=None,
-                                system_prompt=SYSTEM_PROMPT,
-                                workdir=WORKSPACE,
-                                family=family,
-                                template_variant=variant,
-                                instruction_level=self.config.instruction_level,
-                                state_variable=generated.state_variable,
-                                rounds=tuple(
-                                    FoundationRound(
-                                        instruction=round_.instruction,
-                                        explicit_operation=round_.explicit_operation,
-                                        answer=round_.answer,
-                                        files=round_.files,
-                                        remove_after=round_.remove_after,
-                                    )
-                                    for round_ in generated.rounds
-                                ),
+            for family, variant in templates:
+                generated = generate(family, variant, instance, self.config.seed)
+                tasks.append(
+                    IpythonFoundationsTask(
+                        IpythonFoundationsData(
+                            idx=idx,
+                            name=f"{family}-v{variant}-i{instance}",
+                            prompt=None,
+                            system_prompt=SYSTEM_PROMPT,
+                            workdir=WORKSPACE,
+                            family=family,
+                            template_variant=variant,
+                            instruction_level=self.config.instruction_level,
+                            state_variable=generated.state_variable,
+                            rounds=tuple(
+                                FoundationRound(
+                                    instruction=round_.instruction,
+                                    explicit_operation=round_.explicit_operation,
+                                    answer=round_.answer,
+                                    files=round_.files,
+                                    remove_after=round_.remove_after,
+                                    recovery_kind=round_.recovery_kind,
+                                )
+                                for round_ in generated.rounds
                             ),
-                            self.config.task,
-                        )
+                        ),
+                        self.config.task,
                     )
-                    idx += 1
+                )
+                idx += 1
         return tasks
 
 

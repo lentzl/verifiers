@@ -2,6 +2,7 @@ import json
 import subprocess
 
 import pytest
+from ipython_foundations_v1.python_recovery_cases import RECOVERY_KINDS
 from ipython_foundations_v1.taskset import (
     PDFTOTEXT_COMPAT,
     IpythonFoundationsConfig,
@@ -72,7 +73,7 @@ def test_taskset_balances_families_and_holds_out_variants():
     ).load()
 
     assert len(train) == 16
-    assert len(evaluation) == 8
+    assert len(evaluation) == 10
     assert {task.data.family for task in train} == {
         "assignment",
         "state",
@@ -80,7 +81,16 @@ def test_taskset_balances_families_and_holds_out_variants():
         "subprocess",
     }
     assert {task.data.template_variant for task in train} == {0, 1, 2, 3}
-    assert {task.data.template_variant for task in evaluation} == {4, 5}
+    assert {
+        task.data.template_variant
+        for task in evaluation
+        if task.data.family != "recovery"
+    } == {4, 5}
+    assert {
+        task.data.template_variant
+        for task in evaluation
+        if task.data.family == "recovery"
+    } == {4, 5, 6, 7}
     assert all(len(task.data.rounds) == 3 for task in [*train, *evaluation])
 
 
@@ -116,6 +126,37 @@ def test_subprocess_stream_preserves_path_and_requires_error_directed_repair():
     assert not task.data.rounds[2].files
     assert "output path" in task.data.rounds[2].instruction
     assert "raw PDF bytes" in task.data.rounds[2].instruction
+
+
+def test_recovery_training_matrix_covers_every_real_error_kind():
+    recovery_tasks = [
+        task
+        for task in IpythonFoundationsTaskset(
+            IpythonFoundationsConfig(instances_per_template=1)
+        ).load()
+        if task.data.family == "recovery"
+    ]
+    rounds = [round_ for task in recovery_tasks for round_ in task.data.rounds]
+
+    assert {round_.recovery_kind for round_ in rounds} == set(RECOVERY_KINDS)
+    assert all("real" in round_.instruction.lower() for round_ in rounds)
+    assert all(
+        "Traceback (most recent call last)" not in round_.instruction
+        for round_ in rounds
+    )
+    assert all(not round_.remove_after for round_ in rounds)
+
+    evaluation = [
+        task
+        for task in IpythonFoundationsTaskset(
+            IpythonFoundationsConfig(split="eval", instances_per_template=1)
+        ).load()
+        if task.data.family == "recovery"
+    ]
+    evaluation_kinds = {
+        round_.recovery_kind for task in evaluation for round_ in task.data.rounds
+    }
+    assert evaluation_kinds == set(RECOVERY_KINDS)
 
 
 def test_pdftotext_fixture_exposes_real_failure_and_stdout_repair(tmp_path):
@@ -240,6 +281,31 @@ def test_subprocess_loop_and_raw_byte_fallback_are_not_rewarded():
     assert behavior["identical_consecutive_calls"] == 1.0
     assert behavior["subprocess_failure_retries"] == 1.0
     assert behavior["raw_pdf_fallback_used"] == 1.0
+    assert behavior["process_aligned"] == 0.0
+
+
+def test_recovery_process_reward_requires_feedback_repair_in_every_segment():
+    trace = _trace(
+        [
+            (
+                0,
+                "payload = [1]\npayload[1]",
+                "Traceback: IndexError: list index out of range",
+            ),
+            (0, "payload[0]", "1"),
+            (
+                1,
+                "payload = {'value': 2}\npayload['missing']",
+                "Traceback: KeyError: 'missing'",
+            ),
+        ]
+    )
+
+    behavior = _behavior(trace, "recovery", "payload", expected_segments=2)
+
+    assert behavior["recovery_error_segments"] == 2.0
+    assert behavior["recovery_repaired_segments"] == 1.0
+    assert behavior["recovery_round_coverage"] == pytest.approx(0.5)
     assert behavior["process_aligned"] == 0.0
 
 

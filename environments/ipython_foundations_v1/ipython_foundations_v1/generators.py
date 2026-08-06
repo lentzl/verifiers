@@ -8,10 +8,13 @@ import random
 from dataclasses import dataclass
 from typing import Literal
 
+from ipython_foundations_v1.python_recovery_cases import generate_recovery_case
+
 Family = Literal["assignment", "state", "recovery", "subprocess"]
 FAMILIES: tuple[Family, ...] = ("assignment", "state", "recovery", "subprocess")
 TRAIN_VARIANTS = range(4)
 EVAL_VARIANTS = range(4, 6)
+RECOVERY_EVAL_VARIANTS = range(4, 8)
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,7 @@ class GeneratedRound:
     answer: object
     files: dict[str, str]
     remove_after: tuple[str, ...] = ()
+    recovery_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -120,35 +124,19 @@ def _state_stream(rng: random.Random, variant: int) -> GeneratedStream:
 
 
 def _recovery_stream(rng: random.Random, variant: int) -> GeneratedStream:
-    field_names = ("amount", "units", "score", "weight", "points", "count")
     rounds = []
     for round_idx in range(3):
-        field = field_names[(variant + round_idx) % len(field_names)]
-        rows = [
-            {"label": f"item-{index}", field: rng.randint(2, 30)} for index in range(7)
-        ]
-        path = "/workspace/inbox/rows.json"
+        case = generate_recovery_case(variant, round_idx, rng)
         rounds.append(
             GeneratedRound(
-                instruction=(
-                    "Load the JSON rows into persistent variable `rows`. A stale notebook "
-                    "procedure assumes the numeric field is named `value`; run it, use the "
-                    "resulting feedback to inspect the real schema, then correct the "
-                    "calculation and return the numeric-field total as JSON."
-                ),
-                explicit_operation=(
-                    "First run `import json; from pathlib import Path; rows = "
-                    "json.loads(Path("
-                    + repr(path)
-                    + ").read_text()); sum(row['value'] for row in rows)` to obtain "
-                    "executable feedback. After the KeyError, `rows` still exists: inspect "
-                    "`rows[0]` in the next call, then reuse `rows` with the observed numeric key."
-                ),
-                answer=sum(row[field] for row in rows),
-                files={path: _json(rows)},
+                instruction=case.instruction,
+                explicit_operation=case.explicit_operation,
+                answer=case.answer,
+                files=case.files,
+                recovery_kind=case.kind,
             )
         )
-    return GeneratedStream(state_variable="rows", rounds=tuple(rounds))
+    return GeneratedStream(state_variable="payload", rounds=tuple(rounds))
 
 
 def _subprocess_stream(

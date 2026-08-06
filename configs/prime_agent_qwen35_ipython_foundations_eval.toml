@@ -1,7 +1,7 @@
-# Eight standard-instruction holdouts for persistent IPython semantics.
+# Ten standard-instruction holdouts for persistent IPython semantics.
 
 model = "/ephemeral/models/qwen35-adaptive-skills-smoke-r1"
-num_tasks = 8
+num_tasks = 10
 num_rollouts = 1
 shuffle = false
 max_concurrent = 3

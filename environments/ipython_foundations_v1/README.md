@@ -6,8 +6,8 @@ three related requests.
 
 - `assignment` makes a deliberately silent assignment useful in a later call;
 - `state` removes the source file after the first request, forcing cross-turn reuse;
-- `recovery` raises a real schema error after loading data, then requires correction
-  with the state that survived the traceback;
+- `recovery` executes stale Python operations, exposes their real IPython errors, and
+  requires a changed corrective call using state that survived the failure;
 - `subprocess` preserves a downloaded document path, exposes a real nonzero process
   result, and requires complete result inspection plus an error-directed CLI repair.
 
@@ -18,6 +18,13 @@ Subprocess streams also reject raw-byte PDF fallbacks and require the corrected
 Training uses explicit operational scaffolding without revealing answers; held-out
 variants use standard instructions.
 
+The recovery matrix covers `NameError`, missing imports, omitted `await`, bytes/text
+mismatches, confusing `CompletedProcess` with its stdout, path quoting, missing files,
+incorrect dictionary keys, empty parser output, and a nonzero subprocess promoted to
+`CalledProcessError`. The environment never inserts fabricated traceback text: the
+prompt supplies a stale operation, Prime Agent runs it in the persistent kernel, and
+the next sampled action receives the kernel's actual feedback.
+
 ## Develop
 
 ```bash
@@ -27,7 +34,7 @@ uv run eval ipython-foundations-v1 \
   --env.agent.harness.save-session true \
   --env.agent.runtime.type docker \
   --taskset.split eval \
-  -n 8
+  -n 10
 ```
 
 ## First Run
