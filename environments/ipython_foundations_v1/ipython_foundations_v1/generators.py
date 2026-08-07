@@ -342,6 +342,7 @@ def _document_recovery_stream(
         f"Finding: {observed} of {total} reviewed sites met the target.\n"
     )
     document = first_page + "\fAppendix: methods and sampling details.\n"
+    encoded_document = base64.b64encode(document.encode()).decode()
     source_kind: Literal["direct_path", "structured_download"] = (
         "structured_download" if variant % 2 == 0 else "direct_path"
     )
@@ -351,7 +352,7 @@ def _document_recovery_stream(
         download = {
             "path": path,
             "filename": path.rsplit("/", 1)[-1],
-            "bytes": len(document),
+            "bytes": len(encoded_document),
             "content_type": "application/pdf",
         }
         source_instruction = (
@@ -369,7 +370,7 @@ def _document_recovery_stream(
         source_answer = {
             "source_kind": source_kind,
             "path": path,
-            "bytes": len(document),
+            "bytes": len(encoded_document),
         }
     else:
         source_instruction = (
@@ -415,7 +416,7 @@ def _document_recovery_stream(
                 instruction=source_instruction,
                 explicit_operation=source_operation,
                 answer=source_answer,
-                files={path: base64.b64encode(document.encode()).decode()},
+                files={path: encoded_document},
             ),
             GeneratedRound(
                 instruction=(

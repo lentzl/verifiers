@@ -198,6 +198,11 @@ def test_document_recovery_mixes_source_forms_and_parser_profiles():
     assert any("pdfminer" in task.data.rounds[1].instruction for task in tasks)
     assert all("live traceback" in task.data.rounds[1].instruction for task in tasks)
     assert all("page_text" in task.data.rounds[2].instruction for task in tasks)
+    structured = next(
+        task for task in tasks if task.data.source_kind == "structured_download"
+    )
+    mounted_content = next(iter(structured.data.rounds[0].files.values()))
+    assert structured.data.rounds[0].answer["bytes"] == len(mounted_content)
 
 
 def test_document_parser_fixtures_expose_distribution_import_and_public_api(tmp_path):
