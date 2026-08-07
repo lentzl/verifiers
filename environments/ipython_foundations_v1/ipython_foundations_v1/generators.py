@@ -29,6 +29,7 @@ class GeneratedRound:
     explicit_operation: str
     answer: object
     files: dict[str, str]
+    expert_trace: str | None = None
     remove_after: tuple[str, ...] = ()
     recovery_kind: str | None = None
 
@@ -41,6 +42,21 @@ class GeneratedStream:
 
 def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _expert_trace(calls: tuple[tuple[str, str], ...], answer: object) -> str:
+    parts = ["Expert trajectory:"]
+    for code, output in calls:
+        parts.extend(
+            (
+                "assistant -> ipython:",
+                f"```python\n{code}\n```",
+                "ipython -> assistant:",
+                output or "<empty output>",
+            )
+        )
+    parts.extend(("assistant final:", _json(answer)))
+    return "\n".join(parts)
 
 
 def _completion_stream(rng: random.Random, variant: int) -> GeneratedStream:
@@ -75,6 +91,12 @@ def _assignment_stream(rng: random.Random, variant: int) -> GeneratedStream:
     for round_idx in range(3):
         values = [rng.randint(-20, 40) for _ in range(8)]
         path = "/workspace/inbox/values.json"
+        answer = sum((index + 1) * value for index, value in enumerate(values))
+        load_code = (
+            "import json\nfrom pathlib import Path\n"
+            f"values = json.loads(Path({path!r}).read_text())"
+        )
+        checksum_code = "sum((i + 1) * value for i, value in enumerate(values))"
         rounds.append(
             GeneratedRound(
                 instruction=(
@@ -91,8 +113,11 @@ def _assignment_stream(rng: random.Random, variant: int) -> GeneratedStream:
                     "is silent. In the next IPython call, evaluate `sum((i + 1) * value "
                     "for i, value in enumerate(values))`. Do not repeat the assignment cell."
                 ),
-                answer=sum((index + 1) * value for index, value in enumerate(values)),
+                answer=answer,
                 files={path: _json(values)},
+                expert_trace=_expert_trace(
+                    ((load_code, ""), (checksum_code, str(answer))), answer
+                ),
             )
         )
     return GeneratedStream(state_variable="values", rounds=tuple(rounds))
@@ -109,6 +134,23 @@ def _state_stream(rng: random.Random, variant: int) -> GeneratedStream:
         label: sum(row["amount"] for row in records if row["group"] == label)
         for label in labels
     }
+    load_code = (
+        "import json\nfrom pathlib import Path\n"
+        f"records = json.loads(Path({path!r}).read_text())\nlen(records)"
+    )
+    totals_code = (
+        "totals = {}\n"
+        "for row in records:\n"
+        "    totals[row['group']] = totals.get(row['group'], 0) + row['amount']\n"
+        "totals"
+    )
+    winners = sorted(
+        label for label, total in totals.items() if total == max(totals.values())
+    )
+    winners_code = (
+        "largest = max(totals.values())\n"
+        "sorted(label for label, total in totals.items() if total == largest)"
+    )
     rounds = (
         GeneratedRound(
             instruction=(
@@ -122,6 +164,7 @@ def _state_stream(rng: random.Random, variant: int) -> GeneratedStream:
             ),
             answer=len(records),
             files={path: _json(records)},
+            expert_trace=_expert_trace(((load_code, str(len(records))),), len(records)),
             remove_after=(path,),
         ),
         GeneratedRound(
@@ -136,6 +179,7 @@ def _state_stream(rng: random.Random, variant: int) -> GeneratedStream:
             ),
             answer=totals,
             files={},
+            expert_trace=_expert_trace(((totals_code, repr(totals)),), totals),
         ),
         GeneratedRound(
             instruction=(
@@ -146,12 +190,9 @@ def _state_stream(rng: random.Random, variant: int) -> GeneratedStream:
                 "Reuse `records` again. Derive grouped totals, find their maximum, and "
                 "display the sorted names whose total equals it."
             ),
-            answer=sorted(
-                label
-                for label, total in totals.items()
-                if total == max(totals.values())
-            ),
+            answer=winners,
             files={},
+            expert_trace=_expert_trace(((winners_code, repr(winners)),), winners),
         ),
     )
     return GeneratedStream(state_variable="records", rounds=rounds)

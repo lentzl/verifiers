@@ -278,9 +278,33 @@ def test_self_distillation_demonstration_is_teacher_only():
     )
 
     prompt = _round_prompt(task, 0, None)
-    assert task.data.rounds[0].explicit_operation in task.data.demonstration
+    assert "assistant -> ipython:" in task.data.demonstration
+    assert "<empty output>" in task.data.demonstration
+    assert task.data.state_variable in task.data.demonstration
+    assert json.dumps(task.data.rounds[0].answer) in task.data.demonstration
     assert task.data.demonstration not in prompt
     assert task.data.rounds[0].explicit_operation not in prompt
+    assert json.dumps(task.data.rounds[0].answer) not in prompt
+
+
+def test_state_self_distillation_demonstrates_cross_request_reuse():
+    task = next(
+        task
+        for task in IpythonFoundationsTaskset(
+            IpythonFoundationsConfig(
+                families=("state",),
+                instruction_level="standard",
+                instances_per_template=1,
+                rounds_per_task=3,
+            )
+        ).load()
+    )
+
+    assert task.data.demonstration.count("Expert trajectory:") == 3
+    assert task.data.demonstration.count("records") >= 3
+    assert "Path('/workspace/inbox/records.json')" in task.data.demonstration
+    assert "for row in records:" in task.data.demonstration
+    assert "max(totals.values())" in task.data.demonstration
 
 
 @pytest.mark.parametrize(

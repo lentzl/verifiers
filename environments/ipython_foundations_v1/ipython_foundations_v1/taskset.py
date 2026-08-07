@@ -592,7 +592,8 @@ class IpythonFoundationsTaskset(
                 generated = generate(family, variant, instance, self.config.seed)
                 rounds = generated.rounds[: self.config.rounds_per_task]
                 demonstration = "\n\n".join(
-                    f"Request {round_idx + 1}: {round_.explicit_operation}"
+                    f"Request {round_idx + 1}:\n"
+                    f"{round_.expert_trace or round_.explicit_operation}"
                     for round_idx, round_ in enumerate(rounds)
                 )
                 tasks.append(
