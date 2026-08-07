@@ -78,7 +78,8 @@ def _assignment_stream(rng: random.Random, variant: int) -> GeneratedStream:
         rounds.append(
             GeneratedRound(
                 instruction=(
-                    "Load the JSON array into the persistent notebook variable `values`. "
+                    f"Load the JSON array from `{path}` into the persistent notebook "
+                    "variable `values`. "
                     "Use a later IPython call to compute its position-weighted checksum "
                     "sum((index + 1) * value), then return that integer as JSON."
                 ),
@@ -111,9 +112,9 @@ def _state_stream(rng: random.Random, variant: int) -> GeneratedStream:
     rounds = (
         GeneratedRound(
             instruction=(
-                "Load the records into the persistent notebook variable `records` and "
-                "return the number of records. Retain the variable because the source "
-                "file will be removed before later requests."
+                f"Load the records from `{path}` into the persistent notebook variable "
+                "`records` and return the number of records. Retain the variable because "
+                "the source file will be removed before later requests."
             ),
             explicit_operation=(
                 "Assign the parsed JSON to `records`, then display `len(records)`. "

@@ -111,6 +111,20 @@ def test_round_limit_isolates_single_request_assignment_rung():
     assert all(len(task.data.rounds) == 1 for task in tasks)
 
 
+def test_file_backed_tasks_name_their_mounted_inputs():
+    tasks = IpythonFoundationsTaskset(
+        IpythonFoundationsConfig(instances_per_template=1)
+    ).load()
+
+    for family in ("assignment", "state"):
+        task = next(task for task in tasks if task.data.family == family)
+        first_round = task.data.rounds[0]
+        assert set(first_round.files) == {
+            f"/workspace/inbox/{'values' if family == 'assignment' else 'records'}.json"
+        }
+        assert next(iter(first_round.files)) in first_round.instruction
+
+
 def test_completion_stream_requires_one_result_then_immediate_answer():
     task = next(
         task
