@@ -335,7 +335,6 @@ def _inspects_structured_result(code: str) -> bool:
 def _selects_download_path(code: str) -> bool:
     return (
         "download" in code
-        and "document_path" in code
         and any(marker in code for marker in ("['path']", '["path"]'))
     )
 
@@ -595,8 +594,12 @@ def _behavior(
     path_reused_for_parser = bool(
         selected_path_index is not None
         and any(
-            index > selected_path_index
-            and "document_path" in event.code
+            index >= selected_path_index
+            and (
+                "document_path" in event.code
+                or source_kind == "structured_download"
+                and _selects_download_path(event.code)
+            )
             and _uses_parser_for_kind(event.code, file_kind)
             for index, event in enumerate(events)
         )

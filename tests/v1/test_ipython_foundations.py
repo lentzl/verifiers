@@ -781,6 +781,50 @@ def test_file_processing_rewards_inspection_path_reuse_and_text_extraction():
     assert behavior["process_aligned"] == 1.0
 
 
+def test_document_control_accepts_direct_use_of_inspected_download_path():
+    trace = _trace(
+        [
+            (
+                0,
+                "download = {'path': '/workspace/inbox/report.pdf'}\n"
+                "type(download), sorted(download)",
+                "(<class 'dict'>, ['path'])",
+            ),
+            (0, "from PyPDF2 import PdfReader", ""),
+            (0, "reader = PdfReader(download['path'])", ""),
+            (
+                0,
+                "page_count = len(reader)",
+                "Traceback: TypeError: object of type 'PdfReader' has no len()",
+            ),
+            (
+                0,
+                "page_count = len(reader.pages)\n"
+                "page_texts = [page.extract_text() for page in reader.pages]\n"
+                "full_text = '\\n'.join(page_texts)\n"
+                "page_count, full_text",
+                "(3, 'Finding: No material variance was detected.')",
+            ),
+        ]
+    )
+
+    behavior = _behavior(
+        trace,
+        "document_control",
+        "full_text",
+        expected_segments=1,
+        source_kind="structured_download",
+        file_kind="pdf",
+        failure_kind="document_control_len_reader",
+        expected_output_marker="No material variance was detected.",
+    )
+
+    assert behavior["download_path_selected"] == 1.0
+    assert behavior["path_reused_for_parser"] == 1.0
+    assert behavior["process_score"] == 1.0
+    assert behavior["process_aligned"] == 1.0
+
+
 def test_file_processing_accepts_evidenced_terminal_failure_without_retry():
     trace = _trace(
         [
