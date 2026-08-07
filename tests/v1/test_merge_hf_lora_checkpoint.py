@@ -90,3 +90,20 @@ def test_validate_export_eos_rejects_stale_nested_field(tmp_path):
         ValueError, match=r"config.json:\$.text_config.eos_token_id=248044"
     ):
         MODULE.validate_export_eos(tmp_path, ChatMLTokenizer())
+
+
+def test_validate_export_processor_metadata_accepts_vision_processor(tmp_path):
+    (tmp_path / "processor_config.json").write_text("{}")
+
+    MODULE.validate_export_processor_metadata(tmp_path, vision_model=True)
+
+
+def test_validate_export_processor_metadata_rejects_incomplete_vision_export(
+    tmp_path,
+):
+    with pytest.raises(ValueError, match="vision-model export lacks processor metadata"):
+        MODULE.validate_export_processor_metadata(tmp_path, vision_model=True)
+
+
+def test_validate_export_processor_metadata_is_optional_for_text_model(tmp_path):
+    MODULE.validate_export_processor_metadata(tmp_path, vision_model=False)

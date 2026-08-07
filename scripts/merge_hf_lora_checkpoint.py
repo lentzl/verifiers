@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TypeVar
 
 Tensor = TypeVar("Tensor")
+PROCESSOR_METADATA_FILES = (
+    "processor_config.json",
+    "preprocessor_config.json",
+    "video_preprocessor_config.json",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -127,6 +133,17 @@ def validate_export_eos(output: Path, tokenizer: object) -> int:
     return eos_token_id
 
 
+def validate_export_processor_metadata(output: Path, *, vision_model: bool) -> None:
+    """Require processor metadata for models whose config declares vision inputs."""
+    if vision_model and not any(
+        (output / filename).is_file() for filename in PROCESSOR_METADATA_FILES
+    ):
+        expected = ", ".join(PROCESSOR_METADATA_FILES)
+        raise ValueError(
+            f"vision-model export lacks processor metadata; expected one of: {expected}"
+        )
+
+
 def main() -> None:
     import torch
     from peft import (
@@ -184,13 +201,22 @@ def main() -> None:
             processor_tokenizer.eos_token = tokenizer.eos_token
         processor.save_pretrained(args.output)
     except (OSError, ValueError):
-        pass
+        for filename in PROCESSOR_METADATA_FILES:
+            try:
+                source = cached_file(base_name, filename)
+            except OSError:
+                continue
+            if source is not None:
+                shutil.copy2(source, args.output / filename)
     tokenizer.save_pretrained(args.output)
 
     exported_tokenizer = AutoTokenizer.from_pretrained(
         args.output, local_files_only=True, trust_remote_code=True
     )
     validate_export_eos(args.output, exported_tokenizer)
+    validate_export_processor_metadata(
+        args.output, vision_model=hasattr(base_config, "vision_config")
+    )
 
 
 if __name__ == "__main__":
