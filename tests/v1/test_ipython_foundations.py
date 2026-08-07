@@ -264,6 +264,25 @@ def test_guided_scaffolding_names_invariant_without_supplying_code():
     assert json.dumps(task.data.rounds[0].answer) not in prompt
 
 
+def test_self_distillation_demonstration_is_teacher_only():
+    task = next(
+        task
+        for task in IpythonFoundationsTaskset(
+            IpythonFoundationsConfig(
+                families=("assignment",),
+                instruction_level="standard",
+                instances_per_template=1,
+                rounds_per_task=1,
+            )
+        ).load()
+    )
+
+    prompt = _round_prompt(task, 0, None)
+    assert task.data.rounds[0].explicit_operation in task.data.demonstration
+    assert task.data.demonstration not in prompt
+    assert task.data.rounds[0].explicit_operation not in prompt
+
+
 @pytest.mark.parametrize(
     ("family", "variable", "calls"),
     [

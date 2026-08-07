@@ -102,6 +102,7 @@ class IpythonFoundationsData(vf.TaskData):
     template_variant: int
     instruction_level: Literal["standard", "guided", "explicit"] = "standard"
     state_variable: str
+    demonstration: str
     rounds: tuple[FoundationRound, ...]
 
 
@@ -590,6 +591,10 @@ class IpythonFoundationsTaskset(
             for family, variant in templates:
                 generated = generate(family, variant, instance, self.config.seed)
                 rounds = generated.rounds[: self.config.rounds_per_task]
+                demonstration = "\n\n".join(
+                    f"Request {round_idx + 1}: {round_.explicit_operation}"
+                    for round_idx, round_ in enumerate(rounds)
+                )
                 tasks.append(
                     IpythonFoundationsTask(
                         IpythonFoundationsData(
@@ -602,6 +607,7 @@ class IpythonFoundationsTaskset(
                             template_variant=variant,
                             instruction_level=self.config.instruction_level,
                             state_variable=generated.state_variable,
+                            demonstration=demonstration,
                             rounds=tuple(
                                 FoundationRound(
                                     instruction=round_.instruction,
