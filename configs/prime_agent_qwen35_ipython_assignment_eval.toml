@@ -26,7 +26,7 @@ seed = 20260806
 [env.agent]
 max_turns = 6
 max_output_tokens = 4096
-max_total_tokens = 12288
+max_total_tokens = 8192
 
 [env.agent.harness]
 id = "prime-agent"

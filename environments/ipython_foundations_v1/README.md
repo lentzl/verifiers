@@ -78,6 +78,6 @@ silent assignment recovery, and cross-request state reuse. Each next rung starts
 the previous rung's merged weight snapshot only after held-out standard-instruction
 evaluation improves its family-specific process metric without increasing tool calls.
 Recovery and subprocess families are introduced only after all three gates. The
-colocated inference profile reserves `0.19` of the GPU and enables rank-16 LoRA weight
+colocated inference profile reserves `0.17` of the GPU and enables rank-16 LoRA weight
 updates. The environment provides no installed task skill: this rung measures the
 model's use of Prime Agent's native persistent IPython kernel.
