@@ -19,6 +19,7 @@ RecoveryKind = Literal[
     "dictionary_key",
     "empty_parser_output",
     "subprocess_nonzero",
+    "unavailable_dependency",
 ]
 RECOVERY_KINDS: tuple[RecoveryKind, ...] = (
     "name_error",
@@ -31,6 +32,7 @@ RECOVERY_KINDS: tuple[RecoveryKind, ...] = (
     "dictionary_key",
     "empty_parser_output",
     "subprocess_nonzero",
+    "unavailable_dependency",
 )
 
 
@@ -289,6 +291,31 @@ def _subprocess_nonzero(
     )
 
 
+def _unavailable_dependency(rng: random.Random) -> RecoveryCase:
+    values = [rng.randint(2, 15) for _ in range(4)]
+    module = "site_specific_document_parser"
+    stale = f"payload = {values!r}; import {module}; {module}.extract(payload)"
+    return RecoveryCase(
+        kind="unavailable_dependency",
+        instruction=(
+            f"Run the stale operation `{stale}` once to receive its real import error. "
+            "Preserve `payload`. In the next call, use import-system or package metadata "
+            "introspection to verify whether the named dependency is available. If it is "
+            "not available, do not retry, invent an API, or install arbitrary packages; "
+            "return the JSON object "
+            f'`{{"status":"unavailable","module":"{module}"}}`.'
+        ),
+        explicit_operation=(
+            "After the ModuleNotFoundError, inspect `payload`, "
+            f"`importlib.util.find_spec({module!r})`, and package mappings once. When the "
+            "result confirms absence, stop tool use and report the requested structured "
+            "limitation."
+        ),
+        answer={"status": "unavailable", "module": module},
+        files={},
+    )
+
+
 def generate_recovery_case(
     variant: int, round_idx: int, rng: random.Random
 ) -> RecoveryCase:
@@ -311,7 +338,9 @@ def generate_recovery_case(
         return _dictionary_key(rng)
     if kind == "empty_parser_output":
         return _empty_parser_output(rng, variant, round_idx)
-    return _subprocess_nonzero(rng, variant, round_idx)
+    if kind == "subprocess_nonzero":
+        return _subprocess_nonzero(rng, variant, round_idx)
+    return _unavailable_dependency(rng)
 
 
 __all__ = [

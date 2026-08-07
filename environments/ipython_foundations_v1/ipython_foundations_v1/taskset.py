@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+from collections import Counter
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any, Literal
@@ -11,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 import verifiers.v1 as vf
+from ipython_foundations_v1.document_recovery import PARSER_FIXTURES
 from ipython_foundations_v1.generators import (
     EVAL_VARIANTS,
     FAMILIES,
@@ -34,6 +36,10 @@ SYSTEM_PROMPT = (
     "code successful. Use the reported error to change a failed operation instead of "
     "repeating it, and choose fallbacks from evidence rather than bypassing structured "
     "formats with raw-byte decoding."
+    " When a tool returns a structured object, inspect its type and fields before "
+    "passing one of its values to another API. Distinguish a distribution name from "
+    "its Python import and public API; use metadata and introspection rather than "
+    "inventing classes. Do not repeat an unchanged failure."
 )
 GUIDED_OPERATIONS = {
     "completion": (
@@ -56,6 +62,11 @@ GUIDED_OPERATIONS = {
     "subprocess": (
         "Inspect returncode, stdout, and stderr, then revise the failed command from "
         "that evidence without repeating it or decoding raw document bytes."
+    ),
+    "document_recovery": (
+        "Inspect whether the supplied source is a path or structured result, retain the "
+        "evidenced path, run the inherited parser once, and use its live error plus "
+        "package/API introspection to make one evidence-directed repair."
     ),
 }
 
@@ -104,6 +115,7 @@ class IpythonFoundationsData(vf.TaskData):
     state_variable: str
     demonstration: str
     rounds: tuple[FoundationRound, ...]
+    source_kind: Literal["direct_path", "structured_download"] | None = None
 
 
 @dataclass
@@ -246,11 +258,50 @@ def _uses_raw_pdf_fallback(code: str) -> bool:
     return False
 
 
+def _error_signature(output: str) -> str | None:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines or not any("Error" in line for line in lines):
+        return None
+    return lines[-1]
+
+
+def _uses_distribution_introspection(code: str) -> bool:
+    return any(
+        marker in code
+        for marker in (
+            "importlib.metadata",
+            "metadata.distribution",
+            "packages_distributions",
+        )
+    )
+
+
+def _uses_api_introspection(code: str) -> bool:
+    return any(marker in code for marker in ("dir(", "help(", "inspect.signature"))
+
+
+def _uses_document_parser(code: str) -> bool:
+    return "fitz.open" in code or "extract_text" in code
+
+
+def _uses_file_acquisition_api(code: str) -> bool:
+    return any(
+        marker in code
+        for marker in (
+            "list_files",
+            "download_file",
+            "omnigent_list_files",
+            "omnigent_download_file",
+        )
+    )
+
+
 def _behavior(
     trace: vf.Trace,
     family: Family,
     state_variable: str,
     expected_segments: int | None = None,
+    source_kind: Literal["direct_path", "structured_download"] | None = None,
 ) -> dict[str, float]:
     events = _ipython_events(trace)
     contexts = [_name_contexts(event.code, state_variable) for event in events]
@@ -333,6 +384,14 @@ def _behavior(
     repeated = sum(
         left.code.strip() == right.code.strip() for left, right in pairwise(events)
     )
+    error_signatures = [
+        signature
+        for event in events
+        if (signature := _error_signature(event.output)) is not None
+    ]
+    repeated_error_signatures = sum(
+        count - 1 for count in Counter(error_signatures).values() if count > 1
+    )
     subprocess_observed = any(
         {"returncode", "stdout", "stderr"} <= event_attributes
         for event_attributes in attributes
@@ -372,6 +431,83 @@ def _behavior(
         and "Error" not in event.output
         for event in events
     )
+    source_events = [event for event in events if event.segment == 0]
+    document_source_inspected = bool(
+        source_kind == "structured_download"
+        and any(
+            "download" in event.code and "type(" in event.code
+            for event in source_events
+        )
+        and any(
+            "download" in event.code
+            and ("keys" in event.code or "sorted(download)" in event.code)
+            for event in source_events
+        )
+        or source_kind == "direct_path"
+        and any(
+            "document_path" in event.code and "type(" in event.code
+            for event in source_events
+        )
+        and any(
+            "document_path" in event.code
+            and ("exists" in event.code or "is_file" in event.code)
+            for event in source_events
+        )
+    )
+    document_error_indices = [
+        index
+        for index, event in enumerate(events)
+        if event.segment == 1 and _error_signature(event.output) is not None
+    ]
+    document_error_index = document_error_indices[0] if document_error_indices else None
+    document_extra_errors = max(len(document_error_indices) - 1, 0)
+    document_operation_revised = bool(
+        document_error_index is not None
+        and any(
+            index > document_error_index
+            and event.segment == 1
+            and event.code.strip() != events[document_error_index].code.strip()
+            for index, event in enumerate(events)
+        )
+    )
+    distribution_inspected = any(
+        index > document_error_index and _uses_distribution_introspection(event.code)
+        for index, event in enumerate(events)
+        if document_error_index is not None
+    )
+    api_surface_inspected = any(
+        index > document_error_index and _uses_api_introspection(event.code)
+        for index, event in enumerate(events)
+        if document_error_index is not None
+    )
+    package_api_inspected = distribution_inspected and api_surface_inspected
+    page_contexts = [_name_contexts(event.code, "page_text") for event in events]
+    document_text_extracted = any(
+        index > document_error_index
+        and event.segment == 1
+        and page_contexts[index][0]
+        and _uses_document_parser(event.code)
+        and "Title:" in event.output
+        and _error_signature(event.output) is None
+        for index, event in enumerate(events)
+        if document_error_index is not None
+    )
+    page_assignment = next(
+        (index for index, (assigned, _) in enumerate(page_contexts) if assigned), None
+    )
+    summary_reused_extraction = bool(
+        page_assignment is not None
+        and any(
+            index > page_assignment
+            and loaded
+            and not assigned
+            and events[index].segment > events[page_assignment].segment
+            for index, (assigned, loaded) in enumerate(page_contexts)
+        )
+    )
+    file_acquisition_calls = sum(
+        _uses_file_acquisition_api(event.code) for event in events
+    )
     observed_segments = max(len(active_segments), 1)
     expected_rounds = expected_segments or observed_segments
     efficient_call_budget = {
@@ -380,6 +516,7 @@ def _behavior(
         "state": expected_rounds,
         "recovery": 3 * expected_rounds,
         "subprocess": expected_rounds,
+        "document_recovery": 7,
     }[family]
     call_efficiency = min(efficient_call_budget / max(len(events), 1), 1.0)
     recovery_round_coverage = (
@@ -402,12 +539,32 @@ def _behavior(
         subprocess_progress *= 0.5
     if subprocess_failure_retries:
         subprocess_progress /= subprocess_failure_retries + 1
+    document_progress = (
+        sum(
+            (
+                document_source_inspected,
+                later_reuse is not None,
+                document_error_index is not None,
+                document_operation_revised,
+                distribution_inspected,
+                api_surface_inspected,
+                document_text_extracted,
+                summary_reused_extraction,
+            )
+        )
+        / 8
+    )
+    if raw_pdf_fallback or file_acquisition_calls:
+        document_progress *= 0.5
+    if document_extra_errors or repeated_error_signatures:
+        document_progress /= 1 + document_extra_errors + repeated_error_signatures
     family_progress = {
         "completion": float(successful_result_observed),
         "assignment": float(silent_assignment_recovered),
         "state": float(cross_turn_reuse),
         "recovery": recovery_round_coverage,
         "subprocess": subprocess_progress,
+        "document_recovery": document_progress,
     }[family]
     process_score = family_progress * call_efficiency / (repeated + 1)
     family_aligned = {
@@ -422,6 +579,20 @@ def _behavior(
             and cli_stdout_used
             and not raw_pdf_fallback
             and subprocess_failure_retries == 0
+        ),
+        "document_recovery": (
+            document_source_inspected
+            and later_reuse is not None
+            and document_error_index is not None
+            and document_operation_revised
+            and distribution_inspected
+            and api_surface_inspected
+            and document_text_extracted
+            and summary_reused_extraction
+            and document_extra_errors == 0
+            and repeated_error_signatures == 0
+            and file_acquisition_calls == 0
+            and not raw_pdf_fallback
         ),
     }[family]
     return {
@@ -442,6 +613,16 @@ def _behavior(
         "subprocess_failure_retries": float(subprocess_failure_retries),
         "cli_stdout_convention_used": float(cli_stdout_used),
         "raw_pdf_fallback_used": float(raw_pdf_fallback),
+        "document_source_inspected": float(document_source_inspected),
+        "document_operation_revised": float(document_operation_revised),
+        "distribution_inspected": float(distribution_inspected),
+        "api_surface_inspected": float(api_surface_inspected),
+        "package_api_inspected": float(package_api_inspected),
+        "document_text_extracted": float(document_text_extracted),
+        "summary_reused_extraction": float(summary_reused_extraction),
+        "document_extra_errors": float(document_extra_errors),
+        "file_acquisition_calls": float(file_acquisition_calls),
+        "repeated_error_signatures": float(repeated_error_signatures),
         "identical_consecutive_calls": float(repeated),
         "successful_result_observed": float(successful_result_observed),
         "ipython_call_efficiency": call_efficiency,
@@ -460,6 +641,20 @@ class IpythonFoundationsTask(vf.Task[IpythonFoundationsData]):
         if result.exit_code != 0:
             raise RuntimeError(f"workspace setup failed: {result.stderr[-500:]}")
         await runtime.write(f"{WORKSPACE}/bin/pdftotext", PDFTOTEXT_COMPAT.encode())
+        fixture_directories = sorted(
+            {
+                str((WORKSPACE + "/" + path).rsplit("/", 1)[0])
+                for path in PARSER_FIXTURES
+                if "/" in path
+            }
+        )
+        fixture_setup = await runtime.run(["mkdir", "-p", *fixture_directories], {})
+        if fixture_setup.exit_code != 0:
+            raise RuntimeError(
+                f"parser fixture setup failed: {fixture_setup.stderr[-500:]}"
+            )
+        for relative_path, content in PARSER_FIXTURES.items():
+            await runtime.write(f"{WORKSPACE}/{relative_path}", content.encode())
         executable = await runtime.run(
             ["chmod", "755", f"{WORKSPACE}/bin/pdftotext"], {}
         )
@@ -473,6 +668,7 @@ class IpythonFoundationsTask(vf.Task[IpythonFoundationsData]):
             self.data.family,
             self.data.state_variable,
             expected_segments=len(self.data.rounds),
+            source_kind=self.data.source_kind,
         )
         return behavior["process_score"]
 
@@ -483,6 +679,7 @@ class IpythonFoundationsTask(vf.Task[IpythonFoundationsData]):
             self.data.family,
             self.data.state_variable,
             expected_segments=len(self.data.rounds),
+            source_kind=self.data.source_kind,
         )
 
 
@@ -620,6 +817,7 @@ class IpythonFoundationsTaskset(
                                 )
                                 for round_ in rounds
                             ),
+                            source_kind=generated.source_kind,
                         ),
                         self.config.task,
                     )

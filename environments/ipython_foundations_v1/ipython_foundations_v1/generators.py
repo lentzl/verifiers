@@ -10,13 +10,21 @@ from typing import Literal
 
 from ipython_foundations_v1.python_recovery_cases import generate_recovery_case
 
-Family = Literal["completion", "assignment", "state", "recovery", "subprocess"]
+Family = Literal[
+    "completion",
+    "assignment",
+    "state",
+    "recovery",
+    "subprocess",
+    "document_recovery",
+]
 FAMILIES: tuple[Family, ...] = (
     "completion",
     "assignment",
     "state",
     "recovery",
     "subprocess",
+    "document_recovery",
 )
 TRAIN_VARIANTS = range(4)
 EVAL_VARIANTS = range(4, 6)
@@ -38,6 +46,7 @@ class GeneratedRound:
 class GeneratedStream:
     state_variable: str
     rounds: tuple[GeneratedRound, ...]
+    source_kind: Literal["direct_path", "structured_download"] | None = None
 
 
 def _json(value: object) -> str:
@@ -311,6 +320,139 @@ def _subprocess_stream(
     )
 
 
+def _document_recovery_stream(
+    rng: random.Random, variant: int, instance: int
+) -> GeneratedStream:
+    subjects = (
+        "coastal flood sensor coverage",
+        "regional heat-pump adoption",
+        "rail station accessibility",
+        "wetland restoration monitoring",
+        "school ventilation audits",
+        "municipal water-loss detection",
+    )
+    subject = subjects[variant % len(subjects)]
+    observed = rng.randint(12, 28)
+    total = observed + rng.randint(3, 9)
+    title = f"Evidence Brief {variant}-{instance}"
+    path = f"/workspace/inbox/evidence-{variant}-{instance}.pdf"
+    first_page = (
+        f"Title: {title}\n"
+        f"Subject: {subject}\n"
+        f"Finding: {observed} of {total} reviewed sites met the target.\n"
+    )
+    document = first_page + "\fAppendix: methods and sampling details.\n"
+    source_kind: Literal["direct_path", "structured_download"] = (
+        "structured_download" if variant % 2 == 0 else "direct_path"
+    )
+    profile = "pymupdf" if (variant // 2) % 2 == 0 else "pdfminer.six"
+
+    if source_kind == "structured_download":
+        download = {
+            "path": path,
+            "filename": path.rsplit("/", 1)[-1],
+            "bytes": len(document),
+            "content_type": "application/pdf",
+        }
+        source_instruction = (
+            "The completed file download returned this JSON object: "
+            f"`{_json(download)}`. In IPython, retain it as `download`, inspect its "
+            "Python type and keys before choosing a parser input, select its `path` as "
+            "`document_path`, and verify that path exists. Do not list or download the "
+            "file again. Return a JSON object with `source_kind`, `path`, and `bytes`."
+        )
+        source_operation = (
+            f"Assign `download = {download!r}`, inspect `type(download)` and "
+            "`sorted(download)`, set `document_path = download['path']`, and inspect "
+            "`Path(document_path).exists()` before answering."
+        )
+        source_answer = {
+            "source_kind": source_kind,
+            "path": path,
+            "bytes": len(document),
+        }
+    else:
+        source_instruction = (
+            f"The document is already available at the direct absolute path `{path}`. "
+            "Use that path directly: retain it as `document_path`, inspect its type, "
+            "and verify it exists. Do not call file-listing or download APIs. Return a "
+            "JSON object with `source_kind`, `path`, and `exists`."
+        )
+        source_operation = (
+            f"Assign `document_path = {path!r}`, inspect `type(document_path)`, and "
+            "inspect `Path(document_path).exists()` before answering."
+        )
+        source_answer = {
+            "source_kind": source_kind,
+            "path": path,
+            "exists": True,
+        }
+
+    if profile == "pymupdf":
+        stale = "import PyMuPDF; document = PyMuPDF.PdfReader(document_path)"
+        repair = (
+            "After the ModuleNotFoundError, inspect the installed `pymupdf` distribution "
+            "metadata to identify its top-level import. Import `fitz`, inspect its "
+            "available names and the signature of `fitz.open`, then use "
+            "`document = fitz.open(document_path)` and "
+            "`page_text = document[0].get_text()`."
+        )
+    else:
+        stale = "from pdfminer import PDFReader; document = PDFReader(document_path)"
+        repair = (
+            "After the ImportError, inspect the installed `pdfminer.six` distribution "
+            "metadata to identify its top-level import. Inspect `pdfminer.high_level` "
+            "and the signature of its extraction function, then use "
+            "`page_text = pdfminer.high_level.extract_text(document_path, "
+            "page_numbers=[0])`."
+        )
+
+    return GeneratedStream(
+        state_variable="document_path",
+        source_kind=source_kind,
+        rounds=(
+            GeneratedRound(
+                instruction=source_instruction,
+                explicit_operation=source_operation,
+                answer=source_answer,
+                files={path: base64.b64encode(document.encode()).decode()},
+            ),
+            GeneratedRound(
+                instruction=(
+                    f"Reuse `document_path` and run this inherited parser operation once: "
+                    f"`{stale}`. Read the complete live traceback. {repair} Preserve the "
+                    "known-good path, change the failing operation, and do not retry an "
+                    "unchanged error. Return the extracted first-page text as a JSON string."
+                ),
+                explicit_operation=(
+                    f"Execute `{stale}` exactly once to obtain the real kernel error. "
+                    f"{repair} Display and retain `page_text`; do not decode raw PDF bytes."
+                ),
+                answer=first_page,
+                files={},
+                recovery_kind=f"document_api_{profile}",
+            ),
+            GeneratedRound(
+                instruction=(
+                    "Reuse the retained `page_text` without reopening the document. Return "
+                    "a concise grounded JSON summary with exactly the keys `title`, "
+                    "`subject`, and `finding`."
+                ),
+                explicit_operation=(
+                    "Parse the three labeled lines already present in `page_text`; do not "
+                    "read the file again. Return their values in the requested JSON object."
+                ),
+                answer={
+                    "title": title,
+                    "subject": subject,
+                    "finding": f"{observed} of {total} reviewed sites met the target.",
+                },
+                files={},
+            ),
+        ),
+    )
+
+
 def generate(family: Family, variant: int, instance: int, seed: int) -> GeneratedStream:
     rng = random.Random((seed * 1_000_003) + (variant * 10_007) + instance)
     if family == "completion":
@@ -321,4 +463,6 @@ def generate(family: Family, variant: int, instance: int, seed: int) -> Generate
         return _state_stream(rng, variant)
     if family == "recovery":
         return _recovery_stream(rng, variant)
-    return _subprocess_stream(rng, variant, instance)
+    if family == "subprocess":
+        return _subprocess_stream(rng, variant, instance)
+    return _document_recovery_stream(rng, variant, instance)

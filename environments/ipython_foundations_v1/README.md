@@ -11,6 +11,9 @@ families keep one Prime Agent session and IPython kernel alive across related re
   requires a changed corrective call using state that survived the failure;
 - `subprocess` preserves a downloaded document path, exposes a real nonzero process
   result, and requires complete result inspection plus an error-directed CLI repair.
+- `document_recovery` alternates direct absolute paths and structured download results,
+  then exposes a real package/import/API failure before requiring introspection,
+  extraction, and a grounded summary from retained text.
 
 Notebook process is the primary reward; answer accuracy has half its weight. The
 process score gives partial credit for completed repair stages and discounts repeated
@@ -28,9 +31,26 @@ exact demonstrations before its held-out gate.
 The recovery matrix covers `NameError`, missing imports, omitted `await`, bytes/text
 mismatches, confusing `CompletedProcess` with its stdout, path quoting, missing files,
 incorrect dictionary keys, empty parser output, and a nonzero subprocess promoted to
-`CalledProcessError`. The environment never inserts fabricated traceback text: the
+`CalledProcessError`. An intentionally unavailable dependency requires one evidenced
+availability check followed by a structured limitation instead of repeated imports,
+API invention, or arbitrary installation. The environment never inserts fabricated traceback text: the
 prompt supplies a stale operation, Prime Agent runs it in the persistent kernel, and
 the next sampled action receives the kernel's actual feedback.
+
+Document recovery uses small executable parser fixtures with realistic distribution,
+import, and public-API boundaries: `pymupdf` maps to `fitz.open`, while
+`pdfminer.six` maps to `pdfminer.high_level.extract_text`. The fixtures keep the rung
+offline and deterministic; they are not prompt-inserted traceback strings. Process
+metrics separately expose source inspection, operation revision, package/API
+introspection, text extraction, and summary reuse. Repeated error signatures,
+additional repair errors, unnecessary list/download calls, and raw-byte decoding all
+reduce reward. This keeps a correct final summary from hiding an API-guessing loop.
+
+Run `prime_agent_qwen35_ipython_recovery_eval.toml` for the new capability and
+`prime_agent_qwen35_ipython_foundation_regression_eval.toml` for completion, silent
+assignment, and cross-message continuity. Omitted-`await` remains in the held-out
+recovery matrix, while direct-path document variants detect unnecessary acquisition
+calls. These diagnostics must be reviewed independently.
 
 ## Develop
 

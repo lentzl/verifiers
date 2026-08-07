@@ -1,7 +1,9 @@
 import json
 import subprocess
+import sys
 
 import pytest
+from ipython_foundations_v1.document_recovery import PARSER_FIXTURES
 from ipython_foundations_v1.python_recovery_cases import RECOVERY_KINDS
 from ipython_foundations_v1.taskset import (
     PDFTOTEXT_COMPAT,
@@ -72,14 +74,15 @@ def test_taskset_balances_families_and_holds_out_variants():
         IpythonFoundationsConfig(split="eval", instances_per_template=1)
     ).load()
 
-    assert len(train) == 20
-    assert len(evaluation) == 12
+    assert len(train) == 24
+    assert len(evaluation) == 14
     assert {task.data.family for task in train} == {
         "completion",
         "assignment",
         "state",
         "recovery",
         "subprocess",
+        "document_recovery",
     }
     assert {task.data.template_variant for task in train} == {0, 1, 2, 3}
     assert {
@@ -173,6 +176,59 @@ def test_subprocess_stream_preserves_path_and_requires_error_directed_repair():
     assert "raw PDF bytes" in task.data.rounds[2].instruction
 
 
+def test_document_recovery_mixes_source_forms_and_parser_profiles():
+    tasks = [
+        task
+        for task in IpythonFoundationsTaskset(
+            IpythonFoundationsConfig(
+                families=("document_recovery",), instances_per_template=1
+            )
+        ).load()
+    ]
+
+    assert {task.data.source_kind for task in tasks} == {
+        "direct_path",
+        "structured_download",
+    }
+    assert all(len(task.data.rounds) == 3 for task in tasks)
+    assert all(len(task.data.rounds[0].files) == 1 for task in tasks)
+    assert all(not task.data.rounds[1].files for task in tasks)
+    assert all(not task.data.rounds[2].files for task in tasks)
+    assert any("PyMuPDF" in task.data.rounds[1].instruction for task in tasks)
+    assert any("pdfminer" in task.data.rounds[1].instruction for task in tasks)
+    assert all("live traceback" in task.data.rounds[1].instruction for task in tasks)
+    assert all("page_text" in task.data.rounds[2].instruction for task in tasks)
+
+
+def test_document_parser_fixtures_expose_distribution_import_and_public_api(tmp_path):
+    for relative_path, content in PARSER_FIXTURES.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    source = tmp_path / "report.pdf"
+    source.write_text("VGl0bGU6IFJlcG9ydAo=")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib.metadata as metadata; import fitz; "
+                "from pdfminer.high_level import extract_text; "
+                "assert metadata.distribution('pymupdf').read_text('top_level.txt').strip() == 'fitz'; "
+                "assert fitz.open('report.pdf')[0].get_text() == 'Title: Report\\n'; "
+                "assert extract_text('report.pdf', page_numbers=[0]) == 'Title: Report\\n'"
+            ),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_recovery_training_matrix_covers_every_real_error_kind():
     recovery_tasks = [
         task
@@ -190,6 +246,11 @@ def test_recovery_training_matrix_covers_every_real_error_kind():
         for round_ in rounds
     )
     assert all(not round_.remove_after for round_ in rounds)
+    unavailable = next(
+        round_ for round_ in rounds if round_.recovery_kind == "unavailable_dependency"
+    )
+    assert unavailable.answer["status"] == "unavailable"
+    assert "do not retry" in unavailable.instruction
 
     evaluation = [
         task
@@ -365,12 +426,43 @@ def test_state_self_distillation_demonstrates_cross_request_reuse():
                 ),
             ],
         ),
+        (
+            "document_recovery",
+            "document_path",
+            [
+                (
+                    0,
+                    "download = {'path': '/workspace/inbox/report.pdf'}\nprint(type(download), sorted(download))\ndocument_path = download['path']\nPath(document_path).exists()",
+                    "<class 'dict'> ['path']\\nTrue",
+                ),
+                (
+                    1,
+                    "import PyMuPDF\ndocument = PyMuPDF.PdfReader(document_path)",
+                    "Traceback: ModuleNotFoundError: No module named 'PyMuPDF'",
+                ),
+                (
+                    1,
+                    "import importlib.metadata as metadata\nmetadata.distribution('pymupdf').read_text('top_level.txt')\nimport fitz, inspect\ndir(fitz)\ninspect.signature(fitz.open)\ndocument = fitz.open(document_path)\npage_text = document[0].get_text()\npage_text",
+                    "Title: Report\\nSubject: testing\\nFinding: complete.\\n",
+                ),
+                (
+                    2,
+                    "lines = page_text.splitlines()\n{'title': lines[0], 'subject': lines[1], 'finding': lines[2]}",
+                    "{'title': 'Title: Report', 'subject': 'Subject: testing', 'finding': 'Finding: complete.'}",
+                ),
+            ],
+        ),
     ],
 )
 def test_process_alignment_recognizes_family_specific_notebook_semantics(
     family, variable, calls
 ):
-    behavior = _behavior(_trace(calls), family, variable)
+    behavior = _behavior(
+        _trace(calls),
+        family,
+        variable,
+        source_kind=("structured_download" if family == "document_recovery" else None),
+    )
 
     assert behavior["process_aligned"] == 1.0
     assert behavior["process_score"] == 1.0
@@ -396,6 +488,39 @@ def test_subprocess_loop_and_raw_byte_fallback_are_not_rewarded():
     assert behavior["subprocess_failure_retries"] == 1.0
     assert behavior["raw_pdf_fallback_used"] == 1.0
     assert 0.0 < behavior["process_score"] < 0.5
+    assert behavior["process_aligned"] == 0.0
+
+
+def test_document_recovery_penalizes_repeated_errors_and_reacquisition():
+    failed = "import PyMuPDF; PyMuPDF.PdfReader(document_path)"
+    error = "Traceback: ModuleNotFoundError: No module named 'PyMuPDF'"
+    trace = _trace(
+        [
+            (
+                0,
+                "document_path = '/workspace/inbox/report.pdf'\nprint(type(document_path), Path(document_path).exists())",
+                "<class 'str'> True",
+            ),
+            (1, failed, error),
+            (1, failed, error),
+            (1, "await omnigent_list_files()", "[]"),
+            (1, "Path(document_path).read_bytes().decode()", "UnicodeDecodeError"),
+        ]
+    )
+
+    behavior = _behavior(
+        trace,
+        "document_recovery",
+        "document_path",
+        expected_segments=3,
+        source_kind="direct_path",
+    )
+
+    assert behavior["repeated_error_signatures"] >= 1.0
+    assert behavior["document_extra_errors"] >= 1.0
+    assert behavior["file_acquisition_calls"] == 1.0
+    assert behavior["raw_pdf_fallback_used"] == 1.0
+    assert behavior["process_score"] < 0.1
     assert behavior["process_aligned"] == 0.0
 
 
