@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import random
@@ -5,6 +6,9 @@ import subprocess
 import sys
 
 import pytest
+from ipython_foundations_v1.document_control import (
+    generate_document_control_scenario,
+)
 from ipython_foundations_v1.document_recovery import PARSER_FIXTURES
 from ipython_foundations_v1.file_processing import (
     FILE_PROCESSING_FIXTURES,
@@ -80,8 +84,8 @@ def test_taskset_balances_families_and_holds_out_variants():
         IpythonFoundationsConfig(split="eval", instances_per_template=1)
     ).load()
 
-    assert len(train) == 28
-    assert len(evaluation) == 16
+    assert len(train) == 32
+    assert len(evaluation) == 18
     assert {task.data.family for task in train} == {
         "completion",
         "assignment",
@@ -90,6 +94,7 @@ def test_taskset_balances_families_and_holds_out_variants():
         "subprocess",
         "document_recovery",
         "file_processing",
+        "document_control",
     }
     assert {task.data.template_variant for task in train} == {0, 1, 2, 3}
     assert {
@@ -104,7 +109,12 @@ def test_taskset_balances_families_and_holds_out_variants():
     } == {4, 5, 6, 7}
     assert all(
         len(task.data.rounds)
-        == (1 if task.data.family in {"completion", "file_processing"} else 3)
+        == (
+            1
+            if task.data.family
+            in {"completion", "file_processing", "document_control"}
+            else 3
+        )
         for task in [*train, *evaluation]
     )
 
@@ -314,6 +324,41 @@ def test_file_processing_fixtures_expose_pypdf_and_docx_apis(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+def test_document_control_fixture_exposes_len_failure_and_all_page_repair(tmp_path):
+    for relative_path, content in FILE_PROCESSING_FIXTURES.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    source = tmp_path / "review.pdf"
+    source.write_text(
+        base64.b64encode(
+            b"Title: Review\n\fFinding: Not approved.\n\fContext: Limited.\n"
+        ).decode()
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from PyPDF2 import PdfReader; reader = PdfReader('review.pdf'); "
+                "assert len(reader.pages) == 3; "
+                "assert 'Not approved' in '\\n'.join("
+                "page.extract_text() for page in reader.pages); "
+                "\ntry: len(reader)\nexcept TypeError: pass\n"
+                "else: raise AssertionError('len(reader) unexpectedly succeeded')"
+            ),
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_every_file_processing_expert_trajectory_satisfies_process_contract():
     for instance in range(5):
         for variant in range(4):
@@ -337,6 +382,60 @@ def test_every_file_processing_expert_trajectory_satisfies_process_contract():
 
             assert behavior["process_aligned"] == 1.0, scenario.failure_kind
             assert behavior["processing_outcome_observed"] == 1.0
+
+
+def test_document_control_matrix_pairs_claim_polarity_and_real_failures():
+    tasks = IpythonFoundationsTaskset(
+        IpythonFoundationsConfig(
+            families=("document_control",), instances_per_template=6
+        )
+    ).load()
+
+    assert len(tasks) == 24
+    assert {task.data.failure_kind for task in tasks} == {
+        "document_control_len_reader",
+        "document_control_pages_api",
+        "document_control_page_join",
+        "document_control_page_attribute",
+    }
+    statuses = {task.data.rounds[0].answer["status"] for task in tasks}
+    assert statuses == {
+        "approved",
+        "not_approved",
+        "variance_detected",
+        "no_variance",
+    }
+    assert all(
+        "exactly one JSON object" in task.data.rounds[0].instruction for task in tasks
+    )
+    assert all("negation" in task.data.rounds[0].instruction for task in tasks)
+
+
+def test_every_document_control_expert_trajectory_proves_repair_outcome():
+    for instance in range(6):
+        for variant in range(4):
+            rng = random.Random((20260806 * 1_000_003) + (variant * 10_007) + instance)
+            scenario = generate_document_control_scenario(variant, instance, rng)
+            trace = _trace(
+                [(0, call.code, call.output) for call in scenario.expert_calls]
+            )
+
+            behavior = _behavior(
+                trace,
+                "document_control",
+                "full_text",
+                expected_segments=1,
+                source_kind="structured_download",
+                file_kind="pdf",
+                failure_kind=scenario.failure_kind,
+                expected_output_marker=scenario.expected_output_marker,
+            )
+
+            assert behavior["traceback_informed_change"] == 1.0
+            assert behavior["repair_outcome_observed"] == 1.0
+            assert behavior["full_document_text_extracted"] == 1.0
+            assert behavior["process_score"] == 1.0
+            assert behavior["process_aligned"] == 1.0
 
 
 def test_recovery_training_matrix_covers_every_real_error_kind():
@@ -715,6 +814,48 @@ def test_file_processing_accepts_evidenced_terminal_failure_without_retry():
     assert behavior["file_processing_extra_errors"] == 0.0
     assert behavior["process_score"] == 1.0
     assert behavior["process_aligned"] == 1.0
+
+
+def test_document_control_does_not_reward_change_without_successful_repair():
+    trace = _trace(
+        [
+            (
+                0,
+                "download = {'path': '/workspace/inbox/report.pdf'}\n"
+                "type(download), sorted(download)",
+                "(<class 'dict'>, ['path'])",
+            ),
+            (0, "document_path = download['path']\ndocument_path", "'report.pdf'"),
+            (0, "from PyPDF2 import PdfReader", ""),
+            (
+                0,
+                "reader = PdfReader(document_path)\ntype(reader)",
+                "<class 'PyPDF2.PdfReader'>",
+            ),
+            (
+                0,
+                "page_count = len(reader)\npage_count",
+                "Traceback: TypeError: object of type 'PdfReader' has no len()",
+            ),
+            (0, "page_count = len(reader.pages)\npage_count", "3"),
+        ]
+    )
+
+    behavior = _behavior(
+        trace,
+        "document_control",
+        "full_text",
+        expected_segments=1,
+        source_kind="structured_download",
+        file_kind="pdf",
+        failure_kind="document_control_len_reader",
+        expected_output_marker="The safety review did not approve deployment.",
+    )
+
+    assert behavior["traceback_informed_change"] == 1.0
+    assert behavior["repair_outcome_observed"] == 0.0
+    assert behavior["full_document_text_extracted"] == 0.0
+    assert behavior["process_aligned"] == 0.0
 
 
 def test_recovery_process_reward_requires_feedback_repair_in_every_segment():

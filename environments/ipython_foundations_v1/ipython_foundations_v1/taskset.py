@@ -74,6 +74,11 @@ GUIDED_OPERATIONS = {
         "Choose a normal parser from file type and MIME evidence, preserve successful "
         "state, and change only the failed operation after live feedback."
     ),
+    "document_control": (
+        "Open the document once, execute the inherited failing expression once, and "
+        "repair that expression from its live traceback. Iterate every page, retain "
+        "the joined extracted text, preserve negation, and return only the requested JSON."
+    ),
 }
 
 PDFTOTEXT_COMPAT = r"""#!/usr/bin/env python3
@@ -656,6 +661,28 @@ def _behavior(
     )
     processing_outcome_observed = extracted_output_observed or terminal_failure_observed
     feedback_handled = traceback_informed_change or terminal_failure_observed
+    repair_outcome_observed = bool(
+        error_index is not None
+        and expected_output_marker
+        and any(
+            index > error_index
+            and event.code.strip() != events[error_index].code.strip()
+            and _error_signature(event.output) is None
+            and expected_output_marker in event.output
+            for index, event in enumerate(events)
+        )
+    )
+    full_document_text_extracted = bool(
+        expected_output_marker
+        and any(
+            "reader.pages" in event.code
+            and "extract_text" in event.code
+            and "full_text" in event.code
+            and expected_output_marker in event.output
+            and _error_signature(event.output) is None
+            for event in events
+        )
+    )
     expected_file_errors = int(
         failure_kind not in {None, "page_object_not_text", "scanned_pdf"}
     )
@@ -670,6 +697,7 @@ def _behavior(
         "subprocess": expected_rounds,
         "document_recovery": 7,
         "file_processing": 8,
+        "document_control": 7,
     }[family]
     call_efficiency = min(efficient_call_budget / max(len(events), 1), 1.0)
     recovery_round_coverage = (
@@ -729,6 +757,25 @@ def _behavior(
         file_processing_progress /= (
             1 + file_acquisition_calls + file_processing_extra_errors
         )
+    document_control_progress = (
+        sum(
+            (
+                structured_result_inspected,
+                selected_path_index is not None,
+                path_reused_for_parser,
+                parser_selected,
+                traceback_informed_change,
+                repair_outcome_observed,
+                full_document_text_extracted,
+                silent_import_progressed,
+            )
+        )
+        / 8
+    )
+    if file_acquisition_calls or file_processing_extra_errors:
+        document_control_progress /= (
+            1 + file_acquisition_calls + file_processing_extra_errors
+        )
     family_progress = {
         "completion": float(successful_result_observed),
         "assignment": float(silent_assignment_recovered),
@@ -737,6 +784,7 @@ def _behavior(
         "subprocess": subprocess_progress,
         "document_recovery": document_progress,
         "file_processing": file_processing_progress,
+        "document_control": document_control_progress,
     }[family]
     process_score = family_progress * call_efficiency / (repeated + 1)
     family_aligned = {
@@ -774,6 +822,19 @@ def _behavior(
             and feedback_handled
             and silent_import_progressed
             and processing_outcome_observed
+            and file_processing_extra_errors == 0
+            and repeated_error_signatures == 0
+            and file_acquisition_calls == 0
+        ),
+        "document_control": (
+            structured_result_inspected
+            and selected_path_index is not None
+            and path_reused_for_parser
+            and parser_selected
+            and traceback_informed_change
+            and repair_outcome_observed
+            and full_document_text_extracted
+            and silent_import_progressed
             and file_processing_extra_errors == 0
             and repeated_error_signatures == 0
             and file_acquisition_calls == 0
@@ -816,6 +877,8 @@ def _behavior(
         "extracted_output_observed": float(extracted_output_observed),
         "terminal_failure_observed": float(terminal_failure_observed),
         "processing_outcome_observed": float(processing_outcome_observed),
+        "repair_outcome_observed": float(repair_outcome_observed),
+        "full_document_text_extracted": float(full_document_text_extracted),
         "file_processing_extra_errors": float(file_processing_extra_errors),
         "repeated_error_signatures": float(repeated_error_signatures),
         "identical_consecutive_calls": float(repeated),
@@ -961,7 +1024,14 @@ class IpythonFoundationsEnv(vf.SingleAgentEnv):
         trace.record_metric("first_request_correct", float(padded[0] == 1.0))
         trace.record_metric("final_request_correct", float(padded[-1] == 1.0))
         trace.record_metric("completed_stream", float(len(scores) == total_rounds))
-        if task.data.family == "file_processing":
+        trace.record_metric(
+            "json_contract_followed",
+            float(
+                len(replies) == total_rounds
+                and all(reply is not None for reply in replies)
+            ),
+        )
+        if task.data.family in {"file_processing", "document_control"}:
             behavior = _behavior(
                 trace,
                 task.data.family,
@@ -976,6 +1046,15 @@ class IpythonFoundationsEnv(vf.SingleAgentEnv):
             trace.record_metric(
                 "grounded_file_answer",
                 float(padded[-1] == 1.0 and behavior["processing_outcome_observed"]),
+            )
+        if task.data.family == "document_control":
+            trace.record_metric(
+                "source_grounded_claim",
+                float(
+                    padded[-1] == 1.0
+                    and behavior["repair_outcome_observed"]
+                    and behavior["full_document_text_extracted"]
+                ),
             )
 
 

@@ -17,6 +17,9 @@ families keep one Prime Agent session and IPython kernel alive across related re
 - `file_processing` isolates short, single-request document trajectories that inspect
   structured results, retain paths, select parsers by file evidence, and convert real
   failures into bounded corrections rather than repeated cells.
+- `document_control` executes one failing full-document operation, requires a repaired
+  cell that proves success by extracting every page, and contrasts affirmative and
+  negated claims under a strict JSON answer contract.
 
 Notebook process is the primary reward; answer accuracy has half its weight. The
 process score gives partial credit for completed repair stages and discounts repeated
@@ -59,6 +62,14 @@ traceback-informed revision, progress after silent imports, nonempty extraction,
 evidenced terminal limitations. This makes parser/API knowledge secondary to the
 intended control loop: inspect, retain, attempt, observe, constrain, and proceed.
 
+Document control strengthens the meaning of feedback-conditioned repair. A changed
+cell is not enough: `repair_outcome_observed` requires the later operation to execute
+without error and display the expected source evidence, while
+`full_document_text_extracted` requires iteration over `reader.pages` and retained
+joined text. Contrastive claims use nearly identical vocabulary with opposite
+polarity, so exact answer scoring detects lost negation instead of rewarding lexical
+overlap. `json_contract_followed` separately exposes prose answers to JSON requests.
+
 Run `prime_agent_qwen35_ipython_recovery_eval.toml` for the new capability and
 `prime_agent_qwen35_ipython_foundation_regression_eval.toml` for completion, silent
 assignment, and cross-message continuity. Omitted-`await` remains in the held-out
@@ -70,6 +81,10 @@ handling. It enumerates the full held-out scenario matrix and records
 `grounded_file_answer` independently from process alignment, so a memorized answer
 cannot hide a failed extraction and a sound unsupported-file diagnosis is not scored
 as an extraction failure.
+
+Run `prime_agent_qwen35_document_control_eval.toml` for full-document repair and
+claim-grounding. Review `repair_outcome_observed`, `full_document_text_extracted`,
+`json_contract_followed`, and `source_grounded_claim` alongside process alignment.
 
 ## Develop
 

@@ -8,6 +8,9 @@ import random
 from dataclasses import dataclass
 from typing import Literal
 
+from ipython_foundations_v1.document_control import (
+    generate_document_control_scenario,
+)
 from ipython_foundations_v1.file_processing import (
     FileKind,
     generate_file_processing_scenario,
@@ -22,6 +25,7 @@ Family = Literal[
     "subprocess",
     "document_recovery",
     "file_processing",
+    "document_control",
 ]
 FAMILIES: tuple[Family, ...] = (
     "completion",
@@ -31,6 +35,7 @@ FAMILIES: tuple[Family, ...] = (
     "subprocess",
     "document_recovery",
     "file_processing",
+    "document_control",
 )
 TRAIN_VARIANTS = range(4)
 EVAL_VARIANTS = range(4, 6)
@@ -492,6 +497,33 @@ def _file_processing_stream(
     )
 
 
+def _document_control_stream(
+    rng: random.Random, variant: int, instance: int
+) -> GeneratedStream:
+    scenario = generate_document_control_scenario(variant, instance, rng)
+    expert_trace = _expert_trace(
+        tuple((call.code, call.output) for call in scenario.expert_calls),
+        scenario.answer,
+    )
+    return GeneratedStream(
+        state_variable="full_text",
+        source_kind="structured_download",
+        file_kind="pdf",
+        failure_kind=scenario.failure_kind,
+        expected_output_marker=scenario.expected_output_marker,
+        rounds=(
+            GeneratedRound(
+                instruction=scenario.instruction,
+                explicit_operation=scenario.explicit_operation,
+                answer=scenario.answer,
+                files=scenario.files,
+                expert_trace=expert_trace,
+                recovery_kind=scenario.failure_kind,
+            ),
+        ),
+    )
+
+
 def generate(family: Family, variant: int, instance: int, seed: int) -> GeneratedStream:
     rng = random.Random((seed * 1_000_003) + (variant * 10_007) + instance)
     if family == "completion":
@@ -506,4 +538,6 @@ def generate(family: Family, variant: int, instance: int, seed: int) -> Generate
         return _subprocess_stream(rng, variant, instance)
     if family == "document_recovery":
         return _document_recovery_stream(rng, variant, instance)
-    return _file_processing_stream(rng, variant, instance)
+    if family == "file_processing":
+        return _file_processing_stream(rng, variant, instance)
+    return _document_control_stream(rng, variant, instance)

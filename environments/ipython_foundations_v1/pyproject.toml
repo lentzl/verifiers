@@ -1,7 +1,7 @@
 [project]
 name = "ipython-foundations-v1"
-version = "0.9.0"
-description = "Persistent IPython state, recovery, and typed file-processing streams for Prime Agent."
+version = "0.10.0"
+description = "Persistent IPython state, recovery, file processing, and document-control streams for Prime Agent."
 requires-python = ">=3.11"
 dependencies = ["verifiers"]
 
