@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 import verifiers.v1 as vf
 from ipython_foundations_v1.document_recovery import PARSER_FIXTURES
+from ipython_foundations_v1.file_processing import FILE_PROCESSING_FIXTURES, FileKind
 from ipython_foundations_v1.generators import (
     EVAL_VARIANTS,
     FAMILIES,
@@ -68,6 +69,11 @@ GUIDED_OPERATIONS = {
         "evidenced path, run the inherited parser once, and use its live error plus "
         "package/API introspection to make one evidence-directed repair."
     ),
+    "file_processing": (
+        "Inspect the supplied Python value and select its evidenced path before parsing. "
+        "Choose a normal parser from file type and MIME evidence, preserve successful "
+        "state, and change only the failed operation after live feedback."
+    ),
 }
 
 PDFTOTEXT_COMPAT = r"""#!/usr/bin/env python3
@@ -116,6 +122,10 @@ class IpythonFoundationsData(vf.TaskData):
     demonstration: str
     rounds: tuple[FoundationRound, ...]
     source_kind: Literal["direct_path", "structured_download"] | None = None
+    file_kind: FileKind | None = None
+    failure_kind: str | None = None
+    expected_output_marker: str | None = None
+    terminal_status: str | None = None
 
 
 @dataclass
@@ -296,12 +306,55 @@ def _uses_file_acquisition_api(code: str) -> bool:
     )
 
 
+def _uses_parser_for_kind(code: str, file_kind: FileKind | None) -> bool:
+    markers = {
+        "text": ("read_text",),
+        "markdown": ("read_text",),
+        "csv": ("csv.", "csv import", "pandas", "read_csv"),
+        "json": ("json.load",),
+        "pdf": ("PdfReader", "pdftotext", "fitz.open", "extract_text"),
+        "docx": ("docx", "Document("),
+        "unknown": ("mimetypes", "read_bytes", "read_text"),
+    }
+    return bool(file_kind and any(marker in code for marker in markers[file_kind]))
+
+
+def _inspects_structured_result(code: str) -> bool:
+    return (
+        "download" in code
+        and "type(" in code
+        and any(marker in code for marker in ("keys", "sorted(download)"))
+    )
+
+
+def _selects_download_path(code: str) -> bool:
+    return (
+        "download" in code
+        and "document_path" in code
+        and any(marker in code for marker in ("['path']", '["path"]'))
+    )
+
+
+def _is_import_only(code: str) -> bool:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    return bool(tree.body) and all(
+        isinstance(node, (ast.Import, ast.ImportFrom)) for node in tree.body
+    )
+
+
 def _behavior(
     trace: vf.Trace,
     family: Family,
     state_variable: str,
     expected_segments: int | None = None,
     source_kind: Literal["direct_path", "structured_download"] | None = None,
+    file_kind: FileKind | None = None,
+    failure_kind: str | None = None,
+    expected_output_marker: str | None = None,
+    terminal_status: str | None = None,
 ) -> dict[str, float]:
     events = _ipython_events(trace)
     contexts = [_name_contexts(event.code, state_variable) for event in events]
@@ -508,6 +561,105 @@ def _behavior(
     file_acquisition_calls = sum(
         _uses_file_acquisition_api(event.code) for event in events
     )
+    structured_result_inspected = bool(
+        source_kind == "structured_download"
+        and any(_inspects_structured_result(event.code) for event in events)
+        or source_kind == "direct_path"
+        and any(
+            "document_path" in event.code and "type(" in event.code for event in events
+        )
+    )
+    selected_path_index = next(
+        (
+            index
+            for index, event in enumerate(events)
+            if (
+                source_kind == "structured_download"
+                and _selects_download_path(event.code)
+                or source_kind == "direct_path"
+                and "document_path" in event.code
+                and _name_contexts(event.code, "document_path")[0]
+            )
+            and _error_signature(event.output) is None
+        ),
+        None,
+    )
+    parser_selected = any(
+        _uses_parser_for_kind(event.code, file_kind) for event in events
+    )
+    path_reused_for_parser = bool(
+        selected_path_index is not None
+        and any(
+            index > selected_path_index
+            and "document_path" in event.code
+            and _uses_parser_for_kind(event.code, file_kind)
+            for index, event in enumerate(events)
+        )
+    )
+    page_object_index = next(
+        (
+            index
+            for index, event in enumerate(events)
+            if "Page object" in event.output and "extract_text" not in event.code
+        ),
+        None,
+    )
+    traceback_informed_change = bool(
+        error_index is not None
+        and any(
+            index > error_index
+            and event.code.strip() != events[error_index].code.strip()
+            and _error_signature(event.output)
+            != _error_signature(events[error_index].output)
+            for index, event in enumerate(events)
+        )
+        or page_object_index is not None
+        and any(
+            index > page_object_index
+            and "extract_text" in event.code
+            and expected_output_marker in event.output
+            for index, event in enumerate(events)
+            if expected_output_marker
+        )
+    )
+    import_indices = [
+        index
+        for index, event in enumerate(events)
+        if _is_import_only(event.code) and not event.output.strip()
+    ]
+    silent_import_progressed = all(
+        index + 1 < len(events)
+        and events[index + 1].code.strip() != events[index].code.strip()
+        for index in import_indices
+    )
+    extracted_output_observed = bool(
+        expected_output_marker
+        and any(
+            expected_output_marker in event.output
+            and _uses_parser_for_kind(event.code, file_kind)
+            and _error_signature(event.output) is None
+            for event in events
+        )
+    )
+    terminal_failure_observed = bool(
+        terminal_status == "malformed_csv"
+        and any("unexpected end of data" in event.output for event in events)
+        or terminal_status == "invalid_json"
+        and any("JSONDecodeError" in event.output for event in events)
+        or terminal_status == "password_protected"
+        and any("FileNotDecryptedError" in event.output for event in events)
+        or terminal_status == "no_extractable_text"
+        and any(
+            "extract_text" in event.code and event.output.strip() in {"''", '""'}
+            for event in events
+        )
+    )
+    processing_outcome_observed = extracted_output_observed or terminal_failure_observed
+    feedback_handled = traceback_informed_change or terminal_failure_observed
+    expected_file_errors = int(
+        failure_kind not in {None, "page_object_not_text", "scanned_pdf"}
+    )
+    file_processing_extra_errors = max(len(error_signatures) - expected_file_errors, 0)
     observed_segments = max(len(active_segments), 1)
     expected_rounds = expected_segments or observed_segments
     efficient_call_budget = {
@@ -517,6 +669,7 @@ def _behavior(
         "recovery": 3 * expected_rounds,
         "subprocess": expected_rounds,
         "document_recovery": 7,
+        "file_processing": 8,
     }[family]
     call_efficiency = min(efficient_call_budget / max(len(events), 1), 1.0)
     recovery_round_coverage = (
@@ -558,6 +711,24 @@ def _behavior(
         document_progress *= 0.5
     if document_extra_errors or repeated_error_signatures:
         document_progress /= 1 + document_extra_errors + repeated_error_signatures
+    file_processing_progress = (
+        sum(
+            (
+                structured_result_inspected,
+                selected_path_index is not None,
+                path_reused_for_parser,
+                parser_selected,
+                feedback_handled,
+                silent_import_progressed,
+                processing_outcome_observed,
+            )
+        )
+        / 7
+    )
+    if file_acquisition_calls or file_processing_extra_errors:
+        file_processing_progress /= (
+            1 + file_acquisition_calls + file_processing_extra_errors
+        )
     family_progress = {
         "completion": float(successful_result_observed),
         "assignment": float(silent_assignment_recovered),
@@ -565,6 +736,7 @@ def _behavior(
         "recovery": recovery_round_coverage,
         "subprocess": subprocess_progress,
         "document_recovery": document_progress,
+        "file_processing": file_processing_progress,
     }[family]
     process_score = family_progress * call_efficiency / (repeated + 1)
     family_aligned = {
@@ -594,6 +766,18 @@ def _behavior(
             and file_acquisition_calls == 0
             and not raw_pdf_fallback
         ),
+        "file_processing": (
+            structured_result_inspected
+            and selected_path_index is not None
+            and path_reused_for_parser
+            and parser_selected
+            and feedback_handled
+            and silent_import_progressed
+            and processing_outcome_observed
+            and file_processing_extra_errors == 0
+            and repeated_error_signatures == 0
+            and file_acquisition_calls == 0
+        ),
     }[family]
     return {
         "ipython_calls": float(len(events)),
@@ -622,6 +806,17 @@ def _behavior(
         "summary_reused_extraction": float(summary_reused_extraction),
         "document_extra_errors": float(document_extra_errors),
         "file_acquisition_calls": float(file_acquisition_calls),
+        "structured_result_inspected": float(structured_result_inspected),
+        "download_path_selected": float(selected_path_index is not None),
+        "path_reused_for_parser": float(path_reused_for_parser),
+        "file_parser_selected": float(parser_selected),
+        "traceback_informed_change": float(traceback_informed_change),
+        "file_feedback_handled": float(feedback_handled),
+        "silent_import_progressed": float(silent_import_progressed),
+        "extracted_output_observed": float(extracted_output_observed),
+        "terminal_failure_observed": float(terminal_failure_observed),
+        "processing_outcome_observed": float(processing_outcome_observed),
+        "file_processing_extra_errors": float(file_processing_extra_errors),
         "repeated_error_signatures": float(repeated_error_signatures),
         "identical_consecutive_calls": float(repeated),
         "successful_result_observed": float(successful_result_observed),
@@ -641,10 +836,11 @@ class IpythonFoundationsTask(vf.Task[IpythonFoundationsData]):
         if result.exit_code != 0:
             raise RuntimeError(f"workspace setup failed: {result.stderr[-500:]}")
         await runtime.write(f"{WORKSPACE}/bin/pdftotext", PDFTOTEXT_COMPAT.encode())
+        fixtures = PARSER_FIXTURES | FILE_PROCESSING_FIXTURES
         fixture_directories = sorted(
             {
                 str((WORKSPACE + "/" + path).rsplit("/", 1)[0])
-                for path in PARSER_FIXTURES
+                for path in fixtures
                 if "/" in path
             }
         )
@@ -653,7 +849,7 @@ class IpythonFoundationsTask(vf.Task[IpythonFoundationsData]):
             raise RuntimeError(
                 f"parser fixture setup failed: {fixture_setup.stderr[-500:]}"
             )
-        for relative_path, content in PARSER_FIXTURES.items():
+        for relative_path, content in fixtures.items():
             await runtime.write(f"{WORKSPACE}/{relative_path}", content.encode())
         executable = await runtime.run(
             ["chmod", "755", f"{WORKSPACE}/bin/pdftotext"], {}
@@ -669,6 +865,10 @@ class IpythonFoundationsTask(vf.Task[IpythonFoundationsData]):
             self.data.state_variable,
             expected_segments=len(self.data.rounds),
             source_kind=self.data.source_kind,
+            file_kind=self.data.file_kind,
+            failure_kind=self.data.failure_kind,
+            expected_output_marker=self.data.expected_output_marker,
+            terminal_status=self.data.terminal_status,
         )
         return behavior["process_score"]
 
@@ -680,6 +880,10 @@ class IpythonFoundationsTask(vf.Task[IpythonFoundationsData]):
             self.data.state_variable,
             expected_segments=len(self.data.rounds),
             source_kind=self.data.source_kind,
+            file_kind=self.data.file_kind,
+            failure_kind=self.data.failure_kind,
+            expected_output_marker=self.data.expected_output_marker,
+            terminal_status=self.data.terminal_status,
         )
 
 
@@ -757,6 +961,22 @@ class IpythonFoundationsEnv(vf.SingleAgentEnv):
         trace.record_metric("first_request_correct", float(padded[0] == 1.0))
         trace.record_metric("final_request_correct", float(padded[-1] == 1.0))
         trace.record_metric("completed_stream", float(len(scores) == total_rounds))
+        if task.data.family == "file_processing":
+            behavior = _behavior(
+                trace,
+                task.data.family,
+                task.data.state_variable,
+                expected_segments=len(task.data.rounds),
+                source_kind=task.data.source_kind,
+                file_kind=task.data.file_kind,
+                failure_kind=task.data.failure_kind,
+                expected_output_marker=task.data.expected_output_marker,
+                terminal_status=task.data.terminal_status,
+            )
+            trace.record_metric(
+                "grounded_file_answer",
+                float(padded[-1] == 1.0 and behavior["processing_outcome_observed"]),
+            )
 
 
 class IpythonFoundationsConfig(vf.TasksetConfig):
@@ -818,6 +1038,10 @@ class IpythonFoundationsTaskset(
                                 for round_ in rounds
                             ),
                             source_kind=generated.source_kind,
+                            file_kind=generated.file_kind,
+                            failure_kind=generated.failure_kind,
+                            expected_output_marker=generated.expected_output_marker,
+                            terminal_status=generated.terminal_status,
                         ),
                         self.config.task,
                     )

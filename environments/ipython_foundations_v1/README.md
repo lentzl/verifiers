@@ -14,6 +14,9 @@ families keep one Prime Agent session and IPython kernel alive across related re
 - `document_recovery` alternates direct absolute paths and structured download results,
   then exposes a real package/import/API failure before requiring introspection,
   extraction, and a grounded summary from retained text.
+- `file_processing` isolates short, single-request document trajectories that inspect
+  structured results, retain paths, select parsers by file evidence, and convert real
+  failures into bounded corrections rather than repeated cells.
 
 Notebook process is the primary reward; answer accuracy has half its weight. The
 process score gives partial credit for completed repair stages and discounts repeated
@@ -46,11 +49,27 @@ introspection, text extraction, and summary reuse. Repeated error signatures,
 additional repair errors, unnecessary list/download calls, and raw-byte decoding all
 reduce reward. This keeps a correct final summary from hiding an API-guessing loop.
 
+File processing covers plain text and Markdown with `Path.read_text`, CSV with the
+standard library, JSON with `json.load`, PDF page extraction, DOCX paragraphs, and
+unknown formats through MIME and magic-byte inspection. Controlled failures include a
+missing `pdftotext`, wrong encoding, malformed CSV, invalid JSON, scanned PDFs with no
+extractable text, and password-protected PDFs. The process score separately measures
+structured-result inspection, `download["path"]` selection and reuse, parser choice,
+traceback-informed revision, progress after silent imports, nonempty extraction, and
+evidenced terminal limitations. This makes parser/API knowledge secondary to the
+intended control loop: inspect, retain, attempt, observe, constrain, and proceed.
+
 Run `prime_agent_qwen35_ipython_recovery_eval.toml` for the new capability and
 `prime_agent_qwen35_ipython_foundation_regression_eval.toml` for completion, silent
 assignment, and cross-message continuity. Omitted-`await` remains in the held-out
 recovery matrix, while direct-path document variants detect unnecessary acquisition
 calls. These diagnostics must be reviewed independently.
+
+Run `prime_agent_qwen35_file_processing_eval.toml` as a separate gate for typed file
+handling. It enumerates the full held-out scenario matrix and records
+`grounded_file_answer` independently from process alignment, so a memorized answer
+cannot hide a failed extraction and a sound unsupported-file diagnosis is not scored
+as an extraction failure.
 
 ## Develop
 

@@ -8,6 +8,10 @@ import random
 from dataclasses import dataclass
 from typing import Literal
 
+from ipython_foundations_v1.file_processing import (
+    FileKind,
+    generate_file_processing_scenario,
+)
 from ipython_foundations_v1.python_recovery_cases import generate_recovery_case
 
 Family = Literal[
@@ -17,6 +21,7 @@ Family = Literal[
     "recovery",
     "subprocess",
     "document_recovery",
+    "file_processing",
 ]
 FAMILIES: tuple[Family, ...] = (
     "completion",
@@ -25,6 +30,7 @@ FAMILIES: tuple[Family, ...] = (
     "recovery",
     "subprocess",
     "document_recovery",
+    "file_processing",
 )
 TRAIN_VARIANTS = range(4)
 EVAL_VARIANTS = range(4, 6)
@@ -47,6 +53,10 @@ class GeneratedStream:
     state_variable: str
     rounds: tuple[GeneratedRound, ...]
     source_kind: Literal["direct_path", "structured_download"] | None = None
+    file_kind: FileKind | None = None
+    failure_kind: str | None = None
+    expected_output_marker: str | None = None
+    terminal_status: str | None = None
 
 
 def _json(value: object) -> str:
@@ -454,6 +464,34 @@ def _document_recovery_stream(
     )
 
 
+def _file_processing_stream(
+    rng: random.Random, variant: int, instance: int
+) -> GeneratedStream:
+    scenario = generate_file_processing_scenario(variant, instance, rng)
+    expert_trace = _expert_trace(
+        tuple((call.code, call.output) for call in scenario.expert_calls),
+        scenario.answer,
+    )
+    return GeneratedStream(
+        state_variable="document_path",
+        source_kind=scenario.source_kind,
+        file_kind=scenario.file_kind,
+        failure_kind=scenario.failure_kind,
+        expected_output_marker=scenario.expected_output_marker,
+        terminal_status=scenario.terminal_status,
+        rounds=(
+            GeneratedRound(
+                instruction=scenario.instruction,
+                explicit_operation=scenario.explicit_operation,
+                answer=scenario.answer,
+                files=scenario.files,
+                expert_trace=expert_trace,
+                recovery_kind=scenario.failure_kind,
+            ),
+        ),
+    )
+
+
 def generate(family: Family, variant: int, instance: int, seed: int) -> GeneratedStream:
     rng = random.Random((seed * 1_000_003) + (variant * 10_007) + instance)
     if family == "completion":
@@ -466,4 +504,6 @@ def generate(family: Family, variant: int, instance: int, seed: int) -> Generate
         return _recovery_stream(rng, variant)
     if family == "subprocess":
         return _subprocess_stream(rng, variant, instance)
-    return _document_recovery_stream(rng, variant, instance)
+    if family == "document_recovery":
+        return _document_recovery_stream(rng, variant, instance)
+    return _file_processing_stream(rng, variant, instance)

@@ -1,9 +1,15 @@
 import json
+import os
+import random
 import subprocess
 import sys
 
 import pytest
 from ipython_foundations_v1.document_recovery import PARSER_FIXTURES
+from ipython_foundations_v1.file_processing import (
+    FILE_PROCESSING_FIXTURES,
+    generate_file_processing_scenario,
+)
 from ipython_foundations_v1.python_recovery_cases import RECOVERY_KINDS
 from ipython_foundations_v1.taskset import (
     PDFTOTEXT_COMPAT,
@@ -74,8 +80,8 @@ def test_taskset_balances_families_and_holds_out_variants():
         IpythonFoundationsConfig(split="eval", instances_per_template=1)
     ).load()
 
-    assert len(train) == 24
-    assert len(evaluation) == 14
+    assert len(train) == 28
+    assert len(evaluation) == 16
     assert {task.data.family for task in train} == {
         "completion",
         "assignment",
@@ -83,6 +89,7 @@ def test_taskset_balances_families_and_holds_out_variants():
         "recovery",
         "subprocess",
         "document_recovery",
+        "file_processing",
     }
     assert {task.data.template_variant for task in train} == {0, 1, 2, 3}
     assert {
@@ -96,7 +103,8 @@ def test_taskset_balances_families_and_holds_out_variants():
         if task.data.family == "recovery"
     } == {4, 5, 6, 7}
     assert all(
-        len(task.data.rounds) == (1 if task.data.family == "completion" else 3)
+        len(task.data.rounds)
+        == (1 if task.data.family in {"completion", "file_processing"} else 3)
         for task in [*train, *evaluation]
     )
 
@@ -232,6 +240,103 @@ def test_document_parser_fixtures_expose_distribution_import_and_public_api(tmp_
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_file_processing_matrix_covers_types_and_observed_failures():
+    tasks = IpythonFoundationsTaskset(
+        IpythonFoundationsConfig(
+            families=("file_processing",), instances_per_template=5
+        )
+    ).load()
+
+    assert len(tasks) == 20
+    assert {task.data.file_kind for task in tasks} == {
+        "text",
+        "markdown",
+        "csv",
+        "json",
+        "pdf",
+        "docx",
+        "unknown",
+    }
+    assert {
+        "missing_download_key",
+        "structured_result_is_dict",
+        "missing_pdf_stream",
+        "missing_pdf_import",
+        "page_object_not_text",
+        "pdfminer_public_api",
+        "pdftotext_missing",
+        "wrong_encoding",
+        "wrong_parser",
+        "malformed_csv",
+        "invalid_json",
+        "unknown_format",
+        "scanned_pdf",
+        "password_protected_pdf",
+    } <= {task.data.failure_kind for task in tasks}
+    assert all(len(task.data.rounds) == 1 for task in tasks)
+    assert all("assistant -> ipython" in task.data.demonstration for task in tasks)
+    assert all(
+        "download" in task.data.rounds[0].instruction
+        or task.data.source_kind == "direct_path"
+        for task in tasks
+    )
+
+
+def test_file_processing_fixtures_expose_pypdf_and_docx_apis(tmp_path):
+    for relative_path, content in FILE_PROCESSING_FIXTURES.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    pdf = tmp_path / "report.pdf"
+    pdf.write_text("VGl0bGU6IFJlcG9ydAo=")
+    docx = tmp_path / "report.docx"
+    docx.write_text("VGl0bGU6IFJlcG9ydAo=")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from PyPDF2 import PdfReader; from docx import Document; "
+                "assert PdfReader('report.pdf').pages[0].extract_text() == 'Title: Report\\n'; "
+                "assert Document('report.docx').paragraphs[0].text == 'Title: Report'"
+            ),
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_every_file_processing_expert_trajectory_satisfies_process_contract():
+    for instance in range(5):
+        for variant in range(4):
+            rng = random.Random((20260806 * 1_000_003) + (variant * 10_007) + instance)
+            scenario = generate_file_processing_scenario(variant, instance, rng)
+            trace = _trace(
+                [(0, call.code, call.output) for call in scenario.expert_calls]
+            )
+
+            behavior = _behavior(
+                trace,
+                "file_processing",
+                "document_path",
+                expected_segments=1,
+                source_kind=scenario.source_kind,
+                file_kind=scenario.file_kind,
+                failure_kind=scenario.failure_kind,
+                expected_output_marker=scenario.expected_output_marker,
+                terminal_status=scenario.terminal_status,
+            )
+
+            assert behavior["process_aligned"] == 1.0, scenario.failure_kind
+            assert behavior["processing_outcome_observed"] == 1.0
 
 
 def test_recovery_training_matrix_covers_every_real_error_kind():
@@ -527,6 +632,89 @@ def test_document_recovery_penalizes_repeated_errors_and_reacquisition():
     assert behavior["raw_pdf_fallback_used"] == 1.0
     assert behavior["process_score"] < 0.1
     assert behavior["process_aligned"] == 0.0
+
+
+def test_file_processing_rewards_inspection_path_reuse_and_text_extraction():
+    trace = _trace(
+        [
+            (
+                0,
+                "download = {'path': '/workspace/inbox/report.pdf'}\ntype(download), sorted(download)",
+                "(<class 'dict'>, ['path'])",
+            ),
+            (
+                0,
+                "document_path = download['path']\ndocument_path",
+                "'/workspace/inbox/report.pdf'",
+            ),
+            (
+                0,
+                "from PyPDF2 import PdfReader\nreader = PdfReader()",
+                "Traceback: TypeError: PdfReader.__init__() missing 1 required positional argument: 'stream'",
+            ),
+            (0, "reader = PdfReader(document_path)\nlen(reader.pages)", "2"),
+            (0, "first_page = reader.pages[0]\nfirst_page", "<PyPDF2.Page object>"),
+            (
+                0,
+                "first_page_text = first_page.extract_text()\nfirst_page_text",
+                "Title: Report\nFinding: complete.\n",
+            ),
+        ]
+    )
+
+    behavior = _behavior(
+        trace,
+        "file_processing",
+        "document_path",
+        expected_segments=1,
+        source_kind="structured_download",
+        file_kind="pdf",
+        failure_kind="missing_pdf_stream",
+        expected_output_marker="Title: Report",
+    )
+
+    assert behavior["structured_result_inspected"] == 1.0
+    assert behavior["download_path_selected"] == 1.0
+    assert behavior["path_reused_for_parser"] == 1.0
+    assert behavior["traceback_informed_change"] == 1.0
+    assert behavior["extracted_output_observed"] == 1.0
+    assert behavior["process_score"] == 1.0
+    assert behavior["process_aligned"] == 1.0
+
+
+def test_file_processing_accepts_evidenced_terminal_failure_without_retry():
+    trace = _trace(
+        [
+            (
+                0,
+                "download = {'path': '/workspace/inbox/data.json'}\ntype(download), sorted(download)",
+                "(<class 'dict'>, ['path'])",
+            ),
+            (0, "document_path = download['path']", ""),
+            (
+                0,
+                "import json\nrecords = json.load(open(document_path))",
+                "Traceback: JSONDecodeError: Expecting value: line 1 column 1 (char 0)",
+            ),
+        ]
+    )
+
+    behavior = _behavior(
+        trace,
+        "file_processing",
+        "document_path",
+        expected_segments=1,
+        source_kind="structured_download",
+        file_kind="json",
+        failure_kind="invalid_json",
+        terminal_status="invalid_json",
+    )
+
+    assert behavior["terminal_failure_observed"] == 1.0
+    assert behavior["file_feedback_handled"] == 1.0
+    assert behavior["file_processing_extra_errors"] == 0.0
+    assert behavior["process_score"] == 1.0
+    assert behavior["process_aligned"] == 1.0
 
 
 def test_recovery_process_reward_requires_feedback_repair_in_every_segment():
