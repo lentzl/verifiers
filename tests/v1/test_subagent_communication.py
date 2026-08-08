@@ -108,6 +108,24 @@ def test_taskset_balances_families_and_holds_out_generator_variants() -> None:
     assert not ({task.data.name for task in train} & {task.data.name for task in evaluation})
 
 
+def test_instance_offset_keeps_supervised_seed_paths_disjoint() -> None:
+    task = next(
+        task
+        for task in SubagentCommunicationTaskset(
+            SubagentCommunicationConfig(
+                split="train",
+                families=("single",),
+                instances_per_template=1,
+                instance_offset=100,
+            )
+        ).load()
+        if task.data.template_variant == 0
+    )
+
+    assert task.data.name == "single-v0-i100"
+    assert task.data.child_paths["shard-worker"].endswith("v0-i100-remote.json")
+
+
 def test_guided_tasks_explain_native_contract_without_revealing_answers() -> None:
     tasks = SubagentCommunicationTaskset(
         SubagentCommunicationConfig(split="train", instruction_level="guided", instances_per_template=1)
