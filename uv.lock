@@ -4664,6 +4664,14 @@ wheels = [
 ]
 
 [[package]]
+name = "subagent-communication-v1"
+version = "0.1.0"
+source = { editable = "environments/subagent_communication_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "supabase"
 version = "2.31.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5177,6 +5185,7 @@ examples = [
     { name = "proposer-solver-v1" },
     { name = "reverse-text-v1" },
     { name = "scratchpad-v1" },
+    { name = "subagent-communication-v1" },
     { name = "wiki-search-v1" },
     { name = "wordle-v1" },
 ]
