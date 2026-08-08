@@ -5,12 +5,14 @@ from __future__ import annotations
 import ast
 import json
 import random
-from itertools import pairwise
+import re
+from collections import Counter
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import verifiers.v1 as vf
 from pydantic import Field
-from verifiers.v1.types import AssistantMessage
+from verifiers.v1.types import AssistantMessage, ToolMessage, content_text
 
 Family = Literal["direct", "single", "parallel", "followup"]
 InstructionLevel = Literal["standard", "guided"]
@@ -51,6 +53,8 @@ class SubagentCommunicationData(vf.TaskData):
     instruction_level: InstructionLevel = "standard"
     answer: dict[str, int]
     expected_children: tuple[str, ...] = ()
+    child_paths: dict[str, str] = Field(default_factory=dict)
+    files: dict[str, str] = Field(default_factory=dict)
     followup_secret: int | None = None
 
 
@@ -72,7 +76,14 @@ def _task_prompt(
     instance: int,
     seed: int,
     instruction_level: InstructionLevel,
-) -> tuple[str, dict[str, int], tuple[str, ...], int | None]:
+) -> tuple[
+    str,
+    dict[str, int],
+    tuple[str, ...],
+    dict[str, str],
+    dict[str, str],
+    int | None,
+]:
     rng = random.Random(seed * 1_000_003 + variant * 10_007 + instance * 101)
     prefix = (
         "Return one JSON object with exactly the requested keys and integer values. "
@@ -87,10 +98,13 @@ def _task_prompt(
             'without creating a subagent. Return {"checksum": value}.'
         )
         children: tuple[str, ...] = ()
+        child_paths: dict[str, str] = {}
+        files: dict[str, str] = {}
         secret = None
     elif family == "single":
         local = _values(rng, 7 + variant % 2)
         remote = _values(rng, 13 + variant % 3)
+        remote_path = f"/workspace/subagent-shards/v{variant}-i{instance}-remote.json"
         local_value = _weighted(local)
         remote_value = _weighted(remote)
         answer = {
@@ -100,15 +114,19 @@ def _task_prompt(
         }
         request = (
             f"Compute the local checksum for {_json(local)} yourself. Delegate the independent "
-            f"remote checksum for {_json(remote)} to one child named shard-worker and obtain its "
+            f"remote checksum in {remote_path} to one child named shard-worker and obtain its "
             'explicit reply. Return {"local": value, "remote": value, "total": value}.'
         )
         children = ("shard-worker",)
+        child_paths = {"shard-worker": remote_path}
+        files = {remote_path: json.dumps(remote)}
         secret = None
     elif family == "parallel":
         local = _values(rng, 6)
         alpha = _values(rng, 11 + variant % 2)
         beta = _values(rng, 12 + (variant + 1) % 2)
+        alpha_path = f"/workspace/subagent-shards/v{variant}-i{instance}-alpha.json"
+        beta_path = f"/workspace/subagent-shards/v{variant}-i{instance}-beta.json"
         local_value = _weighted(local)
         alpha_value = _weighted(alpha)
         beta_value = _weighted(beta)
@@ -120,48 +138,71 @@ def _task_prompt(
         }
         request = (
             f"Compute the local checksum for {_json(local)} yourself. In parallel, delegate "
-            f"{_json(alpha)} to alpha-worker and {_json(beta)} to beta-worker. Each child must "
+            f"{alpha_path} to alpha-worker and {beta_path} to beta-worker. Each child must "
             'reply explicitly. Return {"local": value, "alpha": value, "beta": value, '
             '"total": value}.'
         )
         children = ("alpha-worker", "beta-worker")
+        child_paths = {"alpha-worker": alpha_path, "beta-worker": beta_path}
+        files = {alpha_path: json.dumps(alpha), beta_path: json.dumps(beta)}
         secret = None
     else:
         remote = _values(rng, 10 + variant % 3)
+        remote_path = f"/workspace/subagent-shards/v{variant}-i{instance}-followup.json"
         secret = rng.randint(31, 47)
         subtotal = sum(remote)
         answer = {"subtotal": subtotal, "multiplier": secret, "result": subtotal * secret}
         request = (
-            f"Delegate {_json(remote)} to key-worker. The child should sum the values, but do not "
+            f"Delegate {remote_path} to key-worker. The child should sum the values, but do not "
             f"include the multiplier {secret} in its spawn prompt. It must first request the missing "
             "multiplier from you through an agent message. Send it only in a direct follow-up, wait "
             'for the child\'s final result message, then return {"subtotal": value, '
             '"multiplier": value, "result": value}.'
         )
         children = ("key-worker",)
+        child_paths = {"key-worker": remote_path}
+        files = {remote_path: json.dumps(remote)}
 
     if instruction_level == "guided":
         request = f"{request}\n\nProtocol hint: {GUIDANCE[family]}"
-    return f"{prefix}\n\n{request}", answer, children, secret
+    return (
+        f"{prefix}\n\n{request}",
+        answer,
+        children,
+        child_paths,
+        files,
+        secret,
+    )
 
 
-def _ipython_code(trace: vf.Trace) -> list[str]:
-    code: list[str] = []
+@dataclass
+class IpythonEvent:
+    code: str
+    call_id: str
+    output: str = ""
+
+
+def _ipython_events(trace: vf.Trace) -> list[IpythonEvent]:
+    events: list[IpythonEvent] = []
+    by_call_id: dict[str, IpythonEvent] = {}
     for node in trace.nodes:
         message = node.message
-        if not isinstance(message, AssistantMessage):
-            continue
-        for call in message.tool_calls or []:
-            if call.name != "ipython":
-                continue
-            try:
-                arguments = json.loads(call.arguments)
-            except json.JSONDecodeError:
-                continue
-            source = arguments.get("code")
-            if isinstance(source, str):
-                code.append(source)
-    return code
+        if isinstance(message, AssistantMessage):
+            for call in message.tool_calls or []:
+                if call.name != "ipython":
+                    continue
+                try:
+                    arguments = json.loads(call.arguments)
+                except json.JSONDecodeError:
+                    continue
+                source = arguments.get("code")
+                if isinstance(source, str):
+                    event = IpythonEvent(code=source, call_id=call.id)
+                    events.append(event)
+                    by_call_id[call.id] = event
+        elif isinstance(message, ToolMessage) and (event := by_call_id.get(message.tool_call_id)):
+            event.output = content_text(message.content)
+    return events
 
 
 def _call_name(call: ast.Call) -> str | None:
@@ -190,45 +231,84 @@ def _assigned_call_names(tree: ast.AST) -> set[int]:
     return assigned
 
 
+def _failed(output: str) -> bool:
+    return any(marker in output for marker in ("Traceback", "Error:", "SyntaxError"))
+
+
+def _message_sent(output: str) -> bool:
+    return not _failed(output) and (
+        "agentmsg_" in output or "Agent message sent" in output or "Agent message queued" in output
+    )
+
+
+def _spawn_name(call: ast.Call, output: str) -> str | None:
+    configured = _keyword(call, "name")
+    if isinstance(configured, str):
+        return configured
+    matched = re.search(r"\bname='([^']+)'", output)
+    return matched.group(1) if matched else None
+
+
+def _spawn_prompt(call: ast.Call) -> str | None:
+    if not call.args or not isinstance(call.args[0], ast.Constant):
+        return None
+    value = call.args[0].value
+    return value if isinstance(value, str) else None
+
+
 def _protocol_behavior(
     trace: vf.Trace,
     family: Family,
     expected_children: tuple[str, ...],
+    child_paths: dict[str, str],
     followup_secret: int | None,
 ) -> dict[str, float]:
-    code = _ipython_code(trace)
-    calls: list[tuple[ast.Call, bool]] = []
-    for source in code:
+    events = _ipython_events(trace)
+    code = [event.code for event in events]
+    calls: list[tuple[ast.Call, bool, str]] = []
+    for event in events:
         try:
-            tree = ast.parse(source)
+            tree = ast.parse(event.code)
         except SyntaxError:
             continue
         assigned = _assigned_call_names(tree)
-        calls.extend((node, id(node) in assigned) for node in ast.walk(tree) if isinstance(node, ast.Call))
+        calls.extend(
+            (node, id(node) in assigned, event.output) for node in ast.walk(tree) if isinstance(node, ast.Call)
+        )
 
-    spawns = [(call, retained) for call, retained in calls if _call_name(call) == "rlm"]
-    names = {_keyword(call, "name") for call, _ in spawns}
+    attempted_spawns = [(call, retained, output) for call, retained, output in calls if _call_name(call) == "rlm"]
+    spawns = [item for item in attempted_spawns if not _failed(item[2])]
+    names = {_spawn_name(call, output) for call, _, output in spawns}
     parent_messages = [
         call
-        for call, _ in calls
-        if _call_name(call) == "agent_message.send" and _keyword(call, "receiver_role") == "parent"
+        for call, _, output in calls
+        if _call_name(call) == "agent_message.send"
+        and _keyword(call, "receiver_role") == "parent"
+        and _message_sent(output)
     ]
     child_messages = [
         call
-        for call, _ in calls
-        if _call_name(call) == "agent_message.send" and _keyword(call, "receiver_role") == "child"
+        for call, _, output in calls
+        if _call_name(call) == "agent_message.send"
+        and _keyword(call, "receiver_role") == "child"
+        and _message_sent(output)
     ]
-    list_calls = sum(_call_name(call) in {"rlm.list_subagents", "agent_message.list_agents"} for call, _ in calls)
-    repeated = sum(left.strip() == right.strip() for left, right in pairwise(code))
-    retained = sum(retained for _, retained in spawns)
+    list_calls = sum(
+        _call_name(call) in {"rlm.list_subagents", "agent_message.list_agents"} and not _failed(output)
+        for call, _, output in calls
+    )
+    normalized = [source.strip() for source in code]
+    repeated = sum(count - 1 for count in Counter(normalized).values() if count > 1)
+    retained = sum(retained for _, retained, _ in spawns)
+    delegated = {
+        name
+        for name, path in child_paths.items()
+        if any(_spawn_name(call, output) == name and path in (_spawn_prompt(call) or "") for call, _, output in spawns)
+    }
     secret_withheld = True
     if followup_secret is not None and spawns:
-        first_prompt = spawns[0][0].args[0] if spawns[0][0].args else None
-        secret_withheld = bool(
-            isinstance(first_prompt, ast.Constant)
-            and isinstance(first_prompt.value, str)
-            and str(followup_secret) not in first_prompt.value
-        )
+        first_prompt = _spawn_prompt(spawns[0][0])
+        secret_withheld = bool(first_prompt and str(followup_secret) not in first_prompt)
 
     if family == "direct":
         checks = [not spawns, not parent_messages, not child_messages, repeated == 0]
@@ -237,6 +317,7 @@ def _protocol_behavior(
             len(spawns) == 1,
             set(expected_children) <= names,
             retained == 1,
+            set(expected_children) <= delegated,
             len(parent_messages) >= 1,
             repeated == 0,
         ]
@@ -245,6 +326,7 @@ def _protocol_behavior(
             len(spawns) == 2,
             set(expected_children) <= names,
             retained == 2,
+            set(expected_children) <= delegated,
             len(parent_messages) >= 2,
             repeated == 0,
         ]
@@ -253,6 +335,7 @@ def _protocol_behavior(
             len(spawns) == 1,
             set(expected_children) <= names,
             retained == 1,
+            set(expected_children) <= delegated,
             secret_withheld,
             len(child_messages) >= 1,
             len(parent_messages) >= 2,
@@ -262,13 +345,15 @@ def _protocol_behavior(
         "protocol_score": sum(checks) / len(checks),
         "protocol_aligned": float(all(checks)),
         "spawn_calls": float(len(spawns)),
+        "failed_spawn_calls": float(len(attempted_spawns) - len(spawns)),
         "retained_handles": float(retained),
         "named_children": float(len(set(expected_children) & names)),
+        "delegated_payloads": float(len(delegated)),
         "messages_to_parent": float(len(parent_messages)),
         "messages_to_child": float(len(child_messages)),
         "roster_calls": float(list_calls),
         "secret_withheld": float(secret_withheld),
-        "identical_consecutive_cells": float(repeated),
+        "duplicate_cells": float(repeated),
     }
 
 
@@ -283,6 +368,16 @@ def _answer_score(reply: str, expected: dict[str, int]) -> float:
 
 
 class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
+    async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        if not self.data.files:
+            return
+        directories = sorted({path.rsplit("/", 1)[0] for path in self.data.files})
+        created = await runtime.run(["mkdir", "-p", *directories], {})
+        if created.exit_code != 0:
+            raise RuntimeError(f"subagent shard setup failed: {created.stderr[-500:]}")
+        for path, contents in self.data.files.items():
+            await runtime.write(path, contents.encode())
+
     @vf.reward(weight=1.0)
     async def task_accuracy(self, trace: vf.Trace) -> float:
         return _answer_score(trace.last_reply, self.data.answer)
@@ -293,6 +388,7 @@ class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
             trace,
             self.data.family,
             self.data.expected_children,
+            self.data.child_paths,
             self.data.followup_secret,
         )["protocol_score"]
 
@@ -302,6 +398,7 @@ class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
             trace,
             self.data.family,
             self.data.expected_children,
+            self.data.child_paths,
             self.data.followup_secret,
         )
 
@@ -321,7 +418,7 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
         for instance in range(self.config.instances_per_template):
             for variant in variants:
                 for family in self.config.families:
-                    prompt, answer, children, secret = _task_prompt(
+                    prompt, answer, children, child_paths, files, secret = _task_prompt(
                         family,
                         variant,
                         instance,
@@ -340,6 +437,8 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                                 instruction_level=self.config.instruction_level,
                                 answer=answer,
                                 expected_children=children,
+                                child_paths=child_paths,
+                                files=files,
                                 followup_secret=secret,
                             ),
                             self.config.task,

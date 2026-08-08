@@ -16,5 +16,6 @@ success signal:
 Generator variants 0-3 train and variants 4-5 are held out. Final JSON correctness
 has weight 1.0. Native protocol alignment has weight 0.35 and is derived from actual
 IPython calls: callable `rlm`, retained handles, stable child names, role-addressed
-messages, and non-repeated cells. Set the Prime Agent harness to `max_depth = 1`;
+messages with successful live receipts, delegated file paths, and non-repeated cells.
+Set the Prime Agent harness to `max_depth = 1`;
 depth zero disables the capability and depth two would test a different curriculum.
