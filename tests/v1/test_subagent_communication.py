@@ -65,6 +65,30 @@ def _trace(*cells: str | tuple[str, str], reply: str = "{}") -> vf.Trace:
     )
 
 
+def _child_message(name: str, message: str, message_id: str) -> UserMessage:
+    return UserMessage(
+        content=(
+            f"[from child:{name}]\n"
+            "Agent-to-agent message received.\n"
+            "Source: agent_message\n"
+            f"Message id: {message_id}\n\n"
+            f"{message}"
+        )
+    )
+
+
+def _with_child_messages(trace: vf.Trace, *messages: UserMessage) -> vf.Trace:
+    parent = len(trace.nodes) - 2
+    final = trace.nodes[-1]
+    trace.nodes = trace.nodes[:-1]
+    for message in messages:
+        trace.nodes.append(MessageNode(parent=parent, message=message, sampled=False))
+        parent = len(trace.nodes) - 1
+    final.parent = parent
+    trace.nodes.append(final)
+    return trace
+
+
 def test_taskset_balances_families_and_holds_out_generator_variants() -> None:
     train = SubagentCommunicationTaskset(SubagentCommunicationConfig(split="train", instances_per_template=1)).load()
     evaluation = SubagentCommunicationTaskset(
@@ -142,12 +166,11 @@ def test_direct_family_rewards_restraint() -> None:
 
 
 def test_single_family_requires_retained_native_handle_and_child_reply() -> None:
-    trace = _trace(
-        "handle = await rlm('Compute /workspace/shard.json and reply with agent_message to parent.', name='shard-worker')",
-        (
-            "await agent_message.send('remote=91', receiver_role='parent')",
-            "Agent message sent: agentmsg_1",
+    trace = _with_child_messages(
+        _trace(
+            "handle = await rlm('Compute /workspace/shard.json and reply with agent_message to parent.', name='shard-worker')"
         ),
+        _child_message("shard-worker", "remote=91", "agentmsg_1"),
     )
 
     behavior = _protocol_behavior(
@@ -164,17 +187,13 @@ def test_single_family_requires_retained_native_handle_and_child_reply() -> None
 
 
 def test_parallel_family_requires_two_distinct_named_children() -> None:
-    trace = _trace(
-        "alpha = await rlm('Compute /workspace/alpha.json and message parent.', name='alpha-worker')",
-        "beta = await rlm('Compute /workspace/beta.json and message parent.', name='beta-worker')",
-        (
-            "await agent_message.send('alpha=11', receiver_role='parent')",
-            "Agent message sent: agentmsg_1",
+    trace = _with_child_messages(
+        _trace(
+            "alpha = await rlm('Compute /workspace/alpha.json and message parent.', name='alpha-worker')",
+            "beta = await rlm('Compute /workspace/beta.json and message parent.', name='beta-worker')",
         ),
-        (
-            "await agent_message.send('beta=17', receiver_role='parent')",
-            "Agent message sent: agentmsg_2",
-        ),
+        _child_message("alpha-worker", "alpha=11", "agentmsg_1"),
+        _child_message("beta-worker", "beta=17", "agentmsg_2"),
     )
 
     behavior = _protocol_behavior(
@@ -194,20 +213,16 @@ def test_parallel_family_requires_two_distinct_named_children() -> None:
 
 
 def test_followup_requires_bidirectional_messages_and_withheld_secret() -> None:
-    trace = _trace(
-        "child = await rlm('Sum /workspace/followup.json, request the multiplier, then message the result.', name='key-worker')",
-        (
-            "await agent_message.send('need multiplier', receiver_role='parent')",
-            "Agent message sent: agentmsg_1",
+    trace = _with_child_messages(
+        _trace(
+            "child = await rlm('Sum /workspace/followup.json, request the multiplier, then message the result.', name='key-worker')",
+            (
+                "await agent_message.send('37', receiver_role='child', receiver_name=child.name)",
+                "Agent message sent: agentmsg_2",
+            ),
         ),
-        (
-            "await agent_message.send('37', receiver_role='child', receiver_name=child.name)",
-            "Agent message sent: agentmsg_2",
-        ),
-        (
-            "await agent_message.send('result=518', receiver_role='parent')",
-            "Agent message sent: agentmsg_3",
-        ),
+        _child_message("key-worker", "need multiplier", "agentmsg_1"),
+        _child_message("key-worker", "result=518", "agentmsg_3"),
     )
 
     behavior = _protocol_behavior(
@@ -225,20 +240,16 @@ def test_followup_requires_bidirectional_messages_and_withheld_secret() -> None:
 
 
 def test_followup_rejects_secret_leaked_in_spawn_prompt() -> None:
-    trace = _trace(
-        "child = await rlm('Sum /workspace/followup.json with multiplier 37 and reply.', name='key-worker')",
-        (
-            "await agent_message.send('need multiplier', receiver_role='parent')",
-            "Agent message sent: agentmsg_1",
+    trace = _with_child_messages(
+        _trace(
+            "child = await rlm('Sum /workspace/followup.json with multiplier 37 and reply.', name='key-worker')",
+            (
+                "await agent_message.send('37', receiver_role='child', receiver_name=child.name)",
+                "Agent message sent: agentmsg_2",
+            ),
         ),
-        (
-            "await agent_message.send('37', receiver_role='child', receiver_name=child.name)",
-            "Agent message sent: agentmsg_2",
-        ),
-        (
-            "await agent_message.send('result=518', receiver_role='parent')",
-            "Agent message sent: agentmsg_3",
-        ),
+        _child_message("key-worker", "need multiplier", "agentmsg_1"),
+        _child_message("key-worker", "result=518", "agentmsg_3"),
     )
 
     behavior = _protocol_behavior(
@@ -274,12 +285,12 @@ def test_non_native_wrapper_and_repeated_cells_do_not_pass_protocol() -> None:
     assert behavior["duplicate_cells"] == 1.0
 
 
-def test_failed_message_expression_is_not_credited_as_communication() -> None:
+def test_parent_side_send_is_not_credited_as_a_child_reply() -> None:
     trace = _trace(
         "handle = await rlm('Compute /workspace/shard.json and reply.', name='shard-worker')",
         (
             "await agent_message.send('answer', receiver_role='parent')",
-            "Traceback (most recent call last):\nRuntimeError: no parent",
+            "Agent message sent: agentmsg_1",
         ),
     )
 
@@ -293,6 +304,45 @@ def test_failed_message_expression_is_not_credited_as_communication() -> None:
 
     assert behavior["messages_to_parent"] == 0.0
     assert behavior["protocol_aligned"] == 0.0
+
+
+def test_terminal_child_notice_is_not_credited_as_an_explicit_reply() -> None:
+    trace = _with_child_messages(
+        _trace(
+            "handle = await rlm('Compute /workspace/shard.json and reply.', name='shard-worker')"
+        ),
+        _child_message(
+            "shard-worker",
+            "RLM child shard-worker (sub-123) completed without sending a reply",
+            "agentmsg_1",
+        ),
+    )
+
+    behavior = _protocol_behavior(
+        trace,
+        "single",
+        ("shard-worker",),
+        {"shard-worker": "/workspace/shard.json"},
+        None,
+    )
+
+    assert behavior["messages_to_parent"] == 0.0
+    assert behavior["protocol_aligned"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_delegated_answer_credit_is_gated_on_protocol_alignment() -> None:
+    task = next(
+        task
+        for task in SubagentCommunicationTaskset(
+            SubagentCommunicationConfig(split="train", instances_per_template=1)
+        ).load()
+        if task.data.family == "single"
+    )
+    trace = _trace(reply=json.dumps(task.data.answer))
+
+    assert await task.protocol_gated_accuracy(trace) == 0.0
+    assert await task.answer_accuracy(trace) == 1.0
 
 
 @pytest.mark.parametrize(
