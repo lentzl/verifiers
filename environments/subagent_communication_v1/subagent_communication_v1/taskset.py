@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 import verifiers.v1 as vf
 from pydantic import Field
-from verifiers.v1.types import AssistantMessage, ToolMessage, content_text
+from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage, content_text
 
 Family = Literal["direct", "single", "parallel", "followup"]
 InstructionLevel = Literal["standard", "guided"]
@@ -241,6 +241,26 @@ def _message_sent(output: str) -> bool:
     )
 
 
+def _incoming_child_messages(trace: vf.Trace) -> list[tuple[str, str]]:
+    messages: list[tuple[str, str]] = []
+    for node in trace.nodes:
+        message = node.message
+        if not isinstance(message, UserMessage):
+            continue
+        text = content_text(message.content)
+        matched = re.match(
+            r"\[from child:([^\]]+)\]\s*\nAgent-to-agent message received\.",
+            text,
+        )
+        if not matched:
+            continue
+        body = text.rsplit("\n\n", 1)[-1].strip()
+        if "completed without sending a reply" in body or body.startswith("RLM child failure"):
+            continue
+        messages.append((matched.group(1), body))
+    return messages
+
+
 def _spawn_name(call: ast.Call, output: str) -> str | None:
     configured = _keyword(call, "name")
     if isinstance(configured, str):
@@ -279,13 +299,8 @@ def _protocol_behavior(
     attempted_spawns = [(call, retained, output) for call, retained, output in calls if _call_name(call) == "rlm"]
     spawns = [item for item in attempted_spawns if not _failed(item[2])]
     names = {_spawn_name(call, output) for call, _, output in spawns}
-    parent_messages = [
-        call
-        for call, _, output in calls
-        if _call_name(call) == "agent_message.send"
-        and _keyword(call, "receiver_role") == "parent"
-        and _message_sent(output)
-    ]
+    parent_messages = _incoming_child_messages(trace)
+    parent_message_names = {name for name, _ in parent_messages}
     child_messages = [
         call
         for call, _, output in calls
@@ -318,7 +333,7 @@ def _protocol_behavior(
             set(expected_children) <= names,
             retained == 1,
             set(expected_children) <= delegated,
-            len(parent_messages) >= 1,
+            set(expected_children) <= parent_message_names,
             repeated == 0,
         ]
     elif family == "parallel":
@@ -327,7 +342,7 @@ def _protocol_behavior(
             set(expected_children) <= names,
             retained == 2,
             set(expected_children) <= delegated,
-            len(parent_messages) >= 2,
+            set(expected_children) <= parent_message_names,
             repeated == 0,
         ]
     else:
@@ -338,7 +353,7 @@ def _protocol_behavior(
             set(expected_children) <= delegated,
             secret_withheld,
             len(child_messages) >= 1,
-            len(parent_messages) >= 2,
+            sum(name in expected_children for name, _ in parent_messages) >= 2,
             repeated == 0,
         ]
     return {
@@ -379,8 +394,18 @@ class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
             await runtime.write(path, contents.encode())
 
     @vf.reward(weight=1.0)
-    async def task_accuracy(self, trace: vf.Trace) -> float:
-        return _answer_score(trace.last_reply, self.data.answer)
+    async def protocol_gated_accuracy(self, trace: vf.Trace) -> float:
+        accuracy = _answer_score(trace.last_reply, self.data.answer)
+        if self.data.family == "direct":
+            return accuracy
+        behavior = _protocol_behavior(
+            trace,
+            self.data.family,
+            self.data.expected_children,
+            self.data.child_paths,
+            self.data.followup_secret,
+        )
+        return accuracy * behavior["protocol_aligned"]
 
     @vf.reward(weight=0.35)
     async def delegation_protocol(self, trace: vf.Trace) -> float:
@@ -391,6 +416,10 @@ class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
             self.data.child_paths,
             self.data.followup_secret,
         )["protocol_score"]
+
+    @vf.metric
+    async def answer_accuracy(self, trace: vf.Trace) -> float:
+        return _answer_score(trace.last_reply, self.data.answer)
 
     @vf.metric
     async def delegation_behavior(self, trace: vf.Trace) -> dict[str, float]:
