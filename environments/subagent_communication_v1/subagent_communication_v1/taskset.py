@@ -453,6 +453,7 @@ class SubagentCommunicationConfig(vf.TasksetConfig):
     families: tuple[Family, ...] = Field(FAMILIES, min_length=1)
     instruction_level: InstructionLevel = "standard"
     instances_per_template: int = Field(4, ge=1)
+    instance_offset: int = Field(0, ge=0)
     seed: int = 20260809
 
 
@@ -460,7 +461,11 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
     def load(self) -> list[SubagentCommunicationTask]:
         variants = TRAIN_VARIANTS if self.config.split == "train" else EVAL_VARIANTS
         tasks = []
-        for instance in range(self.config.instances_per_template):
+        instances = range(
+            self.config.instance_offset,
+            self.config.instance_offset + self.config.instances_per_template,
+        )
+        for instance in instances:
             for variant in variants:
                 for family in self.config.families:
                     prompt, answer, children, child_paths, files, secret = _task_prompt(
