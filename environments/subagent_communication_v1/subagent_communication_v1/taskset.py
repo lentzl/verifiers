@@ -29,24 +29,6 @@ SYSTEM_PROMPT = (
     "across turns, do not repeat unchanged cells, and return the requested JSON object only."
 )
 
-GUIDANCE = {
-    "direct": ("This is a restraint exercise: solve locally and do not spawn or message a child."),
-    "single": (
-        "Spawn with handle = await rlm(prompt, name='shard-worker'). In the child prompt, "
-        "request an explicit agent_message reply to the parent. The handle is not the answer."
-    ),
-    "parallel": (
-        "Spawn alpha-worker and beta-worker independently in separate IPython calls, retain "
-        "both handles, then end the turn. Each child must message its result to the parent."
-    ),
-    "followup": (
-        "Spawn key-worker without the multiplier. Tell it to request the missing value through "
-        "agent_message, then end the turn. Reply with agent_message.send to receiver_role='child' "
-        "and receiver_name=handle.name; keep the child until its final parent message arrives."
-    ),
-}
-
-
 class SubagentCommunicationData(vf.TaskData):
     family: Family
     template_variant: int
@@ -101,6 +83,7 @@ def _task_prompt(
         child_paths: dict[str, str] = {}
         files: dict[str, str] = {}
         secret = None
+        guidance = "Solve locally and do not spawn or message a child."
     elif family == "single":
         local = _values(rng, 7 + variant % 2)
         remote = _values(rng, 13 + variant % 3)
@@ -121,6 +104,15 @@ def _task_prompt(
         child_paths = {"shard-worker": remote_path}
         files = {remote_path: json.dumps(remote)}
         secret = None
+        guidance = (
+            f"Do not open {remote_path} in the coordinator. Use one IPython call shaped exactly "
+            f"as handle = await rlm(\"Read {remote_path}, compute its weighted checksum, then "
+            "make a separate final IPython call exactly await agent_message.send(str(checksum), "
+            "receiver_role='parent'). Your task is incomplete until that call succeeds; do not "
+            "finish with only a normal assistant answer.\", "
+            "name='shard-worker'). Retain handle, then stop calling tools for this turn so the "
+            "child reply can arrive. The admission handle is not the answer."
+        )
     elif family == "parallel":
         local = _values(rng, 6)
         alpha = _values(rng, 11 + variant % 2)
@@ -146,6 +138,18 @@ def _task_prompt(
         child_paths = {"alpha-worker": alpha_path, "beta-worker": beta_path}
         files = {alpha_path: json.dumps(alpha), beta_path: json.dumps(beta)}
         secret = None
+        guidance = (
+            f"Do not open {alpha_path} or {beta_path} in the coordinator. In separate IPython "
+            "calls, assign alpha = await rlm(\"Read "
+            f"{alpha_path}, compute its weighted checksum, then make a separate final IPython "
+            "call exactly await agent_message.send(str(checksum), receiver_role='parent'). Your "
+            "task is incomplete until that call succeeds.\", "
+            "name='alpha-worker') and beta = await rlm(\"Read "
+            f"{beta_path}, compute its weighted checksum, then make a separate final IPython call "
+            "exactly await agent_message.send(str(checksum), receiver_role='parent'). Your task "
+            "is incomplete until that call succeeds.\", "
+            "name='beta-worker'). Retain both handles, then stop calling tools for this turn."
+        )
     else:
         remote = _values(rng, 10 + variant % 3)
         remote_path = f"/workspace/subagent-shards/v{variant}-i{instance}-followup.json"
@@ -162,9 +166,21 @@ def _task_prompt(
         children = ("key-worker",)
         child_paths = {"key-worker": remote_path}
         files = {remote_path: json.dumps(remote)}
+        guidance = (
+            f"Do not open {remote_path} in the coordinator. Assign child = await rlm(\"Read "
+            f"{remote_path} and compute the subtotal. In a separate IPython call exactly await "
+            "agent_message.send('need multiplier', receiver_role='parent'). Do not finish: after "
+            "the parent reply, compute the result and make a second successful parent message "
+            "containing the subtotal and result. Your task is incomplete until both messages "
+            "succeed.\", "
+            "name='key-worker'). Do not put the multiplier in that string. Retain child and stop "
+            "calling tools for this turn. After its request arrives, use await "
+            "agent_message.send(str(multiplier), receiver_role='child', "
+            "receiver_name=child.name), then wait for its final reply."
+        )
 
     if instruction_level == "guided":
-        request = f"{request}\n\nProtocol hint: {GUIDANCE[family]}"
+        request = f"{request}\n\nProtocol hint: {guidance}"
     return (
         f"{prefix}\n\n{request}",
         answer,
@@ -407,7 +423,7 @@ class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
         )
         return accuracy * behavior["protocol_aligned"]
 
-    @vf.reward(weight=0.35)
+    @vf.reward(weight=1.0)
     async def delegation_protocol(self, trace: vf.Trace) -> float:
         return _protocol_behavior(
             trace,
