@@ -117,7 +117,11 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     followup = next(task for task in tasks if task.data.family == "followup")
 
     assert "handle = await rlm" in single.data.prompt
+    assert single.data.child_paths["shard-worker"] in single.data.prompt
+    assert "Do not open" in single.data.prompt
+    assert "name='shard-worker'" in single.data.prompt
     assert "receiver_role='child'" in followup.data.prompt
+    assert "name='key-worker'" in followup.data.prompt
     assert json.dumps(single.data.answer) not in single.data.prompt
 
 
