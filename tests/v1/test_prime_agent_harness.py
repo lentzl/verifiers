@@ -12,7 +12,6 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 from prime_agent_acp_resume_v1 import PrimeAgentResumeTask, PrimeAgentResumeTaskset
-
 from verifiers.v1.acp import ACP_SOURCE, ACPHarnessSession, _new_segment, _packet
 from verifiers.v1.harnesses.prime_agent.harness import (
     HARNESS_STATE_FILENAME,
@@ -182,8 +181,11 @@ async def test_acp_eof_reports_process_exit_and_stderr() -> None:
             raise AssertionError("the exited process must not be killed")
 
     class Runtime:
-        async def prepare_uv_script(self, source: str, env: dict[str, str]):
+        async def prepare_uv_script(
+            self, source: str, env: dict[str, str], *, activate: bool = True
+        ):
             del source, env
+            assert activate is False
             return ["acp-runner"]
 
         async def open_process(self, argv: list[str], env: dict[str, str]):
@@ -282,8 +284,11 @@ async def test_acp_reader_ignores_process_keepalives() -> None:
             del data
 
     class Runtime:
-        async def prepare_uv_script(self, source: str, env: dict[str, str]):
+        async def prepare_uv_script(
+            self, source: str, env: dict[str, str], *, activate: bool = True
+        ):
             del source, env
+            assert activate is False
             return ["acp-runner"]
 
         async def open_process(self, argv: list[str], env: dict[str, str]):
@@ -331,8 +336,11 @@ async def test_acp_session_treats_framework_stop_as_clean_termination() -> None:
             del data
 
     class Runtime:
-        async def prepare_uv_script(self, source: str, env: dict[str, str]):
+        async def prepare_uv_script(
+            self, source: str, env: dict[str, str], *, activate: bool = True
+        ):
             del source, env
+            assert activate is False
             return ["acp-runner"]
 
         async def open_process(self, argv: list[str], env: dict[str, str]):
@@ -394,8 +402,11 @@ async def test_restarted_acp_process_receives_full_transcript() -> None:
         def __init__(self) -> None:
             self.processes = [first, replacement]
 
-        async def prepare_uv_script(self, source: str, env: dict[str, str]):
+        async def prepare_uv_script(
+            self, source: str, env: dict[str, str], *, activate: bool = True
+        ):
             del source, env
+            assert activate is False
             return ["acp-runner"]
 
         async def open_process(self, argv: list[str], env: dict[str, str]):
@@ -524,8 +535,11 @@ async def test_acp_session_forwards_empty_tool_reply_policy() -> None:
             writes.append(data)
 
     class Runtime:
-        async def prepare_uv_script(self, source: str, env: dict[str, str]):
+        async def prepare_uv_script(
+            self, source: str, env: dict[str, str], *, activate: bool = True
+        ):
             del source, env
+            assert activate is False
             return ["acp-runner"]
 
         async def open_process(self, argv: list[str], env: dict[str, str]):

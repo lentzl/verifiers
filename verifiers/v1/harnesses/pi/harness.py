@@ -4,6 +4,8 @@ import json
 import logging
 import shlex
 
+from pydantic import Field
+
 from verifiers.v1.acp import ACP
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
@@ -23,8 +25,8 @@ PI_DIR = "/var/tmp/vf-pi"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 SKILLS_DIR = ".agents/skills"
-MCP_VERSION = "2.11.0"
-ACP_VERSION = "0.0.31"
+MCP_VERSION = "2.20.1"
+ACP_VERSION = "0.0.33"
 MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [
@@ -86,7 +88,7 @@ PI_ACP = ACP()
 
 
 class PiHarnessConfig(HarnessConfig):
-    version: str = "0.80.10"
+    version: str = Field(default="0.84.0", pattern=r"^[A-Za-z0-9._+-]+$")
     """Pi release to install, pinned for reproducibility."""
 
 
@@ -223,4 +225,6 @@ class PiHarness(Harness[PiHarnessConfig]):
             ACP_COMMAND,
             prompt,
             session_path=f"{agent_dir}/acp-session",
+            # Pi can end after its final tool completes without a text message.
+            allow_empty_tool_reply=True,
         )
