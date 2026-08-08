@@ -20,7 +20,8 @@ split = "train"
 families = ["single", "parallel", "followup"]
 instruction_level = "guided"
 instances_per_template = 1
-seed = 20260809
+instance_offset = 20
+seed = 20260829
 
 [env.agent]
 max_turns = 18
