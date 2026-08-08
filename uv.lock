@@ -4680,6 +4680,14 @@ wheels = [
 ]
 
 [[package]]
+name = "subagent-communication-v1"
+version = "0.1.0"
+source = { editable = "environments/subagent_communication_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "supabase"
 version = "2.31.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5193,6 +5201,7 @@ examples = [
     { name = "proposer-solver" },
     { name = "reverse-text" },
     { name = "scratchpad" },
+    { name = "subagent-communication-v1" },
     { name = "wiki-search" },
     { name = "wordle" },
 ]
@@ -5268,6 +5277,7 @@ examples = [
     { name = "proposer-solver", editable = "environments/proposer_solver" },
     { name = "reverse-text", editable = "environments/reverse_text" },
     { name = "scratchpad", editable = "environments/scratchpad" },
+    { name = "subagent-communication-v1", editable = "environments/subagent_communication_v1" },
     { name = "wiki-search", editable = "environments/wiki_search" },
     { name = "wordle", editable = "environments/wordle" },
 ]
