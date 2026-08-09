@@ -140,6 +140,7 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     assert "name='shard-worker'" in single.data.prompt
     assert "Spawn the child before" in single.data.prompt
     assert "agent_observe.get_agent(handle.name)" in single.data.prompt
+    assert "isStreaming" in single.data.prompt
     assert "receiver_role='child'" in followup.data.prompt
     assert "name='key-worker'" in followup.data.prompt
     assert json.dumps(single.data.answer) not in single.data.prompt
@@ -208,6 +209,27 @@ def test_single_family_requires_retained_native_handle_and_child_reply() -> None
     assert behavior["protocol_aligned"] == 1.0
     assert behavior["retained_handles"] == 1.0
     assert behavior["messages_to_parent"] == 1.0
+
+
+def test_single_family_reports_native_child_observation() -> None:
+    trace = _with_child_messages(
+        _trace(
+            "handle = await rlm('Compute /workspace/shard.json and reply.', name='shard-worker')",
+            "child_state = await agent_observe.get_agent(handle.name)",
+        ),
+        _child_message("shard-worker", "remote=91", "agentmsg_1"),
+    )
+
+    behavior = _protocol_behavior(
+        trace,
+        "single",
+        ("shard-worker",),
+        {"shard-worker": "/workspace/shard.json"},
+        None,
+    )
+
+    assert behavior["protocol_aligned"] == 1.0
+    assert behavior["observation_calls"] == 1.0
 
 
 def test_parallel_family_requires_two_distinct_named_children() -> None:
