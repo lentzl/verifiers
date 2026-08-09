@@ -24,9 +24,12 @@ EVAL_VARIANTS = (4, 5)
 SYSTEM_PROMPT = (
     "Coordinate work through Prime Agent's persistent IPython kernel. Delegate only the "
     "shards the request assigns to children. The callable rlm returns an admission handle, "
-    "not a result; retain that handle and end the turn so child messages can arrive. A child "
-    "must send requested results with agent_message to its parent. Preserve successful state "
-    "across turns, do not repeat unchanged cells, and return the requested JSON object only."
+    "not a result. Spawn independent children before doing coordinator-local work, retain their "
+    "handles, and use that local work to let children run concurrently. A child must send "
+    "requested results with agent_message to its parent. Never guess a missing result or finalize "
+    "before every required reply arrives; inspect a retained child with agent_observe when useful. "
+    "Preserve successful state across turns, do not repeat unchanged cells, and return the "
+    "requested JSON object only."
 )
 
 class SubagentCommunicationData(vf.TaskData):
@@ -105,13 +108,15 @@ def _task_prompt(
         files = {remote_path: json.dumps(remote)}
         secret = None
         guidance = (
-            f"Do not open {remote_path} in the coordinator. Use one IPython call shaped exactly "
-            f"as handle = await rlm(\"Read {remote_path}, compute its weighted checksum, then "
-            "make a separate final IPython call exactly await agent_message.send(str(checksum), "
-            "receiver_role='parent'). Your task is incomplete until that call succeeds; do not "
-            "finish with only a normal assistant answer.\", "
-            "name='shard-worker'). Retain handle, then stop calling tools for this turn so the "
-            "child reply can arrive. The admission handle is not the answer."
+            f"Do not open {remote_path} in the coordinator. Spawn the child before computing the "
+            f"local checksum, using handle = await rlm(\"Read {remote_path}, compute its weighted "
+            "checksum, and before any final answer call await agent_message.send(str(checksum), "
+            "receiver_role='parent') in IPython. Your task is incomplete until that call returns "
+            "a delivery receipt.\", name='shard-worker'). Retain handle, compute the local checksum "
+            "in separate state-preserving IPython calls while the child runs, and never finalize "
+            "without its explicit reply. If local work is done first, inspect the child with "
+            "await agent_observe.get_agent(handle.name) instead of guessing. The admission handle "
+            "is not the answer."
         )
     elif family == "parallel":
         local = _values(rng, 6)
