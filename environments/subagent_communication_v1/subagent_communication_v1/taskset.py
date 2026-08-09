@@ -27,7 +27,8 @@ SYSTEM_PROMPT = (
     "not a result. Spawn independent children before doing coordinator-local work, retain their "
     "handles, and use that local work to let children run concurrently. A child must send "
     "requested results with agent_message to its parent. Never guess a missing result or finalize "
-    "before every required reply arrives; inspect a retained child with agent_observe when useful. "
+    "before every required reply arrives. When local work finishes first, use bounded "
+    "agent_observe polling until the retained child is no longer streaming. "
     "Preserve successful state across turns, do not repeat unchanged cells, and return the "
     "requested JSON object only."
 )
@@ -110,13 +111,13 @@ def _task_prompt(
         guidance = (
             f"Do not open {remote_path} in the coordinator. Spawn the child before computing the "
             f"local checksum, using handle = await rlm(\"Read {remote_path}, compute its weighted "
-            "checksum, and before any final answer call await agent_message.send(str(checksum), "
-            "receiver_role='parent') in IPython. Your task is incomplete until that call returns "
-            "a delivery receipt.\", name='shard-worker'). Retain handle, compute the local checksum "
-            "in separate state-preserving IPython calls while the child runs, and never finalize "
-            "without its explicit reply. If local work is done first, inspect the child with "
-            "await agent_observe.get_agent(handle.name) instead of guessing. The admission handle "
-            "is not the answer."
+            "checksum, then send the integer checksum to your parent with agent_message before "
+            "answering.\", name='shard-worker'). Retain handle and compute the local checksum in "
+            "separate state-preserving IPython calls while the child runs. If its reply has not "
+            "arrived, use a bounded asyncio loop around await "
+            "agent_observe.get_agent(handle.name) until the returned agent isStreaming field is "
+            "false. Never finalize without the explicit reply; the admission handle is not the "
+            "answer."
         )
     elif family == "parallel":
         local = _values(rng, 6)
@@ -333,6 +334,10 @@ def _protocol_behavior(
         _call_name(call) in {"rlm.list_subagents", "agent_message.list_agents"} and not _failed(output)
         for call, _, output in calls
     )
+    observation_calls = sum(
+        _call_name(call).startswith("agent_observe.") and not _failed(output)
+        for call, _, output in calls
+    )
     normalized = [source.strip() for source in code]
     repeated = sum(count - 1 for count in Counter(normalized).values() if count > 1)
     retained = sum(retained for _, retained, _ in spawns)
@@ -388,6 +393,7 @@ def _protocol_behavior(
         "messages_to_parent": float(len(parent_messages)),
         "messages_to_child": float(len(child_messages)),
         "roster_calls": float(list_calls),
+        "observation_calls": float(observation_calls),
         "secret_withheld": float(secret_withheld),
         "duplicate_cells": float(repeated),
     }
