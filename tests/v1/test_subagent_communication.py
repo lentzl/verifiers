@@ -216,6 +216,7 @@ def test_single_family_reports_native_child_observation() -> None:
         _trace(
             "handle = await rlm('Compute /workspace/shard.json and reply.', name='shard-worker')",
             "child_state = await agent_observe.get_agent(handle.name)",
+            "(lambda: None)()",
         ),
         _child_message("shard-worker", "remote=91", "agentmsg_1"),
     )

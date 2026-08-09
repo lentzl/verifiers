@@ -335,7 +335,7 @@ def _protocol_behavior(
         for call, _, output in calls
     )
     observation_calls = sum(
-        _call_name(call).startswith("agent_observe.") and not _failed(output)
+        (_call_name(call) or "").startswith("agent_observe.") and not _failed(output)
         for call, _, output in calls
     )
     normalized = [source.strip() for source in code]
