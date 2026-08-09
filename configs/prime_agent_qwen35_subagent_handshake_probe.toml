@@ -1,6 +1,6 @@
-# Event-driven calibration on one disjoint guided parallel-child task.
+# Fresh admission probe for the isolated bidirectional handshake rung.
 
-model = "/ephemeral/subagent-rung/outputs/03-parallel-sft-r1/weights/step_24"
+model = "/ephemeral/subagent-rung/outputs/10-handshake-grpo-r1/weights/step_2"
 num_tasks = 1
 num_rollouts = 4
 shuffle = false
@@ -9,7 +9,7 @@ verbose = false
 rich = false
 server = false
 push = false
-output_dir = "/ephemeral/evals/qwen35-subagent-parallel-train-probe"
+output_dir = "/ephemeral/evals/qwen35-subagent-handshake-probe"
 
 [env]
 max_concurrent_agents = 1
@@ -17,16 +17,16 @@ max_concurrent_agents = 1
 [env.taskset]
 id = "subagent-communication-v1"
 split = "train"
-families = ["parallel"]
+families = ["handshake"]
 instruction_level = "guided"
 instances_per_template = 1
 instance_offset = 20
-seed = 20260829
+seed = 20260902
 
 [env.agent]
-max_turns = 24
-max_output_tokens = 16384
-max_total_tokens = 65536
+max_turns = 16
+max_output_tokens = 8192
+max_total_tokens = 32768
 
 [env.agent.harness]
 id = "prime-agent"
@@ -34,14 +34,6 @@ version = "0.7.0"
 save_session = true
 max_depth = 1
 model_context_window = 32768
-autonomous = true
-gates = ["python /workspace/.subagent-communication/completion_gate.py"]
-autonomous_gate_retries = 12
-autonomous_gate_timeout_ms = 10000
-autonomous_max_continuations = 12
-autonomous_max_turns = 24
-autonomous_max_tokens = 65536
-autonomous_timeout_ms = 240000
 
 [env.agent.runtime]
 type = "docker"
@@ -49,7 +41,7 @@ image = "python:3.11-slim"
 
 [env.agent.timeout]
 setup = 300.0
-rollout = 900.0
+rollout = 240.0
 finalize = 60.0
 scoring = 60.0
 
@@ -60,4 +52,4 @@ type = "eval"
 
 [sampling]
 temperature = 0.8
-max_tokens = 2048
+max_tokens = 1024

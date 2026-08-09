@@ -14,12 +14,19 @@ import verifiers.v1 as vf
 from pydantic import Field
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage, content_text
 
-Family = Literal["direct", "single", "parallel", "followup"]
+Family = Literal["direct", "single", "parallel", "handshake", "followup"]
 InstructionLevel = Literal["standard", "guided"]
 
 FAMILIES: tuple[Family, ...] = ("direct", "single", "parallel", "followup")
 TRAIN_VARIANTS = (0, 1, 2, 3)
 EVAL_VARIANTS = (4, 5)
+COMPLETION_GATE_PATH = "/workspace/.subagent-communication/completion_gate.py"
+OPSD_TEMPLATE = (
+    "<Question>\n{question}\n"
+    "This is an example for a response to the question:\n"
+    "<Demonstration>\n{demonstration}\n"
+    "Now answer with a response of your own, including the thinking process:"
+)
 
 SYSTEM_PROMPT = (
     "Coordinate work through Prime Agent's persistent IPython kernel. Delegate only the "
@@ -27,8 +34,12 @@ SYSTEM_PROMPT = (
     "not a result. Spawn independent children before doing coordinator-local work, retain their "
     "handles, and use that local work to let children run concurrently. A child must send "
     "requested results with agent_message to its parent. Never guess a missing result or finalize "
-    "before every required reply arrives. When local work finishes first, use bounded "
-    "agent_observe polling until the retained child is no longer streaming. "
+    "before every required reply arrives. After spawning children and finishing available local "
+    "work, end the current turn without polling; explicit child messages resume the active run. "
+    "Use agent_observe only to diagnose a bounded failure, never as the completion channel. "
+    "The direct result of await rlm(...) is an RLMSpawnHandle with .name. If that handle was "
+    "lost, rlm.list_subagents() returns RLMSubagent entries with .session_name instead; do not "
+    "confuse the two APIs. "
     "Preserve successful state across turns, do not repeat unchanged cells, and return the "
     "requested JSON object only."
 )
@@ -42,6 +53,8 @@ class SubagentCommunicationData(vf.TaskData):
     child_paths: dict[str, str] = Field(default_factory=dict)
     files: dict[str, str] = Field(default_factory=dict)
     followup_secret: int | None = None
+    demonstration: str | None = None
+    demonstrations: dict[str, str] | None = None
 
 
 def _weighted(values: list[int]) -> int:
@@ -54,6 +67,267 @@ def _values(rng: random.Random, count: int) -> list[int]:
 
 def _json(values: list[int]) -> str:
     return json.dumps(values, separators=(",", ":"))
+
+
+def _child_instruction(path: str) -> str:
+    return (
+        f"Read {path}, compute its weighted checksum, then send the integer checksum to "
+        "your parent with agent_message before answering."
+    )
+
+
+def _child_demonstration(path: str, checksum: int) -> str:
+    return (
+        "A successful Prime Agent child trajectory is:\n\n"
+        "First execute this IPython cell, preserving the exact assigned path:\n"
+        "import json\n"
+        "from pathlib import Path\n"
+        f"values = json.loads(Path({path!r}).read_text())\n"
+        "checksum = sum((index + 1) * value for index, value in enumerate(values))\n"
+        "checksum\n\n"
+        f"The observed checksum is {checksum}. Then execute exactly once:\n"
+        "await agent_message.send(str(checksum), receiver_role='parent')\n\n"
+        "After the send receipt succeeds, answer with a concise confirmation and stop."
+    )
+
+
+def _expert_demonstration(
+    family: Family,
+    prompt: str,
+    answer: dict[str, int],
+    child_paths: dict[str, str],
+) -> str | None:
+    if family not in {"single", "parallel"}:
+        return None
+    matched = re.search(r"local checksum for (\[[^\]]+\])", prompt)
+    if matched is None:
+        raise ValueError(f"{family} prompt is missing coordinator-local values")
+    local_values = json.loads(matched.group(1))
+    local_cell = (
+        f"local_values = {local_values!r}\n"
+        "local = sum((index + 1) * value for index, value in enumerate(local_values))\n"
+        "local"
+    )
+    if family == "single":
+        path = child_paths["shard-worker"]
+        child_prompt = _child_instruction(path)
+        return (
+            "A successful Prime Agent coordinator trajectory is:\n\n"
+            "First execute this exact IPython cell, preserving the complete shard path:\n"
+            f"handle = await rlm({child_prompt!r}, name='shard-worker')\n\n"
+            "The silent result means the child was admitted and handle remains available. Next execute:\n"
+            f"{local_cell}\n\n"
+            "End the turn without polling. After shard-worker's explicit message arrives, bind its "
+            "body as remote, compute total = local + remote, and return exactly:\n"
+            f"{json.dumps(answer)}"
+        )
+
+    alpha_path = child_paths["alpha-worker"]
+    beta_path = child_paths["beta-worker"]
+    alpha_prompt = _child_instruction(alpha_path)
+    beta_prompt = _child_instruction(beta_path)
+    return (
+        "A successful Prime Agent coordinator trajectory is:\n\n"
+        "First execute these separate IPython cells, preserving both complete paths and handles:\n"
+        f"alpha_handle = await rlm({alpha_prompt!r}, name='alpha-worker')\n\n"
+        f"beta_handle = await rlm({beta_prompt!r}, name='beta-worker')\n\n"
+        f"{local_cell}\n\n"
+        "End the turn without polling or sending READY messages. When explicit child messages "
+        "arrive, use each `[from child:<name>]` source label as authoritative provenance: bind "
+        f"the alpha-worker body to alpha_value = {answer['alpha']} and the beta-worker body to "
+        f"beta_value = {answer['beta']}. Do not bind an agent_message.send receipt, call "
+        "agent_observe, or trigger refinement. Compute total from local, alpha_value, and "
+        "beta_value, then return exactly:\n"
+        f"{json.dumps(answer)}"
+    )
+
+
+def _branch_demonstrations(
+    family: Family,
+    prompt: str,
+    answer: dict[str, int],
+    child_paths: dict[str, str],
+    coordinator_demonstration: str | None,
+) -> dict[str, str] | None:
+    if coordinator_demonstration is None:
+        return None
+    demonstrations = {prompt: coordinator_demonstration}
+    if family == "single":
+        children = (("shard-worker", "remote"),)
+    elif family == "parallel":
+        children = (("alpha-worker", "alpha"), ("beta-worker", "beta"))
+    else:
+        return demonstrations
+    for child_name, answer_key in children:
+        path = child_paths[child_name]
+        child_question = f"[task from parent]\n\n{_child_instruction(path)}"
+        demonstrations[child_question] = _child_demonstration(path, answer[answer_key])
+    return demonstrations
+
+
+def _completion_gate_source(expected_keys: tuple[str, ...], family: Family) -> str:
+    required_child_messages = {
+        "single": {"shard-worker": 1},
+        "parallel": {"alpha-worker": 1, "beta-worker": 1},
+        "followup": {"key-worker": 2},
+        "handshake": {"relay-worker": 2},
+    }.get(family, {})
+    if family == "followup":
+        feedback = (
+            "completion gate: final JSON is not ready. Preserve the existing delegation: "
+            "do not inspect the delegated shard, spawn another child, or redo the child's work. "
+            "If the latest key-worker message requests the multiplier, send the multiplier stated "
+            "in the original task to that existing child. If no new child message is present, end "
+            "this continuation with a brief waiting status and no tool call; this active autonomous "
+            "run will accept future child messages. Return strict JSON only after key-worker sends "
+            "its final subtotal and result."
+        )
+    elif family == "handshake":
+        feedback = (
+            "completion gate: final JSON is not ready. Preserve the existing delegation: do not "
+            "spawn another child. If the latest relay-worker message requests the nonce, send the "
+            "nonce stated in the original task to that existing child. If no new child message is "
+            "present, end this continuation with a brief waiting status and no tool call; this active "
+            "autonomous run will accept future child messages. Return strict JSON only after "
+            "relay-worker echoes the nonce."
+        )
+    elif family in {"single", "parallel"}:
+        feedback = (
+            "completion gate: final JSON is not ready. Preserve every existing delegation: do not "
+            "inspect a delegated shard, spawn replacement children, or redo their work. If no new "
+            "child message is present, end this continuation with a brief waiting status and no tool "
+            "call; this active autonomous run will accept future child messages. Return strict JSON "
+            "only after every existing child sends its result."
+        )
+    else:
+        feedback = (
+            "completion gate: final JSON is not ready. Complete the coordinator-local computation "
+            "and return one JSON object with exactly the requested keys and integer values."
+        )
+    return f'''import json
+import os
+import sys
+from pathlib import Path
+
+EXPECTED_KEYS = {expected_keys!r}
+REQUIRED_CHILD_MESSAGES = {required_child_messages!r}
+
+
+def content_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
+def session_message(entry):
+    if entry.get("type") == "custom_message":
+        return {{
+            "role": "custom",
+            "customType": entry.get("customType"),
+            "content": entry.get("content"),
+            "details": entry.get("details"),
+        }}
+    message = entry.get("message")
+    return message if isinstance(message, dict) else {{}}
+
+
+def child_message_sender(message):
+    if (
+        message.get("role") == "custom"
+        and message.get("customType") == "agent_message"
+    ):
+        details = message.get("details")
+        if not isinstance(details, dict) or details.get("fromRelationship") != "child":
+            return None
+        sender = details.get("from")
+        if not isinstance(sender, dict):
+            return None
+        for key in ("sessionName", "sessionId", "activeSessionId"):
+            value = sender.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    # Older harnesses rendered received agent messages as user prompts.
+    if message.get("role") != "user":
+        return None
+    text = content_text(message.get("content"))
+    prefix = "[from child:"
+    if not text.startswith(prefix) or "]" not in text[len(prefix):]:
+        return None
+    return text[len(prefix):].split("]", 1)[0]
+
+
+agent_dir = Path(os.environ.get("PRIME_AGENT_CODING_AGENT_DIR", ""))
+session_files = sorted(
+    (agent_dir / "sessions").rglob("*.jsonl"),
+    key=lambda path: path.stat().st_mtime,
+    reverse=True,
+)
+for path in session_files:
+    entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    if not entries:
+        continue
+    header = entries[0]
+    if header.get("rlmDepth") not in (None, 0):
+        continue
+    if header.get("parentSession") or header.get("parentSessionId"):
+        continue
+    final_payload = None
+    final_index = None
+    for index in range(len(entries) - 1, -1, -1):
+        message = session_message(entries[index])
+        if message.get("role") != "assistant":
+            continue
+        try:
+            final_payload = json.loads(content_text(message.get("content")).strip())
+        except (TypeError, json.JSONDecodeError):
+            break
+        final_index = index
+        break
+    if final_index is None:
+        continue
+    child_message_counts = {{name: 0 for name in REQUIRED_CHILD_MESSAGES}}
+    seen_child_message_ids = set()
+    for entry in entries[:final_index]:
+        message = session_message(entry)
+        child_name = child_message_sender(message)
+        if child_name not in child_message_counts:
+            continue
+        details = message.get("details")
+        message_id = details.get("id") if isinstance(details, dict) else None
+        if isinstance(message_id, str) and message_id in seen_child_message_ids:
+            continue
+        if isinstance(message_id, str):
+            seen_child_message_ids.add(message_id)
+        child_message_counts[child_name] += 1
+    child_evidence_ready = all(
+        child_message_counts.get(name, 0) >= count
+        for name, count in REQUIRED_CHILD_MESSAGES.items()
+    )
+    if (
+        child_evidence_ready
+        and isinstance(final_payload, dict)
+        and set(final_payload) == set(EXPECTED_KEYS)
+        and all(
+            isinstance(value, int) and not isinstance(value, bool)
+            for value in final_payload.values()
+        )
+    ):
+        raise SystemExit(0)
+
+print(
+    {feedback!r},
+    file=sys.stderr,
+)
+raise SystemExit(1)
+'''
 
 
 def _task_prompt(
@@ -113,11 +387,9 @@ def _task_prompt(
             f"local checksum, using handle = await rlm(\"Read {remote_path}, compute its weighted "
             "checksum, then send the integer checksum to your parent with agent_message before "
             "answering.\", name='shard-worker'). Retain handle and compute the local checksum in "
-            "separate state-preserving IPython calls while the child runs. If its reply has not "
-            "arrived, use a bounded asyncio loop around await "
-            "agent_observe.get_agent(handle.name) until the returned agent isStreaming field is "
-            "false. Never finalize without the explicit reply; the admission handle is not the "
-            "answer."
+            "separate state-preserving IPython calls while the child runs. Then stop calling tools "
+            "and end the current turn so the explicit child message can resume the active run. "
+            "Never finalize without that reply; the admission handle is not the answer."
         )
     elif family == "parallel":
         local = _values(rng, 6)
@@ -156,6 +428,32 @@ def _task_prompt(
             "is incomplete until that call succeeds.\", "
             "name='beta-worker'). Retain both handles, then stop calling tools for this turn."
         )
+    elif family == "handshake":
+        secret = rng.randint(1_000, 9_999)
+        answer = {"nonce": secret}
+        request = (
+            f"Delegate a bidirectional handshake to one child named relay-worker, but do not "
+            f"include nonce {secret} in its spawn prompt. The child must first request the nonce "
+            "from you through an agent message. Send it only in a direct follow-up, wait for the "
+            'child to echo it in a final message, then return {"nonce": value}.'
+        )
+        children = ("relay-worker",)
+        child_paths = {"relay-worker": "need nonce"}
+        files = {}
+        guidance = (
+            f"First retain nonce = {secret} in coordinator IPython state. Then assign child = await "
+            "rlm(\"You are relay-worker, my child. Do not call rlm or message "
+            "a child. In a separate IPython call exactly await agent_message.send('need nonce', "
+            "receiver_role='parent'). End that turn and resume only when my parent follow-up "
+            "arrives. In the resumed turn, bind the exact body of the latest [from parent] message "
+            "to a nonce variable rather than guessing it. Then make a second successful "
+            "receiver_role='parent' message containing that nonce. Your task is incomplete until "
+            "both parent messages succeed.\", "
+            "name='relay-worker'). Do not put the nonce in that string. Retain child and stop "
+            "calling tools for this turn. After its request arrives, use await "
+            "agent_message.send(str(nonce), receiver_role='child', "
+            "receiver_name=child.name), then wait for its final reply."
+        )
     else:
         remote = _values(rng, 10 + variant % 3)
         remote_path = f"/workspace/subagent-shards/v{variant}-i{instance}-followup.json"
@@ -173,13 +471,16 @@ def _task_prompt(
         child_paths = {"key-worker": remote_path}
         files = {remote_path: json.dumps(remote)}
         guidance = (
-            f"Do not open {remote_path} in the coordinator. Assign child = await rlm(\"You are "
+            f"Do not open {remote_path} in the coordinator. First retain multiplier = {secret} in "
+            "coordinator IPython state. Then assign child = await rlm(\"You are "
             f"key-worker, my child. Read {remote_path} and retain its subtotal. Do not call rlm "
             "or message a child. In a separate IPython call exactly await "
             "agent_message.send('need multiplier', receiver_role='parent'). End that turn and "
-            "resume only when my parent follow-up arrives. Then multiply the retained subtotal "
-            "and make a second successful receiver_role='parent' message containing subtotal and "
-            "result. Your task is incomplete until both parent messages succeed.\", "
+            "resume only when my parent follow-up arrives. In the resumed turn, bind the integer "
+            "body of the latest [from parent] message to multiplier with int(...) rather than "
+            "guessing or hardcoding it. Then multiply the retained subtotal and make a second "
+            "successful receiver_role='parent' message containing subtotal and result. Your task "
+            "is incomplete until both parent messages succeed.\", "
             "name='key-worker'). Do not put the multiplier in that string. Retain child and stop "
             "calling tools for this turn. After its request arrives, use await "
             "agent_message.send(str(multiplier), receiver_role='child', "
@@ -202,13 +503,14 @@ def _task_prompt(
 class IpythonEvent:
     code: str
     call_id: str
+    node_index: int
     output: str = ""
 
 
 def _ipython_events(trace: vf.Trace) -> list[IpythonEvent]:
     events: list[IpythonEvent] = []
-    by_call_id: dict[str, IpythonEvent] = {}
-    for node in trace.nodes:
+    by_node_call: dict[tuple[int, str], IpythonEvent] = {}
+    for node_index, node in enumerate(trace.nodes):
         message = node.message
         if isinstance(message, AssistantMessage):
             for call in message.tool_calls or []:
@@ -220,12 +522,33 @@ def _ipython_events(trace: vf.Trace) -> list[IpythonEvent]:
                     continue
                 source = arguments.get("code")
                 if isinstance(source, str):
-                    event = IpythonEvent(code=source, call_id=call.id)
+                    event = IpythonEvent(code=source, call_id=call.id, node_index=node_index)
                     events.append(event)
-                    by_call_id[call.id] = event
-        elif isinstance(message, ToolMessage) and (event := by_call_id.get(message.tool_call_id)):
+                    by_node_call[(node_index, call.id)] = event
+        elif isinstance(message, ToolMessage) and (
+            event := by_node_call.get((node.parent, message.tool_call_id))
+        ):
             event.output = content_text(message.content)
     return events
+
+
+def _duplicate_cells(trace: vf.Trace, events: list[IpythonEvent]) -> int:
+    by_branch: dict[int, list[str]] = {}
+    for event in events:
+        branch_root = event.node_index
+        visited: set[int] = set()
+        while trace.nodes[branch_root].parent is not None:
+            if branch_root in visited:
+                break
+            visited.add(branch_root)
+            branch_root = trace.nodes[branch_root].parent
+        by_branch.setdefault(branch_root, []).append(event.code.strip())
+    return sum(
+        count - 1
+        for branch in by_branch.values()
+        for count in Counter(branch).values()
+        if count > 1
+    )
 
 
 def _call_name(call: ast.Call) -> str | None:
@@ -264,8 +587,15 @@ def _message_sent(output: str) -> bool:
     )
 
 
-def _incoming_child_messages(trace: vf.Trace) -> list[tuple[str, str]]:
-    messages: list[tuple[str, str]] = []
+@dataclass
+class ChildMessage:
+    name: str
+    body: str
+    message_id: str | None
+
+
+def _incoming_child_messages(trace: vf.Trace) -> list[ChildMessage]:
+    messages: list[ChildMessage] = []
     for node in trace.nodes:
         message = node.message
         if not isinstance(message, UserMessage):
@@ -280,7 +610,14 @@ def _incoming_child_messages(trace: vf.Trace) -> list[tuple[str, str]]:
         body = text.rsplit("\n\n", 1)[-1].strip()
         if "completed without sending a reply" in body or body.startswith("RLM child failure"):
             continue
-        messages.append((matched.group(1), body))
+        message_id = re.search(r"^Message id:\s*(\S+)", text, re.MULTILINE)
+        messages.append(
+            ChildMessage(
+                name=matched.group(1),
+                body=body,
+                message_id=message_id.group(1) if message_id else None,
+            )
+        )
     return messages
 
 
@@ -307,8 +644,7 @@ def _protocol_behavior(
     followup_secret: int | None,
 ) -> dict[str, float]:
     events = _ipython_events(trace)
-    code = [event.code for event in events]
-    calls: list[tuple[ast.Call, bool, str]] = []
+    calls: list[tuple[ast.Call, bool, IpythonEvent]] = []
     for event in events:
         try:
             tree = ast.parse(event.code)
@@ -316,49 +652,113 @@ def _protocol_behavior(
             continue
         assigned = _assigned_call_names(tree)
         calls.extend(
-            (node, id(node) in assigned, event.output) for node in ast.walk(tree) if isinstance(node, ast.Call)
+            (node, id(node) in assigned, event) for node in ast.walk(tree) if isinstance(node, ast.Call)
         )
 
-    attempted_spawns = [(call, retained, output) for call, retained, output in calls if _call_name(call) == "rlm"]
-    spawns = [item for item in attempted_spawns if not _failed(item[2])]
-    names = {_spawn_name(call, output) for call, _, output in spawns}
+    attempted_spawns = [(call, retained, event) for call, retained, event in calls if _call_name(call) == "rlm"]
+    spawns = [item for item in attempted_spawns if not _failed(item[2].output)]
+    names = {_spawn_name(call, event.output) for call, _, event in spawns}
     parent_messages = _incoming_child_messages(trace)
-    parent_message_names = {name for name, _ in parent_messages}
+    parent_message_names = {message.name for message in parent_messages}
     child_messages = [
-        call
-        for call, _, output in calls
+        (call, event)
+        for call, _, event in calls
         if _call_name(call) == "agent_message.send"
         and _keyword(call, "receiver_role") == "child"
-        and _message_sent(output)
+        and _message_sent(event.output)
+    ]
+    parent_sends = [
+        (call, event)
+        for call, _, event in calls
+        if _call_name(call) == "agent_message.send"
+        and _keyword(call, "receiver_role") == "parent"
+        and _message_sent(event.output)
     ]
     list_calls = sum(
-        _call_name(call) in {"rlm.list_subagents", "agent_message.list_agents"} and not _failed(output)
-        for call, _, output in calls
+        _call_name(call) in {"rlm.list_subagents", "agent_message.list_agents"} and not _failed(event.output)
+        for call, _, event in calls
     )
     observation_calls = sum(
-        (_call_name(call) or "").startswith("agent_observe.") and not _failed(output)
-        for call, _, output in calls
+        (_call_name(call) or "").startswith("agent_observe.") and not _failed(event.output)
+        for call, _, event in calls
     )
-    normalized = [source.strip() for source in code]
-    repeated = sum(count - 1 for count in Counter(normalized).values() if count > 1)
+    repeated = _duplicate_cells(trace, events)
     retained = sum(retained for _, retained, _ in spawns)
     delegated = {
         name
         for name, path in child_paths.items()
-        if any(_spawn_name(call, output) == name and path in (_spawn_prompt(call) or "") for call, _, output in spawns)
+        if any(
+            _spawn_name(call, event.output) == name and path in (_spawn_prompt(call) or "")
+            for call, _, event in spawns
+        )
     }
     secret_withheld = True
     if followup_secret is not None and spawns:
         first_prompt = _spawn_prompt(spawns[0][0])
         secret_withheld = bool(first_prompt and str(followup_secret) not in first_prompt)
 
+    expected_messages = [message for message in parent_messages if message.name in expected_children]
+    request_phrase = "need nonce" if family == "handshake" else "need multiplier"
+    request_message = next(
+        (message for message in expected_messages if request_phrase in message.body.lower()),
+        None,
+    )
+
+    def originating_send_index(message: ChildMessage | None) -> int | None:
+        if message is None or message.message_id is None:
+            return None
+        return next(
+            (event.node_index for _, event in parent_sends if message.message_id in event.output),
+            None,
+        )
+
+    request_index = originating_send_index(request_message)
+    result_messages = [
+        (message, index)
+        for message in expected_messages
+        if message is not request_message and (index := originating_send_index(message)) is not None
+    ]
+    followup_request_sent = request_index is not None
+    followup_after_request = any(
+        request_index is not None and request_index < child_event.node_index
+        for _, child_event in child_messages
+    )
+    result_after_followup = any(
+        request_index is not None and request_index < child_event.node_index < result_index
+        for _, child_event in child_messages
+        for _, result_index in result_messages
+    )
+    followup_causal = followup_request_sent and followup_after_request and result_after_followup
+    result_matches_secret = family != "handshake" or any(
+        request_index is not None
+        and request_index < child_event.node_index < result_index
+        and followup_secret is not None
+        and str(followup_secret) in message.body
+        for _, child_event in child_messages
+        for message, result_index in result_messages
+    )
+    followup_phase_score = (
+        float(followup_request_sent) + float(followup_after_request) + float(result_after_followup)
+    ) / 3
+    retained_ready = retained == len(expected_children)
+    stateful_control_progress = 0.0
+    if family in {"followup", "handshake"} and retained_ready:
+        stateful_control_progress = (
+            1.0
+            + float(followup_request_sent)
+            + float(followup_after_request)
+            + float(result_after_followup)
+            + float(secret_withheld)
+            + float(repeated == 0)
+        ) / 6
+
     if family == "direct":
         checks = [not spawns, not parent_messages, not child_messages, repeated == 0]
     elif family == "single":
         checks = [
             len(spawns) == 1,
+            retained == len(expected_children),
             set(expected_children) <= names,
-            retained == 1,
             set(expected_children) <= delegated,
             set(expected_children) <= parent_message_names,
             repeated == 0,
@@ -366,8 +766,8 @@ def _protocol_behavior(
     elif family == "parallel":
         checks = [
             len(spawns) == 2,
+            retained == len(expected_children),
             set(expected_children) <= names,
-            retained == 2,
             set(expected_children) <= delegated,
             set(expected_children) <= parent_message_names,
             repeated == 0,
@@ -375,12 +775,16 @@ def _protocol_behavior(
     else:
         checks = [
             len(spawns) == 1,
+            retained == len(expected_children),
             set(expected_children) <= names,
-            retained == 1,
             set(expected_children) <= delegated,
             secret_withheld,
             len(child_messages) >= 1,
-            sum(name in expected_children for name, _ in parent_messages) >= 2,
+            len(expected_messages) >= 2,
+            followup_request_sent,
+            followup_after_request,
+            result_after_followup,
+            *([result_matches_secret] if family == "handshake" else []),
             repeated == 0,
         ]
     return {
@@ -396,6 +800,13 @@ def _protocol_behavior(
         "roster_calls": float(list_calls),
         "observation_calls": float(observation_calls),
         "secret_withheld": float(secret_withheld),
+        "followup_request_sent": float(followup_request_sent),
+        "followup_after_request": float(followup_after_request),
+        "result_after_followup": float(result_after_followup),
+        "followup_result_matches_secret": float(result_matches_secret),
+        "followup_phase_score": followup_phase_score,
+        "followup_causal": float(followup_causal),
+        "stateful_control_progress": stateful_control_progress,
         "duplicate_cells": float(repeated),
     }
 
@@ -412,14 +823,21 @@ def _answer_score(reply: str, expected: dict[str, int]) -> float:
 
 class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        if not self.data.files:
-            return
-        directories = sorted({path.rsplit("/", 1)[0] for path in self.data.files})
+        directories = sorted(
+            {
+                COMPLETION_GATE_PATH.rsplit("/", 1)[0],
+                *(path.rsplit("/", 1)[0] for path in self.data.files),
+            }
+        )
         created = await runtime.run(["mkdir", "-p", *directories], {})
         if created.exit_code != 0:
             raise RuntimeError(f"subagent shard setup failed: {created.stderr[-500:]}")
         for path, contents in self.data.files.items():
             await runtime.write(path, contents.encode())
+        await runtime.write(
+            COMPLETION_GATE_PATH,
+            _completion_gate_source(tuple(self.data.answer), self.data.family).encode(),
+        )
 
     @vf.reward(weight=1.0)
     async def protocol_gated_accuracy(self, trace: vf.Trace) -> float:
@@ -445,6 +863,16 @@ class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
             self.data.followup_secret,
         )["protocol_score"]
 
+    @vf.reward(weight=1.0)
+    async def stateful_control_progress(self, trace: vf.Trace) -> float:
+        return _protocol_behavior(
+            trace,
+            self.data.family,
+            self.data.expected_children,
+            self.data.child_paths,
+            self.data.followup_secret,
+        )["stateful_control_progress"]
+
     @vf.metric
     async def answer_accuracy(self, trace: vf.Trace) -> float:
         return _answer_score(trace.last_reply, self.data.answer)
@@ -467,6 +895,7 @@ class SubagentCommunicationConfig(vf.TasksetConfig):
     instances_per_template: int = Field(4, ge=1)
     instance_offset: int = Field(0, ge=0)
     seed: int = 20260809
+    teacher_conditioned: bool = False
 
 
 class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, SubagentCommunicationConfig]):
@@ -487,6 +916,28 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                         self.config.seed,
                         self.config.instruction_level,
                     )
+                    demonstration = _expert_demonstration(
+                        family,
+                        prompt,
+                        answer,
+                        child_paths,
+                    )
+                    demonstrations = _branch_demonstrations(
+                        family,
+                        prompt,
+                        answer,
+                        child_paths,
+                        demonstration,
+                    )
+                    if self.config.teacher_conditioned:
+                        if demonstration is None:
+                            raise ValueError(
+                                "teacher_conditioned preflight requires a supported demonstration family"
+                            )
+                        prompt = OPSD_TEMPLATE.format(
+                            question=prompt,
+                            demonstration=demonstration,
+                        )
                     tasks.append(
                         SubagentCommunicationTask(
                             SubagentCommunicationData(
@@ -502,6 +953,8 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                                 child_paths=child_paths,
                                 files=files,
                                 followup_secret=secret,
+                                demonstration=demonstration,
+                                demonstrations=demonstrations,
                             ),
                             self.config.task,
                         )

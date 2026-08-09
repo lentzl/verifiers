@@ -1,7 +1,7 @@
-# Event-driven held-out direct, single-child, and parallel-child rung admission.
+# Native headless continuation while fire-and-forget children steer the root.
 
-model = "/ephemeral/subagent-rung/outputs/03-parallel-sft-r1/weights/step_24"
-num_tasks = 3
+model = "/ephemeral/subagent-rung/outputs/12-followup-message-grounding-sft-r1/weights/step_40"
+num_tasks = 1
 num_rollouts = 4
 shuffle = false
 max_concurrent = 1
@@ -9,21 +9,24 @@ verbose = false
 rich = false
 server = false
 push = false
-output_dir = "/ephemeral/evals/qwen35-subagent-parallel-rung"
+output_dir = "/ephemeral/evals/qwen35-subagent-followup-autonomous-probe"
 
 [env]
 max_concurrent_agents = 1
 
 [env.taskset]
 id = "subagent-communication-v1"
-split = "eval"
-families = ["direct", "single", "parallel"]
-instruction_level = "standard"
+split = "train"
+families = ["followup"]
+instruction_level = "guided"
 instances_per_template = 1
-seed = 20260809
+instance_offset = 180
+seed = 20260909
 
 [env.agent]
-max_turns = 24
+# Keep this isolated delegation probe below Prime Agent's default turn-25
+# continual-harness refinement checkpoint.
+max_turns = 20
 max_output_tokens = 16384
 max_total_tokens = 65536
 
@@ -38,7 +41,7 @@ gates = ["python /workspace/.subagent-communication/completion_gate.py"]
 autonomous_gate_retries = 12
 autonomous_gate_timeout_ms = 10000
 autonomous_max_continuations = 12
-autonomous_max_turns = 24
+autonomous_max_turns = 20
 autonomous_max_tokens = 65536
 autonomous_timeout_ms = 240000
 
@@ -48,7 +51,7 @@ image = "python:3.11-slim"
 
 [env.agent.timeout]
 setup = 300.0
-rollout = 900.0
+rollout = 360.0
 finalize = 60.0
 scoring = 60.0
 
