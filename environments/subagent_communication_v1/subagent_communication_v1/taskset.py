@@ -173,12 +173,13 @@ def _task_prompt(
         child_paths = {"key-worker": remote_path}
         files = {remote_path: json.dumps(remote)}
         guidance = (
-            f"Do not open {remote_path} in the coordinator. Assign child = await rlm(\"Read "
-            f"{remote_path} and compute the subtotal. In a separate IPython call exactly await "
-            "agent_message.send('need multiplier', receiver_role='parent'). Do not finish: after "
-            "the parent reply, compute the result and make a second successful parent message "
-            "containing the subtotal and result. Your task is incomplete until both messages "
-            "succeed.\", "
+            f"Do not open {remote_path} in the coordinator. Assign child = await rlm(\"You are "
+            f"key-worker, my child. Read {remote_path} and retain its subtotal. Do not call rlm "
+            "or message a child. In a separate IPython call exactly await "
+            "agent_message.send('need multiplier', receiver_role='parent'). End that turn and "
+            "resume only when my parent follow-up arrives. Then multiply the retained subtotal "
+            "and make a second successful receiver_role='parent' message containing subtotal and "
+            "result. Your task is incomplete until both parent messages succeed.\", "
             "name='key-worker'). Do not put the multiplier in that string. Retain child and stop "
             "calling tools for this turn. After its request arrives, use await "
             "agent_message.send(str(multiplier), receiver_role='child', "

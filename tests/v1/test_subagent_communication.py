@@ -143,6 +143,9 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     assert "isStreaming" in single.data.prompt
     assert "receiver_role='child'" in followup.data.prompt
     assert "name='key-worker'" in followup.data.prompt
+    assert "You are key-worker, my child" in followup.data.prompt
+    assert "Do not call rlm or message a child" in followup.data.prompt
+    assert "resume only when my parent follow-up arrives" in followup.data.prompt
     assert json.dumps(single.data.answer) not in single.data.prompt
 
 
