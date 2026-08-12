@@ -252,6 +252,8 @@ def test_prime_agent_installer_bootstraps_https_certificates_and_tools():
     # uv must be pinned through the versioned installer URL; the generic
     # installer ignores UV_VERSION and would silently install a different build.
     assert "https://astral.sh/uv/${uv_version}/install.sh" in installer
+    assert '"uv==$uv_version"' in installer
+    assert "both uv installers failed" in installer
 
 
 def test_prime_agent_installer_handles_musl_without_glibc_download():

@@ -77,8 +77,18 @@ install_uv() {
     # files into the per-trace HOME.
     if ! curl -fsSL "https://astral.sh/uv/${uv_version}/install.sh" \
         | UV_INSTALL_DIR="$tmp/bin" UV_NO_MODIFY_PATH=1 sh; then
-        echo "prime-agent: official uv installer failed for uv $uv_version" >&2
-        exit 1
+        # Fresh rollout containers should not all fail because one artifact host
+        # is transiently unavailable. PyPI publishes the same pinned uv binary;
+        # install it into the same staging prefix, then verify it below.
+        echo "prime-agent: official uv installer failed; trying pinned PyPI fallback" >&2
+        rm -rf "$tmp"
+        mkdir -p "$tmp/bin"
+        if ! command -v python >/dev/null 2>&1 \
+            || ! python -m pip install --disable-pip-version-check --no-cache-dir \
+                --prefix "$tmp" "uv==$uv_version"; then
+            echo "prime-agent: both uv installers failed for uv $uv_version" >&2
+            exit 1
+        fi
     fi
     if [ ! -x "$tmp/bin/uv" ]; then
         echo "prime-agent: official uv installer did not provide $tmp/bin/uv" >&2
