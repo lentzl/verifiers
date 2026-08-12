@@ -1,0 +1,13 @@
+[project]
+name = "ownership-invariant-v1"
+version = "0.1.0"
+description = "Executable paired ownership decisions for native-sibling SDPO."
+requires-python = ">=3.11"
+dependencies = ["verifiers", "subagent-communication-v1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ownership_invariant_v1"]

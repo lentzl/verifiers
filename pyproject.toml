@@ -80,6 +80,7 @@ examples = [
     "proposer-solver", "reverse-text", "color-codeword",
     "wordle", "openenv-wordle", "alphabet-sort", "scratchpad",
     "kuhn-poker", "oolong-synth-v1", "subagent-communication-v1",
+    "ownership-invariant-v1",
 ]
 
 [project.optional-dependencies]
@@ -166,6 +167,7 @@ scratchpad = { path = "environments/scratchpad", editable = true }
 kuhn-poker = { path = "environments/kuhn_poker", editable = true }
 oolong-synth-v1 = { path = "environments/oolong_synth_v1", editable = true }
 subagent-communication-v1 = { path = "environments/subagent_communication_v1", editable = true }
+ownership-invariant-v1 = { path = "environments/ownership_invariant_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # Bounded cutoffs for the explicitly requested tool upgrades.
