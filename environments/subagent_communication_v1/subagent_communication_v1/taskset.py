@@ -10,8 +10,9 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Literal
 
-import verifiers.v1 as vf
 from pydantic import Field
+
+import verifiers.v1 as vf
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage, content_text
 
 Family = Literal["direct", "single", "parallel", "handshake", "followup"]
@@ -362,7 +363,7 @@ def _bidirectional_child_request_demonstrations(
     child_question = next(question for question in turn_demonstrations if question.startswith("[task from parent]"))
     child_steps = turn_demonstrations[child_question]
     if not isinstance(child_steps, list):
-        raise ValueError("bidirectional child turn demonstrations must be a sequence")
+        raise TypeError("bidirectional child turn demonstrations must be a sequence")
     request_only = [child_steps[0], None]
     return {
         prompt: None,
@@ -637,9 +638,7 @@ def keep_child_request_phase_responses(trace: vf.Trace) -> list[list[bool]]:
             branch_mask.extend([False] * span)
             if not is_child_branch or request_complete:
                 continue
-            if isinstance(node.message, ToolMessage) and _message_sent(content_text(node.message.content)):
-                request_complete = True
-            elif isinstance(node.message, UserMessage) and content_text(node.message.content).lstrip().startswith(
+            if isinstance(node.message, ToolMessage) and _message_sent(content_text(node.message.content)) or isinstance(node.message, UserMessage) and content_text(node.message.content).lstrip().startswith(
                 "[from parent"
             ):
                 request_complete = True

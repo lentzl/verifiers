@@ -7,7 +7,9 @@ weakened guard fails in CI instead of only showing up in a live rollout.
 from types import SimpleNamespace
 
 import pytest
-from prime_agent_meta_guards import (
+from prime_agent_negatives_v1 import child_error_reported, quiescence_blocked_scoring
+
+from verifiers.v1.harnesses.prime_agent.metadata import (
     NAMESPACE,
     MissingAcpMeta,
     autonomous_continued,
@@ -19,7 +21,6 @@ from prime_agent_meta_guards import (
     refinement_applied,
     spawned_and_finished,
 )
-from prime_agent_negatives_v1 import child_error_reported, quiescence_blocked_scoring
 
 
 def trace_with(*events: dict) -> SimpleNamespace:

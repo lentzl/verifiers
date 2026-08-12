@@ -1,8 +1,10 @@
 """Prime Agent autonomous gates observed through preserved ACP `_meta`."""
 
-from prime_agent_meta_guards import autonomous_continued, gate_attempted
-
 import verifiers.v1 as vf
+from verifiers.v1.harnesses.prime_agent.metadata import (
+    autonomous_continued,
+    gate_attempted,
+)
 
 # The gate must FAIL at least once, or autonomous never continues: a gate that
 # passes immediately emits continuationsUsed 0 and no gateAttempt at all

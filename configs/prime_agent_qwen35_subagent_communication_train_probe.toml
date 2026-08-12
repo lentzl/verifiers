@@ -29,11 +29,8 @@ max_output_tokens = 16384
 max_total_tokens = 49152
 
 [env.agent.harness]
-id = "prime-agent"
+id = "prime_agent"
 version = "0.7.0"
-save_session = true
-max_depth = 1
-model_context_window = 32768
 
 [env.agent.runtime]
 type = "docker"
