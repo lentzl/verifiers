@@ -118,3 +118,34 @@ def test_subagent_reward_rejects_polling_and_nonexact_completion() -> None:
         _node("assistant", "", "await agent_message.list_messages()")
     )
     assert asyncio.run(task.capability(trace)) == 0.0
+
+
+def test_state_capabilities_require_exact_completion() -> None:
+    state_task = PrimeAgentCapabilitiesTask.__new__(PrimeAgentCapabilitiesTask)
+    state_task.data = SimpleNamespace(family="harness_state")
+    state_trace = _trace(
+        acp_meta={
+            NAMESPACE: [
+                {"refinement": {"status": "complete", "changes": ["memory:x"]}}
+            ]
+        }
+    )
+    state_trace.last_reply = "DONE"
+    assert asyncio.run(state_task.capability(state_trace)) == 1.0
+    state_trace.last_reply = "Refined. DONE"
+    assert asyncio.run(state_task.capability(state_trace)) == 0.0
+
+    cancel_task = PrimeAgentCapabilitiesTask.__new__(PrimeAgentCapabilitiesTask)
+    cancel_task.data = SimpleNamespace(family="killed_child")
+    cancel_trace = _trace(
+        acp_meta={
+            NAMESPACE: [
+                {"subagents": [{"id": "child", "status": "running"}]},
+                {"subagents": [{"id": "child", "status": "cancelled"}]},
+            ]
+        }
+    )
+    cancel_trace.last_reply = "DONE"
+    assert asyncio.run(cancel_task.capability(cancel_trace)) == 1.0
+    cancel_trace.last_reply = "Child cancelled. DONE"
+    assert asyncio.run(cancel_task.capability(cancel_trace)) == 0.0

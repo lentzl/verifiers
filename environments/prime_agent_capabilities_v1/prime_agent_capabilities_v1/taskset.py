@@ -112,10 +112,14 @@ def _child_cancelled(trace: vf.Trace) -> bool:
     )
 
 
+def _completed_exactly(trace: vf.Trace, expected: str = "DONE") -> bool:
+    return (trace.last_reply or "").strip() == expected
+
+
 def _subagent_protocol_completed(
     trace: vf.Trace, data: PrimeAgentCapabilityData
 ) -> bool:
-    if data.child_result is None or (trace.last_reply or "").strip() != "DONE":
+    if data.child_result is None or not _completed_exactly(trace):
         return False
     received = False
     polled = False
@@ -162,9 +166,13 @@ class PrimeAgentCapabilitiesTask(vf.Task[PrimeAgentCapabilityData]):
                 and _subagent_protocol_completed(trace, self.data)
             )
         elif family == "harness_state":
-            success = _harness_state_changed(trace)
+            success = _harness_state_changed(trace) and _completed_exactly(trace)
         else:
-            success = _child_cancelled(trace) and no_outstanding_subagents(trace)
+            success = (
+                _child_cancelled(trace)
+                and no_outstanding_subagents(trace)
+                and _completed_exactly(trace)
+            )
         return float(success)
 
 
