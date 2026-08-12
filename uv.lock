@@ -3165,6 +3165,15 @@ wheels = [
 ]
 
 [[package]]
+name = "ownership-invariant-v1"
+version = "0.1.0"
+source = { editable = "environments/ownership_invariant_v1" }
+dependencies = [
+    { name = "subagent-communication-v1" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "packaging"
 version = "26.2"
 source = { registry = "https://pypi.org/simple" }
@@ -5198,6 +5207,7 @@ examples = [
     { name = "kuhn-poker" },
     { name = "oolong-synth-v1" },
     { name = "openenv-wordle" },
+    { name = "ownership-invariant-v1" },
     { name = "proposer-solver" },
     { name = "reverse-text" },
     { name = "scratchpad" },
@@ -5274,6 +5284,7 @@ examples = [
     { name = "kuhn-poker", editable = "environments/kuhn_poker" },
     { name = "oolong-synth-v1", editable = "environments/oolong_synth_v1" },
     { name = "openenv-wordle", editable = "environments/openenv_wordle" },
+    { name = "ownership-invariant-v1", editable = "environments/ownership_invariant_v1" },
     { name = "proposer-solver", editable = "environments/proposer_solver" },
     { name = "reverse-text", editable = "environments/reverse_text" },
     { name = "scratchpad", editable = "environments/scratchpad" },
