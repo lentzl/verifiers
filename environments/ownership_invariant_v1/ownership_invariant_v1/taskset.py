@@ -531,13 +531,22 @@ class OwnershipInvariantTaskset(vf.Taskset[OwnershipInvariantTask, OwnershipInva
                 }
                 templates = CHILD_OWNED_PHRASINGS if self.config.ownership == "child" else COORDINATOR_OWNED_PHRASINGS
                 prompt = templates[phrasing].format(**prompt_values)
-                if self.config.instruction_level == "guided" and self.config.ownership == "coordinator":
-                    prompt = (
-                        f"{prompt}\n\nProtocol hint: First assign "
-                        f"{state_name}={state_value!r} in persistent IPython state. Preserve that variable while "
-                        f"reading {spec.path} and computing the result. Then return the requested object as bare "
-                        "JSON with no Markdown fence or prose."
-                    )
+                if self.config.instruction_level == "guided":
+                    if self.config.ownership == "child":
+                        prompt = (
+                            f"{prompt}\n\nProtocol hint: Make exactly one IPython call for this first decision. "
+                            f"In that single cell, first assign {state_name}={state_value!r}. Then assign "
+                            f"child_handle = await rlm(<instruction containing {spec.path!r} but not the "
+                            f"coordinator state>, name={child!r}). End the cell immediately after that assignment: "
+                            "do not print, observe, poll, or access the delegated path yourself."
+                        )
+                    else:
+                        prompt = (
+                            f"{prompt}\n\nProtocol hint: First assign "
+                            f"{state_name}={state_value!r} in persistent IPython state. Preserve that variable while "
+                            f"reading {spec.path} and computing the result. Then return the requested object as bare "
+                            "JSON with no Markdown fence or prose."
+                        )
                 tasks.append(
                     OwnershipInvariantTask(
                         OwnershipInvariantData(

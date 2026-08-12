@@ -161,6 +161,24 @@ def test_guided_coordinator_prompt_teaches_control_without_revealing_result() ->
     assert task.data.instruction_level == "guided"
 
 
+def test_guided_child_prompt_teaches_atomic_admission_without_revealing_result() -> None:
+    task = OwnershipInvariantTaskset(
+        OwnershipInvariantConfig(
+            split="admission",
+            ownership="child",
+            instruction_level="guided",
+        )
+    ).load()[0]
+
+    assert "exactly one IPython call" in task.data.prompt
+    assert f"first assign {task.data.state_name}={task.data.state_value!r}" in task.data.prompt
+    assert "child_handle = await rlm" in task.data.prompt
+    assert f"name={task.data.expected_child!r}" in task.data.prompt
+    assert "do not print, observe, poll" in task.data.prompt
+    assert str(task.data.expected_result) not in task.data.prompt
+    assert task.data.instruction_level == "guided"
+
+
 def test_child_owned_strict_success_requires_complete_first_decision() -> None:
     behavior = _first_decision_behavior(_trace(_valid_code()), _data())
 
