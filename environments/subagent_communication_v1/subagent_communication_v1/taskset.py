@@ -878,11 +878,11 @@ def _task_prompt(
         child_paths = {"shard-worker": remote_path}
         files = {remote_path: json.dumps(remote)}
         secret = None
+        child_instruction = _child_instruction(remote_path)
         guidance = (
             f"Do not open {remote_path} in the coordinator. Spawn the child before computing the "
-            f'local checksum, using handle = await rlm("Read {remote_path}, compute its weighted '
-            "checksum, then send the integer checksum to your parent with agent_message before "
-            "answering.\", name='shard-worker'). Retain handle and compute the local checksum in "
+            f"local checksum, using handle = await rlm({child_instruction!r}, "
+            "name='shard-worker'). Retain handle and compute the local checksum in "
             "separate state-preserving IPython calls while the child runs. Then stop calling tools "
             "and end the current turn so the explicit child message can resume the active run. "
             "Never finalize without that reply; the admission handle is not the answer."
@@ -912,17 +912,13 @@ def _task_prompt(
         child_paths = {"alpha-worker": alpha_path, "beta-worker": beta_path}
         files = {alpha_path: json.dumps(alpha), beta_path: json.dumps(beta)}
         secret = None
+        alpha_instruction = _child_instruction(alpha_path)
+        beta_instruction = _child_instruction(beta_path)
         guidance = (
             f"Do not open {alpha_path} or {beta_path} in the coordinator. In separate IPython "
-            'calls, assign alpha = await rlm("Read '
-            f"{alpha_path}, compute its weighted checksum, then make a separate final IPython "
-            "call exactly await agent_message.send(str(checksum), receiver_role='parent'). Your "
-            'task is incomplete until that call succeeds.", '
-            "name='alpha-worker') and beta = await rlm(\"Read "
-            f"{beta_path}, compute its weighted checksum, then make a separate final IPython call "
-            "exactly await agent_message.send(str(checksum), receiver_role='parent'). Your task "
-            'is incomplete until that call succeeds.", '
-            "name='beta-worker'). Retain both handles, then stop calling tools for this turn. "
+            f"calls, assign alpha = await rlm({alpha_instruction!r}, name='alpha-worker') and "
+            f"beta = await rlm({beta_instruction!r}, name='beta-worker'). Retain both handles, "
+            "then stop calling tools for this turn. "
             f"{MESSAGE_DELIVERY_GUIDANCE}"
         )
     elif family == "handshake":

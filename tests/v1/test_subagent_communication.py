@@ -1024,6 +1024,7 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     assert "Spawn the child before" in single.data.prompt
     assert "stop calling tools" in single.data.prompt
     assert "explicit child message" in single.data.prompt
+    assert single.data.prompt.count(WEIGHTED_CHECKSUM_FORMULA) == 1
     assert "agent_observe.get_agent" not in single.data.prompt
     assert "receiver_role='child'" in followup.data.prompt
     assert "name='key-worker'" in followup.data.prompt
@@ -1038,7 +1039,9 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
 
     parallel = next(task for task in tasks if task.data.family == "parallel")
     assert "There is no `agent_message.list_messages` API" in parallel.data.prompt
+    assert parallel.data.prompt.count(WEIGHTED_CHECKSUM_FORMULA) == 2
     assert json.dumps(single.data.answer) not in single.data.prompt
+    assert json.dumps(parallel.data.answer) not in parallel.data.prompt
 
 
 def test_completion_gate_requires_child_evidence_without_embedding_answer_values(
