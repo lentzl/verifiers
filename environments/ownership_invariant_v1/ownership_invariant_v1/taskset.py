@@ -493,7 +493,10 @@ class OwnershipInvariantTaskset(vf.Taskset[OwnershipInvariantTask, OwnershipInva
                 state_name = ("request_tag", "batch_marker", "trace_key", "route_token")[phrasing]
                 state_value = f"coord-{family}-{instance}-{phrasing}"
                 child = CHILD_NAMES[family]
-                answer_schema = '{"local_state": value, "result": value}'
+                answer_schema = (
+                    f'{{"local_state": {json.dumps(state_value)}, '
+                    '"result": <computed result>}'
+                )
                 prompt_values: dict[str, Any] = {
                     "state_name": state_name,
                     "state_value": state_value,
