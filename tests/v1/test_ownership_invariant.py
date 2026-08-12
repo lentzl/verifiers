@@ -96,6 +96,20 @@ def test_frozen_splits_are_disjoint_and_balanced() -> None:
     assert {task.data.resource_family for task in resources} == set(HELDOUT_RESOURCE_FAMILIES)
 
 
+def test_family_filter_preserves_instances_and_rejects_cross_split_families() -> None:
+    tasks = OwnershipInvariantTaskset(
+        OwnershipInvariantConfig(
+            families=("json_sum", "text_keyword_count"),
+            instances_per_family=2,
+        )
+    ).load()
+
+    assert len(tasks) == 4
+    assert {task.data.resource_family for task in tasks} == {"json_sum", "text_keyword_count"}
+    with pytest.raises(ValueError, match="families unavailable in heldout_resource"):
+        OwnershipInvariantConfig(split="heldout_resource", families=("json_sum",))
+
+
 def test_yield_policy_survives_served_task_reconstruction() -> None:
     config = OwnershipInvariantConfig(yield_policy="semantic")
     client_task = OwnershipInvariantTaskset(config).load()[0]

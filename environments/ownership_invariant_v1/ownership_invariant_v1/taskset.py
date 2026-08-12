@@ -30,6 +30,18 @@ import verifiers.v1 as vf
 Ownership = Literal["child", "coordinator"]
 Split = Literal["admission", "heldout_phrasing", "heldout_resource"]
 YieldPolicy = Literal["literal", "semantic"]
+ResourceFamily = Literal[
+    "json_sum",
+    "csv_amount_total",
+    "text_keyword_count",
+    "markdown_heading_count",
+    "log_error_count",
+    "python_def_count",
+    "json_max_value",
+    "sha256_prefix",
+    "tsv_score_total",
+    "xml_item_count",
+]
 
 TRAIN_RESOURCE_FAMILIES = (
     "json_sum",
@@ -462,6 +474,7 @@ class OwnershipInvariantConfig(vf.TasksetConfig):
     split: Split = "admission"
     ownership: Ownership = "child"
     yield_policy: YieldPolicy = "literal"
+    families: tuple[ResourceFamily, ...] | None = None
     instances_per_family: int = Field(1, ge=1)
     instance_offset: int = Field(0, ge=0)
     seed: int = 20260812
@@ -471,6 +484,11 @@ class OwnershipInvariantConfig(vf.TasksetConfig):
         # Served tasks are rebuilt from task data plus this task subtree, so
         # mirror the taskset-level curriculum knob across that wire boundary.
         self.task = self.task.model_copy(update={"yield_policy": self.yield_policy})
+        if self.families is not None:
+            available = {family for family, _ in _split_entries(self.split)}
+            unavailable = sorted(set(self.families) - available)
+            if unavailable:
+                raise ValueError(f"families unavailable in {self.split}: {', '.join(unavailable)}")
         return self
 
 
@@ -490,6 +508,8 @@ class OwnershipInvariantTaskset(vf.Taskset[OwnershipInvariantTask, OwnershipInva
             self.config.instance_offset + self.config.instances_per_family,
         ):
             for family, phrasing in _split_entries(self.config.split):
+                if self.config.families is not None and family not in self.config.families:
+                    continue
                 spec = _resource_spec(family, instance, self.config.seed)
                 state_name = ("request_tag", "batch_marker", "trace_key", "route_token")[phrasing]
                 state_value = f"coord-{family}-{instance}-{phrasing}"
