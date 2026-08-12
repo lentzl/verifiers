@@ -182,6 +182,60 @@ def test_child_owned_rejects_a_second_coordinator_cell() -> None:
     assert behavior["post_spawn_action"] == 1.0
 
 
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "child",
+        "print(child)",
+        "print(f'child={child.name}')",
+        "coordinator_state['child'] = child",
+        "coordinator_state['child'] = child\ncoordinator_state",
+    ],
+)
+def test_semantic_yield_accepts_only_passive_handle_tail(tail: str) -> None:
+    behavior = _first_decision_behavior(
+        _trace(f"{_valid_code()}\n{tail}"),
+        _data(),
+        yield_policy="semantic",
+    )
+
+    assert behavior["strict_success"] == 1.0
+    assert behavior["post_spawn_statement"] == 1.0
+    assert behavior["passive_handle_tail"] == 1.0
+    assert behavior["post_spawn_action"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "print('waiting')",
+        "result = sum([1, 2])",
+        "await agent_observe.status(child.name)",
+    ],
+)
+def test_semantic_yield_rejects_substantive_tail(tail: str) -> None:
+    behavior = _first_decision_behavior(
+        _trace(f"{_valid_code()}\n{tail}"),
+        _data(),
+        yield_policy="semantic",
+    )
+
+    assert behavior["strict_success"] == 0.0
+    assert behavior["post_spawn_action"] == 1.0
+
+
+def test_semantic_yield_still_rejects_a_second_coordinator_cell() -> None:
+    behavior = _first_decision_behavior(
+        _trace(_valid_code(), "child"),
+        _data(),
+        yield_policy="semantic",
+    )
+
+    assert behavior["strict_success"] == 0.0
+    assert behavior["first_decision_only"] == 0.0
+    assert behavior["post_spawn_action"] == 1.0
+
+
 def test_coordinator_owned_control_requires_direct_correct_work() -> None:
     code = (
         "request_tag = 'coord-json-sum'\n"
