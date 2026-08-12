@@ -46,6 +46,11 @@ SYSTEM_PROMPT = (
     "Preserve successful state across turns, do not repeat unchanged cells, and return the "
     "requested JSON object only."
 )
+MESSAGE_DELIVERY_GUIDANCE = (
+    "After yielding, Prime Agent resumes this same conversation with incoming messages visibly "
+    "labeled `[from child:<name>]` or `[from parent]`. There is no "
+    "`agent_message.list_messages` API; do not call it, inspect a roster, or poll."
+)
 
 OWNERSHIP_GUIDANCE = (
     "For this ownership-transition collection, make the first coordinator action one "
@@ -917,7 +922,8 @@ def _task_prompt(
             f"{beta_path}, compute its weighted checksum, then make a separate final IPython call "
             "exactly await agent_message.send(str(checksum), receiver_role='parent'). Your task "
             'is incomplete until that call succeeds.", '
-            "name='beta-worker'). Retain both handles, then stop calling tools for this turn."
+            "name='beta-worker'). Retain both handles, then stop calling tools for this turn. "
+            f"{MESSAGE_DELIVERY_GUIDANCE}"
         )
     elif family == "handshake":
         secret = rng.randint(1_000, 9_999)
@@ -943,7 +949,8 @@ def _task_prompt(
             "name='relay-worker'). Do not put the nonce in that string. Retain child and stop "
             "calling tools for this turn. After its request arrives, use await "
             "agent_message.send(str(nonce), receiver_role='child', "
-            "receiver_name=child.name), then wait for its final reply."
+            "receiver_name=child.name), then wait for its final reply. "
+            f"{MESSAGE_DELIVERY_GUIDANCE}"
         )
     else:
         remote = _values(rng, 10 + variant % 3)
@@ -977,7 +984,8 @@ def _task_prompt(
             "name='key-worker'). Do not put the multiplier in that string. Retain child and stop "
             "calling tools for this turn. After its request arrives, use await "
             "agent_message.send(str(multiplier), receiver_role='child', "
-            "receiver_name=child.name), then wait for its final reply."
+            "receiver_name=child.name), then wait for its final reply. "
+            f"{MESSAGE_DELIVERY_GUIDANCE}"
         )
 
     if instruction_level == "guided":

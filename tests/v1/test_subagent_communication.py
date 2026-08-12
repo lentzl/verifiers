@@ -1033,6 +1033,11 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     assert f"retain multiplier = {followup.data.followup_secret}" in followup.data.prompt
     assert "bind the integer body of the latest [from parent] message" in followup.data.prompt
     assert "rather than guessing or hardcoding it" in followup.data.prompt
+    assert "There is no `agent_message.list_messages` API" in followup.data.prompt
+    assert "[from child:<name>]" in followup.data.prompt
+
+    parallel = next(task for task in tasks if task.data.family == "parallel")
+    assert "There is no `agent_message.list_messages` API" in parallel.data.prompt
     assert json.dumps(single.data.answer) not in single.data.prompt
 
 
