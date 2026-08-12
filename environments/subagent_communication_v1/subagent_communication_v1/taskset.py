@@ -16,6 +16,8 @@ from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage, conte
 
 Family = Literal["direct", "single", "parallel", "handshake", "followup"]
 InstructionLevel = Literal["standard", "guided"]
+PromptContract = Literal["historical_v1", "explicit_bidirectional_v2"]
+WEIGHTED_CHECKSUM_FORMULA = "sum((index + 1) * value for index, value in enumerate(values))"
 
 FAMILIES: tuple[Family, ...] = ("direct", "single", "parallel", "followup")
 TRAIN_VARIANTS = (0, 1, 2, 3)
@@ -44,6 +46,16 @@ SYSTEM_PROMPT = (
     "requested JSON object only."
 )
 
+OWNERSHIP_GUIDANCE = (
+    "For this ownership-transition collection, make the first coordinator action one "
+    "IPython cell. Assign each coordinator-owned value named by the task to a descriptive "
+    "variable (for a follow-up task, use multiplier), and assign await rlm(...) to a child "
+    "handle. Put the delegated path and child work only inside the rlm prompt; do not read, "
+    "open, parse, or inspect that path in coordinator code. After a successful spawn, end "
+    "the turn without polling."
+)
+
+
 class SubagentCommunicationData(vf.TaskData):
     family: Family
     template_variant: int
@@ -55,6 +67,11 @@ class SubagentCommunicationData(vf.TaskData):
     followup_secret: int | None = None
     demonstration: str | None = None
     demonstrations: dict[str, str] | None = None
+    turn_demonstrations: dict[str, str | list[str | None] | None] | None = None
+    child_request_demonstrations: dict[str, list[str | None] | None] | None = None
+    coordinator_demonstrations: dict[str, str | None] | None = None
+    reward_post_fan_in_control: bool = False
+    reward_bidirectional_control: bool = False
 
 
 def _weighted(values: list[int]) -> int:
@@ -71,8 +88,27 @@ def _json(values: list[int]) -> str:
 
 def _child_instruction(path: str) -> str:
     return (
-        f"Read {path}, compute its weighted checksum, then send the integer checksum to "
-        "your parent with agent_message before answering."
+        f"Read {path} as the JSON list values and compute its weighted checksum using exactly "
+        f"{WEIGHTED_CHECKSUM_FORMULA}. Then execute exactly once: "
+        "await agent_message.send(str(checksum), receiver_role='parent'). After the delivery "
+        "receipt succeeds, answer with a concise confirmation and stop."
+    )
+
+
+def _followup_child_instruction(path: str) -> str:
+    return (
+        f"You are key-worker, my child. Read {path} and retain its subtotal. "
+        "Do not call rlm or message a child. Send 'need multiplier' to your parent, "
+        "end the turn, then use the multiplier from the parent's reply to compute and "
+        "send the final subtotal and result."
+    )
+
+
+def _handshake_child_instruction() -> str:
+    return (
+        "You are relay-worker, my child. Do not call rlm or message a child. Send "
+        "'need nonce' to your parent, end the turn, then echo the nonce from the "
+        "parent's reply in a second message to your parent."
     )
 
 
@@ -96,9 +132,44 @@ def _expert_demonstration(
     prompt: str,
     answer: dict[str, int],
     child_paths: dict[str, str],
+    followup_secret: int | None,
 ) -> str | None:
-    if family not in {"single", "parallel"}:
+    if family == "direct":
         return None
+    if family == "followup":
+        if followup_secret is None:
+            raise ValueError("followup demonstration requires a multiplier")
+        path = child_paths["key-worker"]
+        child_prompt = _followup_child_instruction(path)
+        return (
+            "A successful Prime Agent coordinator trajectory is:\n\n"
+            f"First retain multiplier = {followup_secret} in IPython state. Then execute exactly:\n"
+            f"child = await rlm({child_prompt!r}, name='key-worker')\n\n"
+            "Retain child and end the turn without polling. When key-worker sends exactly "
+            "`need multiplier`, execute once:\n"
+            "await agent_message.send(str(multiplier), receiver_role='child', "
+            "receiver_name=child.name)\n\n"
+            "End the turn again. After key-worker's second explicit message arrives, bind its "
+            "subtotal and result without overwriting child or multiplier, then return exactly:\n"
+            f"{json.dumps(answer)}"
+        )
+    if family == "handshake":
+        if followup_secret is None:
+            raise ValueError("handshake demonstration requires a nonce")
+        child_prompt = _handshake_child_instruction()
+        return (
+            "A successful Prime Agent coordinator trajectory is:\n\n"
+            f"First retain nonce = {followup_secret} in IPython state. Then execute exactly:\n"
+            f"child = await rlm({child_prompt!r}, name='relay-worker')\n\n"
+            "Retain child and end the turn without polling. When relay-worker sends exactly "
+            "`need nonce`, execute once:\n"
+            "await agent_message.send(str(nonce), receiver_role='child', "
+            "receiver_name=child.name)\n\n"
+            "End the turn again. After relay-worker echoes the nonce in its second explicit "
+            "message, return exactly:\n"
+            f"{json.dumps(answer)}"
+        )
+
     matched = re.search(r"local checksum for (\[[^\]]+\])", prompt)
     if matched is None:
         raise ValueError(f"{family} prompt is missing coordinator-local values")
@@ -117,8 +188,12 @@ def _expert_demonstration(
             f"handle = await rlm({child_prompt!r}, name='shard-worker')\n\n"
             "The silent result means the child was admitted and handle remains available. Next execute:\n"
             f"{local_cell}\n\n"
-            "End the turn without polling. After shard-worker's explicit message arrives, bind its "
-            "body as remote, compute total = local + remote, and return exactly:\n"
+            "Make no tool call, including no IPython comment, pass, string literal, or print. "
+            "The next assistant response itself must be exactly `Waiting for "
+            "shard-worker's explicit reply.` as plain assistant text. After shard-worker's explicit "
+            "message arrives, bind its "
+            "body as remote, compute total = local + remote mentally, and make no tool call. Your "
+            "first response after that message must be exactly this bare JSON, with no prose or Markdown:\n"
             f"{json.dumps(answer)}"
         )
 
@@ -142,6 +217,161 @@ def _expert_demonstration(
     )
 
 
+def _bidirectional_child_demonstration(
+    family: Family,
+    child_paths: dict[str, str],
+    answer: dict[str, int],
+) -> tuple[str, str]:
+    if family == "followup":
+        path = child_paths["key-worker"]
+        child_prompt = _followup_child_instruction(path)
+        child_demo = (
+            "A successful Prime Agent key-worker trajectory is:\n\n"
+            "First execute:\n"
+            "import json\n"
+            "from pathlib import Path\n"
+            f"values = json.loads(Path({path!r}).read_text())\n"
+            "subtotal = sum(values)\n"
+            "await agent_message.send('need multiplier', receiver_role='parent')\n\n"
+            "End the turn without polling. After the parent's explicit reply arrives, bind only "
+            "its integer body, preserving subtotal:\n"
+            f"multiplier = {answer['multiplier']}\n"
+            "result = subtotal * multiplier\n"
+            "await agent_message.send(json.dumps({'subtotal': subtotal, 'result': result}), "
+            "receiver_role='parent')\n\n"
+            "After the send receipt succeeds, answer with a concise confirmation and stop."
+        )
+    elif family == "handshake":
+        child_prompt = _handshake_child_instruction()
+        child_demo = (
+            "A successful Prime Agent relay-worker trajectory is:\n\n"
+            "First execute exactly once:\n"
+            "await agent_message.send('need nonce', receiver_role='parent')\n\n"
+            "End the turn without polling. After the parent's explicit reply arrives, bind only "
+            "its integer body:\n"
+            f"nonce = {answer['nonce']}\n"
+            "await agent_message.send(str(nonce), receiver_role='parent')\n\n"
+            "After the second send receipt succeeds, answer with a concise confirmation and stop."
+        )
+    else:
+        raise ValueError(f"{family} is not a bidirectional family")
+    return f"[task from parent]\n\n{child_prompt}", child_demo
+
+
+def _bidirectional_turn_demonstrations(
+    family: Family,
+    prompt: str,
+    child_paths: dict[str, str],
+    answer: dict[str, int],
+) -> dict[str, str | list[str | None] | None] | None:
+    if family == "followup":
+        path = child_paths["key-worker"]
+        child_prompt = _followup_child_instruction(path)
+        coordinator_steps = [
+            (
+                "Execute one IPython cell that preserves both values:\n"
+                f"multiplier = {answer['multiplier']}\n"
+                f"child = await rlm({child_prompt!r}, name='key-worker')\n"
+                "Then end the turn without polling or finalizing."
+            ),
+            (
+                "The visible key-worker message requests the multiplier. Preserve child and execute once:\n"
+                "await agent_message.send(str(multiplier), receiver_role='child', "
+                "receiver_name=child.name)\n"
+                "Then end the turn without polling."
+            ),
+            (
+                "Use the visible key-worker result and retained multiplier. Do not call a tool. "
+                f"Return exactly {json.dumps(answer)}"
+            ),
+        ]
+        child_steps = [
+            (
+                "Execute one IPython cell:\n"
+                "import json\n"
+                "from pathlib import Path\n"
+                f"values = json.loads(Path({path!r}).read_text())\n"
+                "subtotal = sum(values)\n"
+                "await agent_message.send('need multiplier', receiver_role='parent')\n"
+                "Then end the turn without polling or answering the task."
+            ),
+            (
+                "Bind only the integer body of the visible parent message while preserving subtotal, then execute:\n"
+                f"multiplier = {answer['multiplier']}\n"
+                "result = subtotal * multiplier\n"
+                "await agent_message.send(json.dumps({'subtotal': subtotal, 'result': result}), "
+                "receiver_role='parent')\n"
+                "Then stop."
+            ),
+        ]
+    elif family == "handshake":
+        child_prompt = _handshake_child_instruction()
+        coordinator_steps = [
+            (
+                "Execute one IPython cell that preserves both values:\n"
+                f"nonce = {answer['nonce']}\n"
+                f"child = await rlm({child_prompt!r}, name='relay-worker')\n"
+                "Then end the turn without polling or finalizing."
+            ),
+            (
+                "The visible relay-worker message requests the nonce. Preserve child and execute once:\n"
+                "await agent_message.send(str(nonce), receiver_role='child', "
+                "receiver_name=child.name)\n"
+                "Then end the turn without polling."
+            ),
+            (
+                "Use the nonce echoed in the visible relay-worker message. Do not call a tool. "
+                f"Return exactly {json.dumps(answer)}"
+            ),
+        ]
+        child_steps = [
+            (
+                "Execute exactly once:\n"
+                "await agent_message.send('need nonce', receiver_role='parent')\n"
+                "Then end the turn without polling or answering the task."
+            ),
+            (
+                "Bind only the integer body of the visible parent message, then execute once:\n"
+                f"nonce = {answer['nonce']}\n"
+                "await agent_message.send(str(nonce), receiver_role='parent')\n"
+                "Then stop."
+            ),
+        ]
+    else:
+        return None
+
+    child_question = f"[task from parent]\n\n{child_prompt}"
+    return {
+        prompt: coordinator_steps,
+        child_question: child_steps,
+        # A depth-one bidirectional task has exactly one child role.
+        "*": child_steps,
+    }
+
+
+def _bidirectional_child_request_demonstrations(
+    family: Family,
+    prompt: str,
+    child_paths: dict[str, str],
+    answer: dict[str, int],
+) -> dict[str, list[str | None] | None] | None:
+    turn_demonstrations = _bidirectional_turn_demonstrations(family, prompt, child_paths, answer)
+    if turn_demonstrations is None:
+        return None
+
+    child_question = next(question for question in turn_demonstrations if question.startswith("[task from parent]"))
+    child_steps = turn_demonstrations[child_question]
+    if not isinstance(child_steps, list):
+        raise ValueError("bidirectional child turn demonstrations must be a sequence")
+    request_only = [child_steps[0], None]
+    return {
+        prompt: None,
+        child_question: request_only,
+        # A depth-one bidirectional task has exactly one child role.
+        "*": request_only,
+    }
+
+
 def _branch_demonstrations(
     family: Family,
     prompt: str,
@@ -156,6 +386,17 @@ def _branch_demonstrations(
         children = (("shard-worker", "remote"),)
     elif family == "parallel":
         children = (("alpha-worker", "alpha"), ("beta-worker", "beta"))
+    elif family in {"followup", "handshake"}:
+        child_question, child_demo = _bidirectional_child_demonstration(
+            family,
+            child_paths,
+            answer,
+        )
+        demonstrations[child_question] = child_demo
+        # These families have exactly one child role, so a paraphrased child
+        # question can be mapped without guessing between roles.
+        demonstrations["*"] = child_demo
+        return demonstrations
     else:
         return demonstrations
     for child_name, answer_key in children:
@@ -163,6 +404,248 @@ def _branch_demonstrations(
         child_question = f"[task from parent]\n\n{_child_instruction(path)}"
         demonstrations[child_question] = _child_demonstration(path, answer[answer_key])
     return demonstrations
+
+
+def keep_post_child_message_responses(trace: vf.Trace) -> list[list[bool]]:
+    """Select the first trainable response after each explicit child message."""
+    masks: list[list[bool]] = []
+    trained_nodes: set[int] = set()
+    for branch in trace.branches:
+        branch_mask: list[bool] = []
+        has_trainable_tokens = False
+        select_next_response = False
+        for node in branch.nodes:
+            span = len(node.token_ids)
+            is_new_trainable = node.sampled and any(node.mask) and id(node) not in trained_nodes
+            if is_new_trainable:
+                trained_nodes.add(id(node))
+                has_trainable_tokens = True
+            if node.sampled:
+                branch_mask.extend([select_next_response and is_new_trainable] * span)
+                select_next_response = False
+                continue
+            branch_mask.extend([False] * span)
+            select_next_response = node.message.role == "user" and content_text(
+                node.message.content
+            ).lstrip().startswith("[from child:")
+        if has_trainable_tokens:
+            masks.append(branch_mask)
+    return masks
+
+
+def keep_coordinator_pre_child_responses(trace: vf.Trace) -> list[list[bool]]:
+    """Select coordinator responses before the first explicit child reply."""
+    masks: list[list[bool]] = []
+    trained_nodes: set[int] = set()
+    for branch in trace.branches:
+        branch_mask: list[bool] = []
+        has_trainable_tokens = False
+        is_child_branch = any(
+            isinstance(node.message, UserMessage)
+            and content_text(node.message.content).lstrip().startswith("[task from parent]")
+            for node in branch.nodes
+        )
+        child_replied = False
+        for node in branch.nodes:
+            span = len(node.token_ids)
+            is_new_trainable = node.sampled and any(node.mask) and id(node) not in trained_nodes
+            if is_new_trainable:
+                trained_nodes.add(id(node))
+                has_trainable_tokens = True
+            if node.sampled:
+                branch_mask.extend([not is_child_branch and not child_replied and is_new_trainable] * span)
+                continue
+
+            branch_mask.extend([False] * span)
+            if isinstance(node.message, UserMessage) and content_text(node.message.content).lstrip().startswith(
+                "[from child:"
+            ):
+                child_replied = True
+        if has_trainable_tokens:
+            masks.append(branch_mask)
+    return masks
+
+
+def keep_complete_fan_in_response(trace: vf.Trace) -> list[list[bool]]:
+    """Select the first trainable response after all expected children have replied."""
+    expected_children = set(trace.task.data.expected_children)
+    masks: list[list[bool]] = []
+    trained_nodes: set[int] = set()
+    for branch in trace.branches:
+        branch_mask: list[bool] = []
+        has_trainable_tokens = False
+        seen_children: set[str] = set()
+        select_next_response = False
+        selected_response = False
+        for node in branch.nodes:
+            span = len(node.token_ids)
+            is_new_trainable = node.sampled and any(node.mask) and id(node) not in trained_nodes
+            if is_new_trainable:
+                trained_nodes.add(id(node))
+                has_trainable_tokens = True
+            if node.sampled:
+                keep = select_next_response and is_new_trainable and not selected_response
+                branch_mask.extend([keep] * span)
+                if keep:
+                    selected_response = True
+                select_next_response = False
+                continue
+
+            branch_mask.extend([False] * span)
+            if node.message.role != "user" or selected_response:
+                continue
+            match = re.match(
+                r"\[from child:([^\]]+)\]",
+                content_text(node.message.content).lstrip(),
+            )
+            if match is not None:
+                seen_children.add(match.group(1))
+                select_next_response = bool(expected_children) and expected_children <= seen_children
+        if has_trainable_tokens:
+            masks.append(branch_mask)
+    return masks
+
+
+def keep_bidirectional_state_transitions(trace: vf.Trace) -> list[list[bool]]:
+    """Select the first response at each root or child message transition."""
+    masks: list[list[bool]] = []
+    trained_nodes: set[int] = set()
+    for branch in trace.branches:
+        branch_mask: list[bool] = []
+        has_trainable_tokens = False
+        select_next_response = False
+        saw_initial_user = False
+        for node in branch.nodes:
+            span = len(node.token_ids)
+            is_new_trainable = node.sampled and any(node.mask) and id(node) not in trained_nodes
+            if is_new_trainable:
+                trained_nodes.add(id(node))
+                has_trainable_tokens = True
+            if node.sampled:
+                branch_mask.extend([select_next_response and is_new_trainable] * span)
+                select_next_response = False
+                continue
+
+            branch_mask.extend([False] * span)
+            if node.message.role != "user":
+                continue
+            text = content_text(node.message.content).lstrip()
+            if not saw_initial_user:
+                saw_initial_user = True
+                select_next_response = True
+            elif text.startswith(("[from child:", "[from parent")):
+                select_next_response = True
+        if has_trainable_tokens:
+            masks.append(branch_mask)
+    return masks
+
+
+def keep_first_coordinator_response(trace: vf.Trace) -> list[list[bool]]:
+    """Select only the coordinator's first trainable response."""
+    masks: list[list[bool]] = []
+    trained_nodes: set[int] = set()
+    selected = False
+    for branch in trace.branches:
+        branch_mask: list[bool] = []
+        has_trainable_tokens = False
+        is_child_branch = any(
+            isinstance(node.message, UserMessage)
+            and content_text(node.message.content).lstrip().startswith("[task from parent]")
+            for node in branch.nodes
+        )
+        for node in branch.nodes:
+            span = len(node.token_ids)
+            is_new_trainable = node.sampled and any(node.mask) and id(node) not in trained_nodes
+            if is_new_trainable:
+                trained_nodes.add(id(node))
+                has_trainable_tokens = True
+            keep = is_new_trainable and not is_child_branch and not selected
+            branch_mask.extend([keep] * span)
+            if keep:
+                selected = True
+        if has_trainable_tokens:
+            masks.append(branch_mask)
+    return masks
+
+
+def keep_first_coordinator_tool_call(
+    trace: vf.Trace,
+    *,
+    start_token_id: int = 248058,
+    end_token_id: int = 248059,
+) -> list[list[bool]]:
+    """Select only the first coordinator response's serialized tool call."""
+    masks: list[list[bool]] = []
+    trained_nodes: set[int] = set()
+    selected = False
+    for branch in trace.branches:
+        branch_mask: list[bool] = []
+        has_trainable_tokens = False
+        is_child_branch = any(
+            isinstance(node.message, UserMessage)
+            and content_text(node.message.content).lstrip().startswith("[task from parent]")
+            for node in branch.nodes
+        )
+        for node in branch.nodes:
+            span = len(node.token_ids)
+            is_new_trainable = node.sampled and any(node.mask) and id(node) not in trained_nodes
+            if is_new_trainable:
+                trained_nodes.add(id(node))
+                has_trainable_tokens = True
+            node_mask = [False] * span
+            if is_new_trainable and not is_child_branch and not selected:
+                try:
+                    start = node.token_ids.index(start_token_id)
+                    end = node.token_ids.index(end_token_id, start + 1)
+                except ValueError:
+                    pass
+                else:
+                    node_mask = [
+                        start <= index <= end and sampled
+                        for index, sampled in enumerate(node.mask)
+                    ]
+                selected = True
+            branch_mask.extend(node_mask)
+        if has_trainable_tokens:
+            masks.append(branch_mask)
+    return masks
+
+
+def keep_child_request_phase_responses(trace: vf.Trace) -> list[list[bool]]:
+    """Select child responses through the first successful message to its parent."""
+    masks: list[list[bool]] = []
+    trained_nodes: set[int] = set()
+    for branch in trace.branches:
+        branch_mask: list[bool] = []
+        has_trainable_tokens = False
+        is_child_branch = any(
+            isinstance(node.message, UserMessage)
+            and content_text(node.message.content).lstrip().startswith("[task from parent]")
+            for node in branch.nodes
+        )
+        request_complete = False
+        for node in branch.nodes:
+            span = len(node.token_ids)
+            is_new_trainable = node.sampled and any(node.mask) and id(node) not in trained_nodes
+            if is_new_trainable:
+                trained_nodes.add(id(node))
+                has_trainable_tokens = True
+            if node.sampled:
+                branch_mask.extend([is_child_branch and not request_complete and is_new_trainable] * span)
+                continue
+
+            branch_mask.extend([False] * span)
+            if not is_child_branch or request_complete:
+                continue
+            if isinstance(node.message, ToolMessage) and _message_sent(content_text(node.message.content)):
+                request_complete = True
+            elif isinstance(node.message, UserMessage) and content_text(node.message.content).lstrip().startswith(
+                "[from parent"
+            ):
+                request_complete = True
+        if has_trainable_tokens:
+            masks.append(branch_mask)
+    return masks
 
 
 def _completion_gate_source(expected_keys: tuple[str, ...], family: Family) -> str:
@@ -195,16 +678,23 @@ def _completion_gate_source(expected_keys: tuple[str, ...], family: Family) -> s
         feedback = (
             "completion gate: final JSON is not ready. Preserve every existing delegation: do not "
             "inspect a delegated shard, spawn replacement children, or redo their work. If no new "
-            "child message is present, end this continuation with a brief waiting status and no tool "
-            "call; this active autonomous run will accept future child messages. Return strict JSON "
-            "only after every existing child sends its result."
+            "child message is present, your next assistant response itself must be a brief waiting "
+            "status. Do not call IPython with a comment, pass, string literal, print, or any other "
+            "placeholder; this active autonomous run will accept future child messages. After every "
+            "existing child sends its result, make no tool call and return bare strict JSON immediately, "
+            "with no prose or Markdown."
         )
     else:
         feedback = (
             "completion gate: final JSON is not ready. Complete the coordinator-local computation "
             "and return one JSON object with exactly the requested keys and integer values."
         )
-    return f'''import json
+    format_feedback = (
+        "completion gate: all required child evidence is already present. Do not call a tool, "
+        "inspect state, repeat work, or wait. Return one bare JSON object now with exactly the "
+        f"keys {expected_keys!r} and integer values, with no prose or Markdown fence."
+    )
+    return f"""import json
 import os
 import sys
 from pathlib import Path
@@ -270,6 +760,7 @@ session_files = sorted(
     key=lambda path: path.stat().st_mtime,
     reverse=True,
 )
+child_evidence_observed = False
 for path in session_files:
     entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     if not entries:
@@ -279,17 +770,17 @@ for path in session_files:
         continue
     if header.get("parentSession") or header.get("parentSessionId"):
         continue
-    final_payload = None
     final_index = None
+    final_payload = None
     for index in range(len(entries) - 1, -1, -1):
         message = session_message(entries[index])
         if message.get("role") != "assistant":
             continue
+        final_index = index
         try:
             final_payload = json.loads(content_text(message.get("content")).strip())
         except (TypeError, json.JSONDecodeError):
-            break
-        final_index = index
+            final_payload = None
         break
     if final_index is None:
         continue
@@ -311,6 +802,7 @@ for path in session_files:
         child_message_counts.get(name, 0) >= count
         for name, count in REQUIRED_CHILD_MESSAGES.items()
     )
+    child_evidence_observed = child_evidence_observed or child_evidence_ready
     if (
         child_evidence_ready
         and isinstance(final_payload, dict)
@@ -323,11 +815,11 @@ for path in session_files:
         raise SystemExit(0)
 
 print(
-    {feedback!r},
+    {format_feedback!r} if child_evidence_observed else {feedback!r},
     file=sys.stderr,
 )
 raise SystemExit(1)
-'''
+"""
 
 
 def _task_prompt(
@@ -336,6 +828,7 @@ def _task_prompt(
     instance: int,
     seed: int,
     instruction_level: InstructionLevel,
+    prompt_contract: PromptContract = "historical_v1",
 ) -> tuple[
     str,
     dict[str, int],
@@ -345,10 +838,9 @@ def _task_prompt(
     int | None,
 ]:
     rng = random.Random(seed * 1_000_003 + variant * 10_007 + instance * 101)
-    prefix = (
-        "Return one JSON object with exactly the requested keys and integer values. "
-        "A shard checksum is sum((index + 1) * value)."
-    )
+    prefix = "Return one JSON object with exactly the requested keys and integer values."
+    if prompt_contract == "historical_v1" or family in {"direct", "single", "parallel"}:
+        prefix = f"{prefix} A shard checksum is sum((index + 1) * value)."
 
     if family == "direct":
         values = _values(rng, 8 + variant % 3)
@@ -384,7 +876,7 @@ def _task_prompt(
         secret = None
         guidance = (
             f"Do not open {remote_path} in the coordinator. Spawn the child before computing the "
-            f"local checksum, using handle = await rlm(\"Read {remote_path}, compute its weighted "
+            f'local checksum, using handle = await rlm("Read {remote_path}, compute its weighted '
             "checksum, then send the integer checksum to your parent with agent_message before "
             "answering.\", name='shard-worker'). Retain handle and compute the local checksum in "
             "separate state-preserving IPython calls while the child runs. Then stop calling tools "
@@ -418,14 +910,14 @@ def _task_prompt(
         secret = None
         guidance = (
             f"Do not open {alpha_path} or {beta_path} in the coordinator. In separate IPython "
-            "calls, assign alpha = await rlm(\"Read "
+            'calls, assign alpha = await rlm("Read '
             f"{alpha_path}, compute its weighted checksum, then make a separate final IPython "
             "call exactly await agent_message.send(str(checksum), receiver_role='parent'). Your "
-            "task is incomplete until that call succeeds.\", "
+            'task is incomplete until that call succeeds.", '
             "name='alpha-worker') and beta = await rlm(\"Read "
             f"{beta_path}, compute its weighted checksum, then make a separate final IPython call "
             "exactly await agent_message.send(str(checksum), receiver_role='parent'). Your task "
-            "is incomplete until that call succeeds.\", "
+            'is incomplete until that call succeeds.", '
             "name='beta-worker'). Retain both handles, then stop calling tools for this turn."
         )
     elif family == "handshake":
@@ -442,13 +934,13 @@ def _task_prompt(
         files = {}
         guidance = (
             f"First retain nonce = {secret} in coordinator IPython state. Then assign child = await "
-            "rlm(\"You are relay-worker, my child. Do not call rlm or message "
+            'rlm("You are relay-worker, my child. Do not call rlm or message '
             "a child. In a separate IPython call exactly await agent_message.send('need nonce', "
             "receiver_role='parent'). End that turn and resume only when my parent follow-up "
             "arrives. In the resumed turn, bind the exact body of the latest [from parent] message "
             "to a nonce variable rather than guessing it. Then make a second successful "
             "receiver_role='parent' message containing that nonce. Your task is incomplete until "
-            "both parent messages succeed.\", "
+            'both parent messages succeed.", '
             "name='relay-worker'). Do not put the nonce in that string. Retain child and stop "
             "calling tools for this turn. After its request arrives, use await "
             "agent_message.send(str(nonce), receiver_role='child', "
@@ -463,8 +955,10 @@ def _task_prompt(
         request = (
             f"Delegate {remote_path} to key-worker. The child should sum the values, but do not "
             f"include the multiplier {secret} in its spawn prompt. It must first request the missing "
-            "multiplier from you through an agent message. Send it only in a direct follow-up, wait "
-            'for the child\'s final result message, then return {"subtotal": value, '
+            "multiplier from you through an agent message. Send it only in a direct follow-up. "
+            "The child must then multiply its retained subtotal by that multiplier, send both the "
+            "subtotal and product as its final result, and you must wait for that message. Then "
+            'return {"subtotal": value, '
             '"multiplier": value, "result": value}.'
         )
         children = ("key-worker",)
@@ -472,7 +966,7 @@ def _task_prompt(
         files = {remote_path: json.dumps(remote)}
         guidance = (
             f"Do not open {remote_path} in the coordinator. First retain multiplier = {secret} in "
-            "coordinator IPython state. Then assign child = await rlm(\"You are "
+            'coordinator IPython state. Then assign child = await rlm("You are '
             f"key-worker, my child. Read {remote_path} and retain its subtotal. Do not call rlm "
             "or message a child. In a separate IPython call exactly await "
             "agent_message.send('need multiplier', receiver_role='parent'). End that turn and "
@@ -480,7 +974,7 @@ def _task_prompt(
             "body of the latest [from parent] message to multiplier with int(...) rather than "
             "guessing or hardcoding it. Then multiply the retained subtotal and make a second "
             "successful receiver_role='parent' message containing subtotal and result. Your task "
-            "is incomplete until both parent messages succeed.\", "
+            'is incomplete until both parent messages succeed.", '
             "name='key-worker'). Do not put the multiplier in that string. Retain child and stop "
             "calling tools for this turn. After its request arrives, use await "
             "agent_message.send(str(multiplier), receiver_role='child', "
@@ -507,12 +1001,18 @@ class IpythonEvent:
     output: str = ""
 
 
+@dataclass
+class ModelToolEvent:
+    name: str
+    node_index: int
+
+
 def _ipython_events(trace: vf.Trace) -> list[IpythonEvent]:
     events: list[IpythonEvent] = []
     by_node_call: dict[tuple[int, str], IpythonEvent] = {}
     for node_index, node in enumerate(trace.nodes):
         message = node.message
-        if isinstance(message, AssistantMessage):
+        if isinstance(message, AssistantMessage) and node.sampled:
             for call in message.tool_calls or []:
                 if call.name != "ipython":
                     continue
@@ -525,30 +1025,61 @@ def _ipython_events(trace: vf.Trace) -> list[IpythonEvent]:
                     event = IpythonEvent(code=source, call_id=call.id, node_index=node_index)
                     events.append(event)
                     by_node_call[(node_index, call.id)] = event
-        elif isinstance(message, ToolMessage) and (
-            event := by_node_call.get((node.parent, message.tool_call_id))
-        ):
+        elif isinstance(message, ToolMessage) and (event := by_node_call.get((node.parent, message.tool_call_id))):
             event.output = content_text(message.content)
     return events
+
+
+def _model_tool_events(trace: vf.Trace) -> list[ModelToolEvent]:
+    return [
+        ModelToolEvent(name=call.name, node_index=node_index)
+        for node_index, node in enumerate(trace.nodes)
+        if isinstance(node.message, AssistantMessage) and node.sampled
+        for call in node.message.tool_calls or []
+    ]
+
+
+def _inert_cell(source: str) -> bool:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+
+    def inert_statement(statement: ast.stmt) -> bool:
+        if isinstance(statement, ast.Pass):
+            return True
+        if not isinstance(statement, ast.Expr):
+            return False
+        if isinstance(statement.value, ast.Constant):
+            return True
+        call = statement.value
+        return bool(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "print"
+            and not call.keywords
+            and all(isinstance(argument, (ast.Constant, ast.JoinedStr)) for argument in call.args)
+        )
+
+    return not tree.body or all(inert_statement(statement) for statement in tree.body)
+
+
+def _branch_root(trace: vf.Trace, node_index: int) -> int:
+    visited: set[int] = set()
+    while trace.nodes[node_index].parent is not None:
+        if node_index in visited:
+            break
+        visited.add(node_index)
+        node_index = trace.nodes[node_index].parent
+    return node_index
 
 
 def _duplicate_cells(trace: vf.Trace, events: list[IpythonEvent]) -> int:
     by_branch: dict[int, list[str]] = {}
     for event in events:
-        branch_root = event.node_index
-        visited: set[int] = set()
-        while trace.nodes[branch_root].parent is not None:
-            if branch_root in visited:
-                break
-            visited.add(branch_root)
-            branch_root = trace.nodes[branch_root].parent
+        branch_root = _branch_root(trace, event.node_index)
         by_branch.setdefault(branch_root, []).append(event.code.strip())
-    return sum(
-        count - 1
-        for branch in by_branch.values()
-        for count in Counter(branch).values()
-        if count > 1
-    )
+    return sum(count - 1 for branch in by_branch.values() for count in Counter(branch).values() if count > 1)
 
 
 def _call_name(call: ast.Call) -> str | None:
@@ -592,11 +1123,13 @@ class ChildMessage:
     name: str
     body: str
     message_id: str | None
+    session_id: str | None
+    node_index: int
 
 
 def _incoming_child_messages(trace: vf.Trace) -> list[ChildMessage]:
     messages: list[ChildMessage] = []
-    for node in trace.nodes:
+    for node_index, node in enumerate(trace.nodes):
         message = node.message
         if not isinstance(message, UserMessage):
             continue
@@ -611,14 +1144,57 @@ def _incoming_child_messages(trace: vf.Trace) -> list[ChildMessage]:
         if "completed without sending a reply" in body or body.startswith("RLM child failure"):
             continue
         message_id = re.search(r"^Message id:\s*(\S+)", text, re.MULTILINE)
+        session_id = re.search(r"^From:.*\bsession\s+([^,\s]+)", text, re.MULTILINE)
         messages.append(
             ChildMessage(
                 name=matched.group(1),
                 body=body,
                 message_id=message_id.group(1) if message_id else None,
+                session_id=session_id.group(1) if session_id else None,
+                node_index=node_index,
             )
         )
     return messages
+
+
+def _branch_session_id(trace: vf.Trace, node_index: int) -> str | None:
+    root = _branch_root(trace, node_index)
+    text = content_text(trace.nodes[root].message.content)
+    matched = re.search(r"^Conversation log:\s*.*?/([^/\s]+)\.jsonl\s*$", text, re.MULTILINE)
+    return matched.group(1) if matched else None
+
+
+def _originating_parent_send_indices(
+    trace: vf.Trace,
+    messages: list[ChildMessage],
+    sends: list[tuple[ast.Call, IpythonEvent]],
+) -> dict[int, int]:
+    """Link each received message to one sampled child send."""
+    remaining = list(sends)
+    linked: dict[int, int] = {}
+    for message in messages:
+        matched_index = next(
+            (
+                index
+                for index, (_, event) in enumerate(remaining)
+                if message.message_id is not None and message.message_id in event.output
+            ),
+            None,
+        )
+        if matched_index is None and message.session_id is not None:
+            matched_index = next(
+                (
+                    index
+                    for index, (_, event) in enumerate(remaining)
+                    if event.node_index < message.node_index
+                    and _branch_session_id(trace, event.node_index) == message.session_id
+                ),
+                None,
+            )
+        if matched_index is not None:
+            _, event = remaining.pop(matched_index)
+            linked[message.node_index] = event.node_index
+    return linked
 
 
 def _spawn_name(call: ast.Call, output: str) -> str | None:
@@ -630,10 +1206,119 @@ def _spawn_name(call: ast.Call, output: str) -> str | None:
 
 
 def _spawn_prompt(call: ast.Call) -> str | None:
-    if not call.args or not isinstance(call.args[0], ast.Constant):
-        return None
-    value = call.args[0].value
-    return value if isinstance(value, str) else None
+    configured = _keyword(call, "prompt")
+    if isinstance(configured, str):
+        return configured
+    if call.args and isinstance(call.args[0], ast.Constant):
+        value = call.args[0].value
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _delegated_path_used_outside_spawn(source: str, path: str) -> bool:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str) or path not in node.value:
+            continue
+        ancestor: ast.AST | None = node
+        while ancestor in parents:
+            ancestor = parents[ancestor]
+            if isinstance(ancestor, ast.Call) and _call_name(ancestor) == "rlm":
+                break
+        else:
+            return True
+    return False
+
+
+def _complete_fan_in_message(messages: list[ChildMessage], expected_children: tuple[str, ...]) -> ChildMessage | None:
+    expected = set(expected_children)
+    seen: set[str] = set()
+    for message in messages:
+        if message.name in expected:
+            seen.add(message.name)
+        if expected and expected <= seen:
+            return message
+    return None
+
+
+def _post_fan_in_behavior(
+    trace: vf.Trace,
+    expected_children: tuple[str, ...],
+    messages: list[ChildMessage],
+    events: list[IpythonEvent],
+) -> dict[str, float]:
+    complete_message = _complete_fan_in_message(messages, expected_children)
+    if complete_message is None:
+        return {
+            "fan_in_complete": 0.0,
+            "post_fan_in_cells": 0.0,
+            "post_fan_in_failed_cells": 0.0,
+            "post_fan_in_forbidden_calls": 0.0,
+            "post_fan_in_duplicate_cells": 0.0,
+            "post_fan_in_control": 0.0,
+            "post_fan_in_control_aligned": 0.0,
+        }
+
+    coordinator_root = _branch_root(trace, complete_message.node_index)
+    post_events = [
+        event
+        for event in events
+        if event.node_index > complete_message.node_index and _branch_root(trace, event.node_index) == coordinator_root
+    ]
+    post_non_ipython_tools = [
+        event
+        for event in _model_tool_events(trace)
+        if event.name != "ipython"
+        and event.node_index > complete_message.node_index
+        and _branch_root(trace, event.node_index) == coordinator_root
+    ]
+    failed_cells = sum(_failed(event.output) for event in post_events)
+    forbidden_calls = len(post_non_ipython_tools) + sum(_inert_cell(event.code) for event in post_events)
+    for event in post_events:
+        try:
+            tree = ast.parse(event.code)
+        except SyntaxError:
+            continue
+        for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+            name = _call_name(call) or ""
+            forbidden_calls += (
+                name == "rlm"
+                or name.startswith("agent_observe.")
+                or name
+                in {
+                    "rlm.list_subagents",
+                    "agent_message.list_agents",
+                    "agent_message.recv",
+                    "agent_message.send",
+                }
+            )
+
+    code_counts = Counter(event.code.strip() for event in post_events)
+    duplicate_cells = sum(count - 1 for count in code_counts.values() if count > 1)
+    component_scores = [
+        1 / (1 + failed_cells),
+        1 / (1 + forbidden_calls),
+        1 / (1 + duplicate_cells),
+    ]
+    aligned = failed_cells == forbidden_calls == duplicate_cells == 0
+    return {
+        "fan_in_complete": 1.0,
+        "post_fan_in_cells": float(len(post_events)),
+        "post_fan_in_failed_cells": float(failed_cells),
+        "post_fan_in_forbidden_calls": float(forbidden_calls),
+        "post_fan_in_duplicate_cells": float(duplicate_cells),
+        "post_fan_in_control": sum(component_scores) / len(component_scores),
+        "post_fan_in_control_aligned": float(aligned),
+    }
 
 
 def _protocol_behavior(
@@ -644,6 +1329,9 @@ def _protocol_behavior(
     followup_secret: int | None,
 ) -> dict[str, float]:
     events = _ipython_events(trace)
+    model_tools = _model_tool_events(trace)
+    non_ipython_tools = [event for event in model_tools if event.name != "ipython"]
+    inert_cells = sum(_inert_cell(event.code) for event in events)
     calls: list[tuple[ast.Call, bool, IpythonEvent]] = []
     for event in events:
         try:
@@ -651,46 +1339,75 @@ def _protocol_behavior(
         except SyntaxError:
             continue
         assigned = _assigned_call_names(tree)
-        calls.extend(
-            (node, id(node) in assigned, event) for node in ast.walk(tree) if isinstance(node, ast.Call)
-        )
+        calls.extend((node, id(node) in assigned, event) for node in ast.walk(tree) if isinstance(node, ast.Call))
 
-    attempted_spawns = [(call, retained, event) for call, retained, event in calls if _call_name(call) == "rlm"]
+    coordinator_root = _branch_root(trace, 0)
+    branch_aware = any(_branch_root(trace, event.node_index) != coordinator_root for _, _, event in calls)
+
+    def is_coordinator_event(event: IpythonEvent) -> bool:
+        # Legacy and synthetic traces may flatten all agents into one branch.
+        return not branch_aware or _branch_root(trace, event.node_index) == coordinator_root
+
+    def is_child_event(event: IpythonEvent) -> bool:
+        return not branch_aware or _branch_root(trace, event.node_index) != coordinator_root
+
+    coordinator_calls = [(call, retained, event) for call, retained, event in calls if is_coordinator_event(event)]
+    child_calls = [(call, retained, event) for call, retained, event in calls if is_child_event(event)]
+    delegated_paths = {path for path in child_paths.values() if path.startswith("/")}
+    coordinator_delegated_path_accesses = sum(
+        any(_delegated_path_used_outside_spawn(event.code, path) for path in delegated_paths)
+        for event in events
+        if is_coordinator_event(event)
+    )
+    attempted_spawns = [
+        (call, retained, event) for call, retained, event in coordinator_calls if _call_name(call) == "rlm"
+    ]
     spawns = [item for item in attempted_spawns if not _failed(item[2].output)]
     names = {_spawn_name(call, event.output) for call, _, event in spawns}
     parent_messages = _incoming_child_messages(trace)
     parent_message_names = {message.name for message in parent_messages}
     child_messages = [
         (call, event)
-        for call, _, event in calls
+        for call, _, event in coordinator_calls
         if _call_name(call) == "agent_message.send"
         and _keyword(call, "receiver_role") == "child"
         and _message_sent(event.output)
     ]
     parent_sends = [
         (call, event)
-        for call, _, event in calls
+        for call, _, event in child_calls
         if _call_name(call) == "agent_message.send"
         and _keyword(call, "receiver_role") == "parent"
-        and _message_sent(event.output)
+        and not _failed(event.output)
     ]
     list_calls = sum(
         _call_name(call) in {"rlm.list_subagents", "agent_message.list_agents"} and not _failed(event.output)
-        for call, _, event in calls
+        for call, _, event in coordinator_calls
     )
     observation_calls = sum(
         (_call_name(call) or "").startswith("agent_observe.") and not _failed(event.output)
-        for call, _, event in calls
+        for call, _, event in coordinator_calls
+    ) + sum(
+        event.name == "agent_observe" or event.name.startswith("agent_observe.")
+        for event in non_ipython_tools
+        if not branch_aware or _branch_root(trace, event.node_index) == coordinator_root
     )
     repeated = _duplicate_cells(trace, events)
+    failed_cells = sum(_failed(event.output) for event in events)
     retained = sum(retained for _, retained, _ in spawns)
+    def delegates_payload(name: str, path: str, call: ast.Call, event: IpythonEvent) -> bool:
+        if _spawn_name(call, event.output) != name:
+            return False
+        prompt = _spawn_prompt(call) or ""
+        if family == "handshake":
+            lowered = prompt.lower()
+            return "need nonce" in lowered or ("nonce" in lowered and "parent" in lowered)
+        return path in prompt
+
     delegated = {
         name
         for name, path in child_paths.items()
-        if any(
-            _spawn_name(call, event.output) == name and path in (_spawn_prompt(call) or "")
-            for call, _, event in spawns
-        )
+        if any(delegates_payload(name, path, call, event) for call, _, event in spawns)
     }
     secret_withheld = True
     if followup_secret is not None and spawns:
@@ -698,56 +1415,133 @@ def _protocol_behavior(
         secret_withheld = bool(first_prompt and str(followup_secret) not in first_prompt)
 
     expected_messages = [message for message in parent_messages if message.name in expected_children]
-    request_phrase = "need nonce" if family == "handshake" else "need multiplier"
-    request_message = next(
-        (message for message in expected_messages if request_phrase in message.body.lower()),
+    parent_send_indices = _originating_parent_send_indices(trace, expected_messages, parent_sends)
+    first_parent_send_by_branch: dict[int, int] = {}
+    for _, event in parent_sends:
+        if event.node_index not in parent_send_indices.values():
+            continue
+        branch_root = _branch_root(trace, event.node_index)
+        first_parent_send_by_branch.setdefault(branch_root, event.node_index)
+    post_request_child_tools = [
+        event
+        for event in model_tools
+        for branch_root, send_index in first_parent_send_by_branch.items()
+        if event.node_index > send_index and _branch_root(trace, event.node_index) == branch_root
+    ]
+    request_term = "nonce" if family == "handshake" else "multiplier"
+    literal_request_phrase = f"need {request_term}"
+    literal_request_message = next(
+        (message for message in expected_messages if literal_request_phrase in message.body.lower()),
         None,
     )
 
     def originating_send_index(message: ChildMessage | None) -> int | None:
-        if message is None or message.message_id is None:
+        if message is None:
             return None
-        return next(
-            (event.node_index for _, event in parent_sends if message.message_id in event.output),
-            None,
-        )
+        return parent_send_indices.get(message.node_index)
 
-    request_index = originating_send_index(request_message)
-    result_messages = [
+    explicit_parent_messages = [message for message in expected_messages if originating_send_index(message) is not None]
+    explicit_parent_message_names = {message.name for message in explicit_parent_messages}
+
+    literal_request_index = originating_send_index(literal_request_message)
+    literal_result_messages = [
         (message, index)
         for message in expected_messages
-        if message is not request_message and (index := originating_send_index(message)) is not None
+        if message is not literal_request_message and (index := originating_send_index(message)) is not None
     ]
-    followup_request_sent = request_index is not None
+    followup_request_sent = literal_request_index is not None
     followup_after_request = any(
-        request_index is not None and request_index < child_event.node_index
+        literal_request_index is not None and literal_request_index < child_event.node_index
         for _, child_event in child_messages
     )
     result_after_followup = any(
-        request_index is not None and request_index < child_event.node_index < result_index
+        literal_request_index is not None and literal_request_index < child_event.node_index < result_index
         for _, child_event in child_messages
-        for _, result_index in result_messages
+        for _, result_index in literal_result_messages
     )
     followup_causal = followup_request_sent and followup_after_request and result_after_followup
+
+    # The natural task contract requires an explicit request for the missing
+    # concept, not a memorized wire phrase. Preserve the literal metrics above
+    # for diagnostics while scoring causal mastery from provenance and order.
+    natural_request_message = next(
+        (message for message in expected_messages if request_term in message.body.lower()),
+        None,
+    )
+    natural_request_index = originating_send_index(natural_request_message)
+    natural_result_messages = [
+        (message, index)
+        for message in expected_messages
+        if message is not natural_request_message and (index := originating_send_index(message)) is not None
+    ]
+    natural_request_sent = natural_request_index is not None
+    natural_followup_after_request = any(
+        natural_request_index is not None and natural_request_index < child_event.node_index
+        for _, child_event in child_messages
+    )
+    natural_result_after_followup = any(
+        natural_request_index is not None and natural_request_index < child_event.node_index < result_index
+        for _, child_event in child_messages
+        for _, result_index in natural_result_messages
+    )
+    natural_followup_causal = (
+        natural_request_sent and natural_followup_after_request and natural_result_after_followup
+    )
+    causal_natural_result_indices = [
+        result_index
+        for _, child_event in child_messages
+        for _, result_index in natural_result_messages
+        if natural_request_index is not None and natural_request_index < child_event.node_index < result_index
+    ]
+    allowed_result_send_index = min(causal_natural_result_indices, default=None)
+    final_natural_result_message = next(
+        (
+            message
+            for message, result_index in natural_result_messages
+            if result_index == allowed_result_send_index
+        ),
+        None,
+    )
+    post_result_coordinator_cells = sum(
+        final_natural_result_message is not None
+        and event.node_index > final_natural_result_message.node_index
+        and is_coordinator_event(event)
+        for event in events
+    )
+    coordinator_followup_indices = {event.node_index for _, event in child_messages}
+    post_parent_send_tool_calls = sum(
+        event.node_index != allowed_result_send_index
+        and event.node_index not in coordinator_followup_indices
+        for event in post_request_child_tools
+    )
     result_matches_secret = family != "handshake" or any(
-        request_index is not None
-        and request_index < child_event.node_index < result_index
+        natural_request_index is not None
+        and natural_request_index < child_event.node_index < result_index
         and followup_secret is not None
         and str(followup_secret) in message.body
         for _, child_event in child_messages
-        for message, result_index in result_messages
+        for message, result_index in natural_result_messages
     )
     followup_phase_score = (
         float(followup_request_sent) + float(followup_after_request) + float(result_after_followup)
     ) / 3
+    natural_followup_phase_score = (
+        float(natural_request_sent)
+        + float(natural_followup_after_request)
+        + float(natural_result_after_followup)
+    ) / 3
     retained_ready = retained == len(expected_children)
     stateful_control_progress = 0.0
-    if family in {"followup", "handshake"} and retained_ready:
+    if (
+        family in {"followup", "handshake"}
+        and retained_ready
+        and coordinator_delegated_path_accesses == 0
+    ):
         stateful_control_progress = (
             1.0
-            + float(followup_request_sent)
-            + float(followup_after_request)
-            + float(result_after_followup)
+            + float(natural_request_sent)
+            + float(natural_followup_after_request)
+            + float(natural_result_after_followup)
             + float(secret_withheld)
             + float(repeated == 0)
         ) / 6
@@ -781,24 +1575,77 @@ def _protocol_behavior(
             secret_withheld,
             len(child_messages) >= 1,
             len(expected_messages) >= 2,
-            followup_request_sent,
-            followup_after_request,
-            result_after_followup,
+            natural_request_sent,
+            natural_followup_after_request,
+            natural_result_after_followup,
             *([result_matches_secret] if family == "handshake" else []),
             repeated == 0,
         ]
-    return {
+    if family != "direct":
+        checks.append(coordinator_delegated_path_accesses == 0)
+    post_fan_in = _post_fan_in_behavior(
+        trace,
+        expected_children,
+        parent_messages,
+        events,
+    )
+    bidirectional_control_components = [
+        failed_cells == 0,
+        list_calls == 0,
+        observation_calls == 0,
+        not non_ipython_tools,
+        inert_cells == 0,
+        post_parent_send_tool_calls == 0,
+        coordinator_delegated_path_accesses == 0,
+        repeated == 0,
+        len(child_messages) == 1,
+        len(explicit_parent_messages) == 2,
+        post_result_coordinator_cells == 0,
+    ]
+    bidirectional_control = (
+        sum(bidirectional_control_components) / len(bidirectional_control_components)
+        if (
+            family in {"followup", "handshake"}
+            and natural_followup_causal
+            and coordinator_delegated_path_accesses == 0
+        )
+        else 0.0
+    )
+    clean_checks = [
+        all(checks),
+        list_calls == 0,
+        observation_calls == 0,
+        failed_cells == 0,
+        not non_ipython_tools,
+        inert_cells == 0,
+        post_parent_send_tool_calls == 0,
+    ]
+    if family in {"single", "parallel"}:
+        clean_checks.append(set(expected_children) <= explicit_parent_message_names)
+        clean_checks.append(post_fan_in["post_fan_in_cells"] == 0)
+    elif family in {"followup", "handshake"}:
+        clean_checks.append(len(child_messages) == 1)
+        clean_checks.append(len(explicit_parent_messages) == len(expected_messages) == 2)
+        clean_checks.append(post_result_coordinator_cells == 0)
+    behavior = {
         "protocol_score": sum(checks) / len(checks),
         "protocol_aligned": float(all(checks)),
+        "clean_protocol_aligned": float(all(clean_checks)),
         "spawn_calls": float(len(spawns)),
         "failed_spawn_calls": float(len(attempted_spawns) - len(spawns)),
         "retained_handles": float(retained),
         "named_children": float(len(set(expected_children) & names)),
         "delegated_payloads": float(len(delegated)),
+        "coordinator_delegated_path_accesses": float(coordinator_delegated_path_accesses),
         "messages_to_parent": float(len(parent_messages)),
+        "explicit_messages_to_parent": float(len(explicit_parent_messages)),
+        "post_parent_send_tool_calls": float(post_parent_send_tool_calls),
+        "post_result_coordinator_cells": float(post_result_coordinator_cells),
         "messages_to_child": float(len(child_messages)),
         "roster_calls": float(list_calls),
         "observation_calls": float(observation_calls),
+        "non_ipython_tool_calls": float(len(non_ipython_tools)),
+        "inert_cells": float(inert_cells),
         "secret_withheld": float(secret_withheld),
         "followup_request_sent": float(followup_request_sent),
         "followup_after_request": float(followup_after_request),
@@ -806,9 +1653,18 @@ def _protocol_behavior(
         "followup_result_matches_secret": float(result_matches_secret),
         "followup_phase_score": followup_phase_score,
         "followup_causal": float(followup_causal),
+        "natural_request_sent": float(natural_request_sent),
+        "natural_followup_after_request": float(natural_followup_after_request),
+        "natural_result_after_followup": float(natural_result_after_followup),
+        "natural_followup_phase_score": natural_followup_phase_score,
+        "natural_followup_causal": float(natural_followup_causal),
         "stateful_control_progress": stateful_control_progress,
+        "bidirectional_control": bidirectional_control,
         "duplicate_cells": float(repeated),
+        "failed_cells": float(failed_cells),
     }
+    behavior.update(post_fan_in)
+    return behavior
 
 
 def _answer_score(reply: str, expected: dict[str, int]) -> float:
@@ -821,7 +1677,116 @@ def _answer_score(reply: str, expected: dict[str, int]) -> float:
     return sum(actual.get(key) == value for key, value in expected.items()) / len(expected)
 
 
-class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
+def _ownership_transition_behavior(
+    trace: vf.Trace,
+    family: str,
+    expected_children: tuple[str, ...],
+    child_paths: dict[str, str],
+    followup_secret: int | None,
+) -> dict[str, float]:
+    events = _ipython_events(trace)
+    coordinator_root = _branch_root(trace, 0)
+    branch_aware = any(_branch_root(trace, event.node_index) != coordinator_root for event in events)
+    coordinator_events = [
+        event
+        for event in events
+        if not branch_aware or _branch_root(trace, event.node_index) == coordinator_root
+    ]
+    if not coordinator_events:
+        return {
+            "ownership_transition": 0.0,
+            "ownership_transition_dense": 0.0,
+            "ownership_one_spawn": 0.0,
+            "ownership_retained_secret": 0.0,
+            "ownership_retained_handle": 0.0,
+            "ownership_named_child": 0.0,
+            "ownership_delegated_payload": 0.0,
+            "ownership_secret_withheld": 0.0,
+            "ownership_path_owned": 0.0,
+        }
+
+    event = coordinator_events[0]
+    try:
+        tree = ast.parse(event.code)
+    except SyntaxError:
+        return {
+            "ownership_transition": 0.0,
+            "ownership_transition_dense": 0.0,
+            "ownership_one_spawn": 0.0,
+            "ownership_retained_secret": 0.0,
+            "ownership_retained_handle": 0.0,
+            "ownership_named_child": 0.0,
+            "ownership_delegated_payload": 0.0,
+            "ownership_secret_withheld": 0.0,
+            "ownership_path_owned": 0.0,
+        }
+
+    assigned = _assigned_call_names(tree)
+    spawns = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _call_name(node) == "rlm"
+    ]
+    one_spawn = len(spawns) == 1 and not _failed(event.output)
+    secret_name = "nonce" if family == "handshake" else "multiplier"
+    retained_secret = followup_secret is None or any(
+        isinstance(node, (ast.Assign, ast.AnnAssign))
+        and any(
+            isinstance(target, ast.Name) and target.id == secret_name
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        )
+        and isinstance(node.value, ast.Constant)
+        and node.value.value == followup_secret
+        for node in ast.walk(tree)
+    )
+    retained = one_spawn and id(spawns[0]) in assigned
+    named = one_spawn and _spawn_name(spawns[0], event.output) in expected_children
+    prompt = (_spawn_prompt(spawns[0]) or "") if one_spawn else ""
+    if family == "handshake":
+        lowered = prompt.lower()
+        delegated = one_spawn and (
+            "need nonce" in lowered or ("nonce" in lowered and "parent" in lowered)
+        )
+    else:
+        delegated = one_spawn and all(path in prompt for path in child_paths.values())
+    secret_withheld = followup_secret is None or str(followup_secret) not in prompt
+    path_owned = all(
+        not _delegated_path_used_outside_spawn(event.code, path)
+        for path in child_paths.values()
+    )
+    checks = (
+        one_spawn,
+        retained_secret,
+        retained,
+        named,
+        delegated,
+        secret_withheld,
+        path_owned,
+    )
+    return {
+        "ownership_transition": float(all(checks)),
+        "ownership_transition_dense": sum(checks) / len(checks),
+        "ownership_one_spawn": float(one_spawn),
+        "ownership_retained_secret": float(retained_secret),
+        "ownership_retained_handle": float(retained),
+        "ownership_named_child": float(named),
+        "ownership_delegated_payload": float(delegated),
+        "ownership_secret_withheld": float(secret_withheld),
+        "ownership_path_owned": float(path_owned),
+    }
+
+
+class SubagentCommunicationTaskConfig(vf.TaskConfig):
+    reward_mode: Literal["standard", "ownership_transition"] = "standard"
+    reward_shape: Literal["strict", "dense"] = "strict"
+
+
+class SubagentCommunicationTask(
+    vf.Task[SubagentCommunicationData, vf.State, SubagentCommunicationTaskConfig]
+):
+    def _include_standard_rewards(self) -> bool:
+        return getattr(self.config, "reward_mode", "standard") != "ownership_transition"
+
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         directories = sorted(
             {
@@ -841,6 +1806,8 @@ class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
 
     @vf.reward(weight=1.0)
     async def protocol_gated_accuracy(self, trace: vf.Trace) -> float:
+        if not self._include_standard_rewards():
+            return 0.0
         accuracy = _answer_score(trace.last_reply, self.data.answer)
         if self.data.family == "direct":
             return accuracy
@@ -855,6 +1822,8 @@ class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
 
     @vf.reward(weight=1.0)
     async def delegation_protocol(self, trace: vf.Trace) -> float:
+        if not self._include_standard_rewards():
+            return 0.0
         return _protocol_behavior(
             trace,
             self.data.family,
@@ -865,6 +1834,8 @@ class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
 
     @vf.reward(weight=1.0)
     async def stateful_control_progress(self, trace: vf.Trace) -> float:
+        if not self._include_standard_rewards():
+            return 0.0
         return _protocol_behavior(
             trace,
             self.data.family,
@@ -873,9 +1844,71 @@ class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
             self.data.followup_secret,
         )["stateful_control_progress"]
 
+    @vf.reward(weight=1.0)
+    async def post_fan_in_control_reward(self, trace: vf.Trace) -> float:
+        if not self._include_standard_rewards():
+            return 0.0
+        if not self.data.reward_post_fan_in_control or self.data.family not in {
+            "single",
+            "parallel",
+        }:
+            return 0.0
+        return _protocol_behavior(
+            trace,
+            self.data.family,
+            self.data.expected_children,
+            self.data.child_paths,
+            self.data.followup_secret,
+        )["post_fan_in_control"]
+
+    @vf.reward(weight=1.0)
+    async def bidirectional_control_reward(self, trace: vf.Trace) -> float:
+        if not self._include_standard_rewards():
+            return 0.0
+        if not self.data.reward_bidirectional_control or self.data.family not in {
+            "followup",
+            "handshake",
+        }:
+            return 0.0
+        return _protocol_behavior(
+            trace,
+            self.data.family,
+            self.data.expected_children,
+            self.data.child_paths,
+            self.data.followup_secret,
+        )["bidirectional_control"]
+
+    @vf.reward(weight=1.0)
+    async def ownership_transition_reward(self, trace: vf.Trace) -> float:
+        if getattr(self.config, "reward_mode", "standard") != "ownership_transition":
+            return 0.0
+        behavior = _ownership_transition_behavior(
+            trace,
+            self.data.family,
+            self.data.expected_children,
+            self.data.child_paths,
+            self.data.followup_secret,
+        )
+        key = (
+            "ownership_transition_dense"
+            if self.config.reward_shape == "dense"
+            else "ownership_transition"
+        )
+        return behavior[key]
+
     @vf.metric
     async def answer_accuracy(self, trace: vf.Trace) -> float:
         return _answer_score(trace.last_reply, self.data.answer)
+
+    @vf.metric
+    async def ownership_transition(self, trace: vf.Trace) -> dict[str, float]:
+        return _ownership_transition_behavior(
+            trace,
+            self.data.family,
+            self.data.expected_children,
+            self.data.child_paths,
+            self.data.followup_secret,
+        )
 
     @vf.metric
     async def delegation_behavior(self, trace: vf.Trace) -> dict[str, float]:
@@ -887,19 +1920,36 @@ class SubagentCommunicationTask(vf.Task[SubagentCommunicationData]):
             self.data.followup_secret,
         )
 
+    @vf.metric
+    async def post_fan_in_control(self, trace: vf.Trace) -> float:
+        return _protocol_behavior(
+            trace,
+            self.data.family,
+            self.data.expected_children,
+            self.data.child_paths,
+            self.data.followup_secret,
+        )["post_fan_in_control"]
+
 
 class SubagentCommunicationConfig(vf.TasksetConfig):
+    task: SubagentCommunicationTaskConfig = SubagentCommunicationTaskConfig()
     split: Literal["train", "eval"] = "train"
     families: tuple[Family, ...] = Field(FAMILIES, min_length=1)
     instruction_level: InstructionLevel = "standard"
+    prompt_contract: PromptContract = "historical_v1"
     instances_per_template: int = Field(4, ge=1)
     instance_offset: int = Field(0, ge=0)
     seed: int = 20260809
     teacher_conditioned: bool = False
+    ownership_guided: bool = False
+    reward_post_fan_in_control: bool = False
+    reward_bidirectional_control: bool = False
 
 
 class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, SubagentCommunicationConfig]):
     def load(self) -> list[SubagentCommunicationTask]:
+        if self.config.teacher_conditioned and self.config.ownership_guided:
+            raise ValueError("teacher_conditioned and ownership_guided are mutually exclusive")
         variants = TRAIN_VARIANTS if self.config.split == "train" else EVAL_VARIANTS
         tasks = []
         instances = range(
@@ -915,12 +1965,14 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                         instance,
                         self.config.seed,
                         self.config.instruction_level,
+                        self.config.prompt_contract,
                     )
                     demonstration = _expert_demonstration(
                         family,
                         prompt,
                         answer,
                         child_paths,
+                        secret,
                     )
                     demonstrations = _branch_demonstrations(
                         family,
@@ -929,11 +1981,32 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                         child_paths,
                         demonstration,
                     )
+                    turn_demonstrations = _bidirectional_turn_demonstrations(
+                        family,
+                        prompt,
+                        child_paths,
+                        answer,
+                    )
+                    child_request_demonstrations = _bidirectional_child_request_demonstrations(
+                        family,
+                        prompt,
+                        child_paths,
+                        answer,
+                    )
+                    coordinator_demonstrations = (
+                        {
+                            **{
+                                question: branch_demo if question == prompt else None
+                                for question, branch_demo in demonstrations.items()
+                            },
+                            "*": None,
+                        }
+                        if demonstrations is not None
+                        else None
+                    )
                     if self.config.teacher_conditioned:
                         if demonstration is None:
-                            raise ValueError(
-                                "teacher_conditioned preflight requires a supported demonstration family"
-                            )
+                            raise ValueError("teacher_conditioned preflight requires a supported demonstration family")
                         prompt = OPSD_TEMPLATE.format(
                             question=prompt,
                             demonstration=demonstration,
@@ -944,7 +2017,11 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                                 idx=len(tasks),
                                 name=f"{family}-v{variant}-i{instance}",
                                 prompt=prompt,
-                                system_prompt=SYSTEM_PROMPT,
+                                system_prompt=(
+                                    f"{SYSTEM_PROMPT}\n\n{OWNERSHIP_GUIDANCE}"
+                                    if self.config.ownership_guided
+                                    else SYSTEM_PROMPT
+                                ),
                                 family=family,
                                 template_variant=variant,
                                 instruction_level=self.config.instruction_level,
@@ -955,6 +2032,11 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                                 followup_secret=secret,
                                 demonstration=demonstration,
                                 demonstrations=demonstrations,
+                                turn_demonstrations=turn_demonstrations,
+                                child_request_demonstrations=child_request_demonstrations,
+                                coordinator_demonstrations=coordinator_demonstrations,
+                                reward_post_fan_in_control=self.config.reward_post_fan_in_control,
+                                reward_bidirectional_control=self.config.reward_bidirectional_control,
                             ),
                             self.config.task,
                         )
