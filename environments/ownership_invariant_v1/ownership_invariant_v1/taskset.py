@@ -9,10 +9,10 @@ import io
 import json
 import random
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import verifiers.v1 as vf
-from pydantic import Field
+from pydantic import Field, model_validator
 from subagent_communication_v1.taskset import (
     SYSTEM_PROMPT,
     _assigned_call_names,
@@ -383,9 +383,7 @@ def _first_decision_behavior(
     substantive_post_spawn_action = bool(
         len(coordinator_events) > 1 or (trailing_statements and not passive_handle_tail)
     )
-    post_spawn_action = (
-        post_spawn_statement if yield_policy == "literal" else substantive_post_spawn_action
-    )
+    post_spawn_action = post_spawn_statement if yield_policy == "literal" else substantive_post_spawn_action
 
     if data.ownership == "child":
         components = (
@@ -466,6 +464,13 @@ class OwnershipInvariantConfig(vf.TasksetConfig):
     instances_per_family: int = Field(1, ge=1)
     instance_offset: int = Field(0, ge=0)
     seed: int = 20260812
+
+    @model_validator(mode="after")
+    def propagate_yield_policy(self) -> Self:
+        # Served tasks are rebuilt from task data plus this task subtree, so
+        # mirror the taskset-level curriculum knob across that wire boundary.
+        self.task = self.task.model_copy(update={"yield_policy": self.yield_policy})
+        return self
 
 
 def _split_entries(split: Split) -> list[tuple[str, int]]:
