@@ -10,12 +10,13 @@ that silently returns 0.0 when metadata is absent is indistinguishable from a
 fixture whose agent genuinely failed, and that ambiguity is what hides bugs.
 """
 
-import verifiers.v1 as vf
-from verifiers.v1.utils.prime_agent_metadata import (
+from prime_agent_meta_guards import (
     MissingAcpMeta,
     field_history,
     observed_child_statuses,
 )
+
+import verifiers.v1 as vf
 
 
 def child_error_reported(trace) -> bool:

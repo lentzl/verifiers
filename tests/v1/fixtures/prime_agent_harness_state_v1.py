@@ -1,11 +1,8 @@
 """Prime Agent goal and continual-harness state over preserved ACP `_meta`."""
 
+from prime_agent_meta_guards import MissingAcpMeta, goal_progressed, refinement_applied
+
 import verifiers.v1 as vf
-from verifiers.v1.utils.prime_agent_metadata import (
-    MissingAcpMeta,
-    goal_progressed,
-    refinement_applied,
-)
 
 TASK = (
     "Run /refine to record that this environment prefers concise answers, then "

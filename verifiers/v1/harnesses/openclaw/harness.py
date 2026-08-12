@@ -119,8 +119,9 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
         data: TaskData,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
-        # Opt-in via sampling: OpenClaw redacts persisted encrypted reasoning, so resumed sessions 400 replaying it.
-        reasoning = ctx.sampling.reasoning_effort not in (None, "none")
+        provider, sep, model = ctx.model.partition("/")
+        if not sep:
+            provider, model = "openai", provider
         directory = OPENCLAW_DIR.format(version=self.config.version)
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
@@ -132,7 +133,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                     "workspace": ".",
                     "skipBootstrap": True,
                     "sandbox": {"mode": "off"},
-                    "model": {"primary": f"intercept/{ctx.model}"},
+                    "model": {"primary": ctx.model if sep else f"{provider}/{model}"},
                 }
             },
             "tools": {
@@ -142,21 +143,10 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
                 "deny": self.config.disabled_tools or [],
             },
             "models": {
-                "mode": "replace",
                 "providers": {
-                    "intercept": {
+                    provider: {
                         "baseUrl": endpoint,
                         "apiKey": "${OPENCLAW_INTERCEPT_KEY}",
-                        "api": "openai-responses",
-                        "authHeader": True,
-                        "models": [
-                            {
-                                "id": ctx.model,
-                                "name": ctx.model,
-                                "reasoning": reasoning,
-                                "input": ["text", "image"],
-                            }
-                        ],
                     }
                 },
             },
@@ -326,6 +316,7 @@ class OpenClawHarness(Harness[OpenClawHarnessConfig]):
             session_path=f"{state_dir}/acp-session",
             # OpenClaw can end after its final tool completes without a text message.
             allow_empty_tool_reply=True,
+            trace=trace,
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

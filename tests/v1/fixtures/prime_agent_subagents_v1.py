@@ -1,11 +1,12 @@
 """Prime Agent subagent lifecycle and token accounting over preserved ACP `_meta`."""
 
-import verifiers.v1 as vf
-from verifiers.v1.utils.prime_agent_metadata import (
+from prime_agent_meta_guards import (
     child_tokens_attributed,
     no_outstanding_subagents,
     spawned_and_finished,
 )
+
+import verifiers.v1 as vf
 
 TASK = (
     "Use IPython to spawn one subagent with rlm(). Ask it to reply to you, wait "
