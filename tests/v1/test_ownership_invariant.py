@@ -120,6 +120,16 @@ def test_matched_ownership_arms_share_task_semantics() -> None:
     ]
 
 
+def test_coordinator_prompt_names_retained_state_in_answer_contract() -> None:
+    task = OwnershipInvariantTaskset(
+        OwnershipInvariantConfig(split="admission", ownership="coordinator")
+    ).load()[0]
+
+    assert f'"local_state": {json.dumps(task.data.state_value)}' in task.data.prompt
+    assert '"result": <computed result>' in task.data.prompt
+    assert '{"local_state": value, "result": value}' not in task.data.prompt
+
+
 def test_child_owned_strict_success_requires_complete_first_decision() -> None:
     behavior = _first_decision_behavior(_trace(_valid_code()), _data())
 
