@@ -479,8 +479,8 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                         # PATH, and resolved_env usually has no PATH to fall back on.
                         (
                             f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
-                            f"exec {shlex.quote(self.prime_agent_bin())} shutdown "
-                            f"--force --json --daemon-socket {shlex.quote(socket)}"
+                            f"exec {shlex.quote(self.prime_agent_bin())} "
+                            f"--daemon-socket {shlex.quote(socket)} shutdown --force --json"
                         ),
                     ],
                     self._run_env(trace, ""),

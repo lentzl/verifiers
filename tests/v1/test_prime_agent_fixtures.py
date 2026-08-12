@@ -418,7 +418,9 @@ async def test_prime_agent_cleanup_force_stops_the_trace_daemon():
     await harness.cleanup(trace, runtime)
 
     stop = "\n".join(runtime.calls[1])
-    assert "shutdown --force --json --daemon-socket" in stop
+    assert "--daemon-socket" in stop
+    assert "shutdown --force --json" in stop
+    assert stop.index("--daemon-socket") < stop.index("shutdown")
     assert harness.trace_root(trace) + "/daemon.sock" in stop
     assert runtime.calls[-1][:2] == ["rm", "-rf"]
 
