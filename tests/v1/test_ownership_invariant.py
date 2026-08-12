@@ -95,6 +95,22 @@ def test_frozen_splits_are_disjoint_and_balanced() -> None:
     assert {task.data.resource_family for task in resources} == set(HELDOUT_RESOURCE_FAMILIES)
 
 
+def test_yield_policy_survives_served_task_reconstruction() -> None:
+    config = OwnershipInvariantConfig(yield_policy="semantic")
+    client_task = OwnershipInvariantTaskset(config).load()[0]
+
+    # EnvServer receives only task data and reconstructs behavior from the
+    # serialized task subtree, rather than from the client-side Task object.
+    served_task = type(client_task)(
+        type(client_task).data_type().model_validate(client_task.data.model_dump()),
+        config.task,
+    )
+
+    assert config.task.yield_policy == "semantic"
+    assert client_task.config.yield_policy == "semantic"
+    assert served_task.config.yield_policy == "semantic"
+
+
 def test_matched_ownership_arms_share_task_semantics() -> None:
     child = OwnershipInvariantTaskset(OwnershipInvariantConfig(split="admission", ownership="child")).load()
     coordinator = OwnershipInvariantTaskset(OwnershipInvariantConfig(split="admission", ownership="coordinator")).load()
