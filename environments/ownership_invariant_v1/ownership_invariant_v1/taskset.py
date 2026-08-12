@@ -28,6 +28,7 @@ from subagent_communication_v1.taskset import (
 
 Ownership = Literal["child", "coordinator"]
 Split = Literal["admission", "heldout_phrasing", "heldout_resource"]
+YieldPolicy = Literal["literal", "semantic"]
 
 TRAIN_RESOURCE_FAMILIES = (
     "json_sum",
@@ -236,7 +237,67 @@ def _retains_state(statement: ast.stmt, name: str, value: str) -> bool:
     return False
 
 
-def _first_decision_behavior(trace: vf.Trace, data: OwnershipInvariantData) -> dict[str, float]:
+def _assigned_names_for_call(tree: ast.Module, target: ast.Call) -> set[str]:
+    names: set[str] = set()
+    for statement in tree.body:
+        if not any(node is target for node in ast.walk(statement)):
+            continue
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+        else:
+            continue
+        names.update(item.id for item in targets if isinstance(item, ast.Name))
+    return names
+
+
+def _handle_only_value(node: ast.AST, handle_names: set[str], *, require_handle: bool) -> bool:
+    names = {item.id for item in ast.walk(node) if isinstance(item, ast.Name)}
+    calls = [item for item in ast.walk(node) if isinstance(item, ast.Call)]
+    return (not require_handle or bool(names & handle_names)) and names <= handle_names and not calls
+
+
+def _passive_handle_statement(statement: ast.stmt, handle_names: set[str]) -> bool:
+    if not handle_names:
+        return False
+    if isinstance(statement, ast.Expr):
+        value = statement.value
+        if isinstance(value, ast.Call) and _call_name(value) == "print":
+            return all(
+                _handle_only_value(argument, handle_names, require_handle=False)
+                for argument in [*value.args, *(keyword.value for keyword in value.keywords)]
+            ) and any(
+                any(isinstance(item, ast.Name) and item.id in handle_names for item in ast.walk(argument))
+                for argument in value.args
+            )
+        return _handle_only_value(value, handle_names, require_handle=True)
+    if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+        return _handle_only_value(statement.value, handle_names, require_handle=True)
+    return False
+
+
+def _passive_handle_statements(statements: list[ast.stmt], handle_names: set[str]) -> bool:
+    passive_names = set(handle_names)
+    for statement in statements:
+        if not _passive_handle_statement(statement, passive_names):
+            return False
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                passive_names.add(target.id)
+            elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                passive_names.add(target.value.id)
+    return True
+
+
+def _first_decision_behavior(
+    trace: vf.Trace,
+    data: OwnershipInvariantData,
+    yield_policy: YieldPolicy = "literal",
+) -> dict[str, float]:
     keys = (
         "strict_success",
         "first_decision_only",
@@ -249,6 +310,8 @@ def _first_decision_behavior(trace: vf.Trace, data: OwnershipInvariantData) -> d
         "parent_path_access",
         "local_state_leaked",
         "prohibited_control",
+        "post_spawn_statement",
+        "passive_handle_tail",
         "post_spawn_action",
         "direct_answer_accuracy",
     )
@@ -309,8 +372,19 @@ def _first_decision_behavior(trace: vf.Trace, data: OwnershipInvariantData) -> d
     expected_child = bool(spawn is not None and _spawn_name(spawn, coordinator_events[0].output) == data.expected_child)
     delegated_path = bool(prompt and data.resource_path in prompt)
     local_state_leaked = bool(prompt and (data.state_name in prompt or data.state_value in prompt))
-    post_spawn_action = bool(
-        spawn_index is not None and (spawn_index != len(first_tree.body) - 1 or len(coordinator_events) > 1)
+    trailing_statements = first_tree.body[spawn_index + 1 :] if spawn_index is not None else []
+    post_spawn_statement = bool(trailing_statements or len(coordinator_events) > 1)
+    handle_names = _assigned_names_for_call(first_tree, spawn) if spawn is not None else set()
+    passive_handle_tail = bool(
+        trailing_statements
+        and len(coordinator_events) == 1
+        and _passive_handle_statements(trailing_statements, handle_names)
+    )
+    substantive_post_spawn_action = bool(
+        len(coordinator_events) > 1 or (trailing_statements and not passive_handle_tail)
+    )
+    post_spawn_action = (
+        post_spawn_statement if yield_policy == "literal" else substantive_post_spawn_action
     )
 
     if data.ownership == "child":
@@ -355,13 +429,15 @@ def _first_decision_behavior(trace: vf.Trace, data: OwnershipInvariantData) -> d
         "parent_path_access": float(parent_path_access),
         "local_state_leaked": float(local_state_leaked),
         "prohibited_control": float(prohibited),
+        "post_spawn_statement": float(post_spawn_statement),
+        "passive_handle_tail": float(passive_handle_tail),
         "post_spawn_action": float(post_spawn_action),
         "direct_answer_accuracy": answer_accuracy,
     }
 
 
 class OwnershipInvariantTaskConfig(vf.TaskConfig):
-    pass
+    yield_policy: YieldPolicy = "literal"
 
 
 class OwnershipInvariantTask(vf.Task[OwnershipInvariantData, vf.State, OwnershipInvariantTaskConfig]):
@@ -375,17 +451,18 @@ class OwnershipInvariantTask(vf.Task[OwnershipInvariantData, vf.State, Ownership
 
     @vf.reward(weight=1.0)
     async def ownership_invariant_reward(self, trace: vf.Trace) -> float:
-        return _first_decision_behavior(trace, self.data)["strict_success"]
+        return _first_decision_behavior(trace, self.data, self.config.yield_policy)["strict_success"]
 
     @vf.metric
     async def ownership_behavior(self, trace: vf.Trace) -> dict[str, float]:
-        return _first_decision_behavior(trace, self.data)
+        return _first_decision_behavior(trace, self.data, self.config.yield_policy)
 
 
 class OwnershipInvariantConfig(vf.TasksetConfig):
     task: OwnershipInvariantTaskConfig = OwnershipInvariantTaskConfig()
     split: Split = "admission"
     ownership: Ownership = "child"
+    yield_policy: YieldPolicy = "literal"
     instances_per_family: int = Field(1, ge=1)
     instance_offset: int = Field(0, ge=0)
     seed: int = 20260812
@@ -442,7 +519,7 @@ class OwnershipInvariantTaskset(vf.Taskset[OwnershipInvariantTask, OwnershipInva
                             operation=spec.operation,
                             files={spec.path: spec.content},
                         ),
-                        self.config.task,
+                        self.config.task.model_copy(update={"yield_policy": self.config.yield_policy}),
                     )
                 )
         return tasks
