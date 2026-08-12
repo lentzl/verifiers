@@ -11,7 +11,6 @@ import random
 from dataclasses import dataclass
 from typing import Any, Literal, Self
 
-import verifiers.v1 as vf
 from pydantic import Field, model_validator
 from subagent_communication_v1.taskset import (
     SYSTEM_PROMPT,
@@ -25,6 +24,8 @@ from subagent_communication_v1.taskset import (
     _spawn_name,
     _spawn_prompt,
 )
+
+import verifiers.v1 as vf
 
 Ownership = Literal["child", "coordinator"]
 Split = Literal["admission", "heldout_phrasing", "heldout_resource"]

@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from typing import Literal
 
-import verifiers.v1 as vf
 from subagent_communication_v1.taskset import (
     WEIGHTED_CHECKSUM_FORMULA,
     SubagentCommunicationConfig,
@@ -21,6 +20,8 @@ from subagent_communication_v1.taskset import (
     _protocol_behavior,
     _spawn_prompt,
 )
+
+import verifiers.v1 as vf
 
 
 def _path_used_outside_spawn(tree: ast.AST, path: str) -> bool:
