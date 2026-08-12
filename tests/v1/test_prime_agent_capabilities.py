@@ -12,7 +12,17 @@ from verifiers.v1.utils.prime_agent_metadata import NAMESPACE
 
 
 def _trace(**info):
-    return SimpleNamespace(info=info)
+    return SimpleNamespace(info=info, last_reply="", nodes=[])
+
+
+def _node(role: str, content: str, *calls: str):
+    return SimpleNamespace(
+        message=SimpleNamespace(
+            role=role,
+            content=content,
+            tool_calls=[SimpleNamespace(arguments=call) for call in calls],
+        )
+    )
 
 
 def test_taskset_crosses_families_and_instances() -> None:
@@ -60,7 +70,7 @@ def test_ipython_reward_requires_exact_cell_and_live_output() -> None:
 
 def test_subagent_reward_uses_native_lifecycle_and_quiescence() -> None:
     task = PrimeAgentCapabilitiesTask.__new__(PrimeAgentCapabilitiesTask)
-    task.data = SimpleNamespace(family="subagent_lifecycle")
+    task.data = SimpleNamespace(family="subagent_lifecycle", child_result=1406)
     trace = _trace(
         acp_meta={
             NAMESPACE: [
@@ -79,5 +89,32 @@ def test_subagent_reward_uses_native_lifecycle_and_quiescence() -> None:
             ]
         }
     )
+    trace.last_reply = "DONE"
+    trace.nodes = [_node("user", "[from child:worker]\nResult: 1406")]
 
     assert asyncio.run(task.capability(trace)) == 1.0
+
+
+def test_subagent_reward_rejects_polling_and_nonexact_completion() -> None:
+    task = PrimeAgentCapabilitiesTask.__new__(PrimeAgentCapabilitiesTask)
+    task.data = SimpleNamespace(family="subagent_lifecycle", child_result=1406)
+    lifecycle = {
+        NAMESPACE: [
+            {"subagents": [{"id": "child", "status": "running"}]},
+            {
+                "subagents": [
+                    {"id": "child", "status": "done", "tokenCount": 42}
+                ]
+            },
+        ]
+    }
+    trace = _trace(acp_meta=lifecycle)
+    trace.last_reply = "The result was 1406.\nDONE"
+    trace.nodes = [_node("user", "[from child:worker]\nResult: 1406")]
+    assert asyncio.run(task.capability(trace)) == 0.0
+
+    trace.last_reply = "DONE"
+    trace.nodes.append(
+        _node("assistant", "", "await agent_message.list_messages()")
+    )
+    assert asyncio.run(task.capability(trace)) == 0.0

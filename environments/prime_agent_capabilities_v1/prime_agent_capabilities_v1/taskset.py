@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import Field
 
 import verifiers.v1 as vf
+from verifiers.v1.types import content_text
 from verifiers.v1.utils.prime_agent_metadata import (
     MissingAcpMeta,
     child_tokens_attributed,
@@ -42,6 +43,7 @@ class PrimeAgentCapabilityData(vf.TaskData):
     turns: tuple[str, ...]
     sentinel: str | None = None
     marker_name: str | None = None
+    child_result: int | None = None
 
 
 def _segment_info(segment: vf.Segment) -> dict:
@@ -110,6 +112,26 @@ def _child_cancelled(trace: vf.Trace) -> bool:
     )
 
 
+def _subagent_protocol_completed(
+    trace: vf.Trace, data: PrimeAgentCapabilityData
+) -> bool:
+    if data.child_result is None or (trace.last_reply or "").strip() != "DONE":
+        return False
+    received = False
+    polled = False
+    for node in trace.nodes:
+        message = node.message
+        text = content_text(message.content)
+        if message.role == "user" and text.lstrip().startswith("[from child:"):
+            received |= str(data.child_result) in text
+        if message.role == "assistant":
+            polled |= any(
+                "agent_message.list_messages" in call.arguments
+                for call in message.tool_calls or []
+            )
+    return received and not polled
+
+
 def _harness_state_changed(trace: vf.Trace) -> bool:
     seen = []
     for guard in (refinement_applied, goal_progressed):
@@ -137,6 +159,7 @@ class PrimeAgentCapabilitiesTask(vf.Task[PrimeAgentCapabilityData]):
                 spawned_and_finished(trace)
                 and child_tokens_attributed(trace)
                 and no_outstanding_subagents(trace)
+                and _subagent_protocol_completed(trace, self.data)
             )
         elif family == "harness_state":
             success = _harness_state_changed(trace)
@@ -179,6 +202,7 @@ def _task_data(family: Family, instance: int, idx: int) -> PrimeAgentCapabilityD
     system_prompt = "Follow the request exactly and use Prime Agent's native capabilities."
     sentinel = None
     marker_name = None
+    child_result = None
     if family == "ipython_cell":
         sentinel = f"prime-agent-capability-{instance}"
         cell = f"print({sentinel!r})"
@@ -208,6 +232,7 @@ def _task_data(family: Family, instance: int, idx: int) -> PrimeAgentCapabilityD
         )
     elif family == "subagent_lifecycle":
         value = 37 + instance
+        child_result = value * (value + 1)
         turns = (
             (
                 "Use IPython to spawn exactly one subagent with rlm(). Ask it to compute "
@@ -240,6 +265,7 @@ def _task_data(family: Family, instance: int, idx: int) -> PrimeAgentCapabilityD
         turns=turns,
         sentinel=sentinel,
         marker_name=marker_name,
+        child_result=child_result,
     )
 
 
