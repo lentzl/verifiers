@@ -468,9 +468,8 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                     f"(exit {exists.exit_code}): {exists.stderr.strip()[-300:]}"
                 )
             if exists.exit_code == 0:
-                # Stop this trace's daemon before deleting its state: a live worker
-                # would keep writing into a removed directory. `daemon` is in the
-                # CLI's REMOVED_COMMAND_NAMES, so the subcommand is plain `stop`.
+                # Each trace has its own daemon socket, so force-shutdown is scoped
+                # to this rollout while also stopping every worker it created.
                 stopped = await runtime.run(
                     [
                         "sh",
@@ -480,8 +479,8 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                         # PATH, and resolved_env usually has no PATH to fall back on.
                         (
                             f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
-                            f"exec {shlex.quote(self.prime_agent_bin())} stop "
-                            f"--daemon-socket {shlex.quote(socket)}"
+                            f"exec {shlex.quote(self.prime_agent_bin())} shutdown "
+                            f"--force --json --daemon-socket {shlex.quote(socket)}"
                         ),
                     ],
                     self._run_env(trace, ""),

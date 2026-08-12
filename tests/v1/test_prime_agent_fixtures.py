@@ -405,6 +405,25 @@ async def test_prime_agent_cleanup_skips_missing_socket_and_remains_idempotent()
 
 
 @pytest.mark.asyncio
+async def test_prime_agent_cleanup_force_stops_the_trace_daemon():
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+    trace = SimpleNamespace(id="live-daemon")
+    runtime = _CleanupRuntime(socket_exists=True)
+
+    await harness.cleanup(trace, runtime)
+
+    stop = "\n".join(runtime.calls[1])
+    assert "shutdown --force --json --daemon-socket" in stop
+    assert harness.trace_root(trace) + "/daemon.sock" in stop
+    assert runtime.calls[-1][:2] == ["rm", "-rf"]
+
+
+@pytest.mark.asyncio
 async def test_prime_agent_cleanup_retains_state_when_stop_or_rm_fails():
     from verifiers.v1.harnesses.prime_agent.harness import (
         PrimeAgentHarness,
