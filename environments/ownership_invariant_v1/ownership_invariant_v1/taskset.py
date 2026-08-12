@@ -30,6 +30,7 @@ import verifiers.v1 as vf
 Ownership = Literal["child", "coordinator"]
 Split = Literal["admission", "heldout_phrasing", "heldout_resource"]
 YieldPolicy = Literal["literal", "semantic"]
+InstructionLevel = Literal["standard", "guided"]
 ResourceFamily = Literal[
     "json_sum",
     "csv_amount_total",
@@ -114,6 +115,7 @@ COORDINATOR_OWNED_PHRASINGS = (
 class OwnershipInvariantData(vf.TaskData):
     ownership: Ownership
     split: Split
+    instruction_level: InstructionLevel = "standard"
     resource_family: str
     phrasing_variant: int
     state_name: str
@@ -474,6 +476,7 @@ class OwnershipInvariantConfig(vf.TasksetConfig):
     split: Split = "admission"
     ownership: Ownership = "child"
     yield_policy: YieldPolicy = "literal"
+    instruction_level: InstructionLevel = "standard"
     families: tuple[ResourceFamily, ...] | None = None
     instances_per_family: int = Field(1, ge=1)
     instance_offset: int = Field(0, ge=0)
@@ -528,6 +531,13 @@ class OwnershipInvariantTaskset(vf.Taskset[OwnershipInvariantTask, OwnershipInva
                 }
                 templates = CHILD_OWNED_PHRASINGS if self.config.ownership == "child" else COORDINATOR_OWNED_PHRASINGS
                 prompt = templates[phrasing].format(**prompt_values)
+                if self.config.instruction_level == "guided" and self.config.ownership == "coordinator":
+                    prompt = (
+                        f"{prompt}\n\nProtocol hint: First assign "
+                        f"{state_name}={state_value!r} in persistent IPython state. Preserve that variable while "
+                        f"reading {spec.path} and computing the result. Then return the requested object as bare "
+                        "JSON with no Markdown fence or prose."
+                    )
                 tasks.append(
                     OwnershipInvariantTask(
                         OwnershipInvariantData(
@@ -537,6 +547,7 @@ class OwnershipInvariantTaskset(vf.Taskset[OwnershipInvariantTask, OwnershipInva
                             system_prompt=SYSTEM_PROMPT,
                             ownership=self.config.ownership,
                             split=self.config.split,
+                            instruction_level=self.config.instruction_level,
                             resource_family=family,
                             phrasing_variant=phrasing,
                             state_name=state_name,
