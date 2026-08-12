@@ -470,6 +470,17 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             if exists.exit_code == 0:
                 # Each trace has its own daemon socket, so force-shutdown is scoped
                 # to this rollout while also stopping every worker it created.
+                daemon_command = (
+                    f"{self.install_dir()}/node_modules/prime-agent/"
+                    "dist/cli/daemon-command.js"
+                )
+                shutdown = (
+                    "const { handleDaemonCommand } = await import(process.argv[1]);"
+                    "const handled = await handleDaemonCommand(["
+                    "'daemon', 'shutdown', '--daemon-socket', process.argv[2], "
+                    "'--force', '--json']);"
+                    "if (!handled) process.exitCode = 1;"
+                )
                 stopped = await runtime.run(
                     [
                         "sh",
@@ -479,8 +490,9 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                         # PATH, and resolved_env usually has no PATH to fall back on.
                         (
                             f'export PATH={shlex.quote(f"{self.node_root()}/bin")}:"$PATH"\n'
-                            f"exec {shlex.quote(self.prime_agent_bin())} "
-                            f"--daemon-socket {shlex.quote(socket)} shutdown --force --json"
+                            "exec node --input-type=module --eval "
+                            f"{shlex.quote(shutdown)} {shlex.quote(daemon_command)} "
+                            f"{shlex.quote(socket)}"
                         ),
                     ],
                     self._run_env(trace, ""),
