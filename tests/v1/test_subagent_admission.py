@@ -2,7 +2,6 @@ import asyncio
 import json
 
 import subagent_admission_v1.taskset as admission_module
-import verifiers.v1 as vf
 from subagent_admission_v1.taskset import (
     SubagentAdmissionConfig,
     SubagentAdmissionTask,
@@ -13,6 +12,8 @@ from subagent_admission_v1.taskset import (
     _clean_causal_behavior,
 )
 from subagent_communication_v1.taskset import SubagentCommunicationData
+
+import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolCall, ToolMessage, UserMessage
 

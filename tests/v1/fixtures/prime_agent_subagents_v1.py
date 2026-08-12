@@ -1,7 +1,7 @@
 """Prime Agent subagent lifecycle and token accounting over preserved ACP `_meta`."""
 
 import verifiers.v1 as vf
-from verifiers.v1.harnesses.prime_agent.metadata import (
+from verifiers.v1.utils.prime_agent_metadata import (
     child_tokens_attributed,
     no_outstanding_subagents,
     spawned_and_finished,

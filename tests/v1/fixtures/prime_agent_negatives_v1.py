@@ -11,7 +11,7 @@ fixture whose agent genuinely failed, and that ambiguity is what hides bugs.
 """
 
 import verifiers.v1 as vf
-from verifiers.v1.harnesses.prime_agent.metadata import (
+from verifiers.v1.utils.prime_agent_metadata import (
     MissingAcpMeta,
     field_history,
     observed_child_statuses,

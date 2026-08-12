@@ -1,7 +1,6 @@
 import json
 
 import pytest
-import verifiers.v1 as vf
 from ownership_invariant_v1.taskset import (
     HELDOUT_RESOURCE_FAMILIES,
     TRAIN_RESOURCE_FAMILIES,
@@ -10,6 +9,8 @@ from ownership_invariant_v1.taskset import (
     OwnershipInvariantTaskset,
     _first_decision_behavior,
 )
+
+import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolCall, ToolMessage, UserMessage
 

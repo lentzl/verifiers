@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import verifiers.v1 as vf
 from subagent_communication_v1.taskset import (
     COMPLETION_GATE_PATH,
     OWNERSHIP_GUIDANCE,
@@ -28,8 +27,16 @@ from subagent_communication_v1.taskset import (
     keep_first_coordinator_tool_call,
     keep_post_child_message_responses,
 )
+
+import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.types import AssistantMessage, SystemMessage, ToolCall, ToolMessage, UserMessage
+from verifiers.v1.types import (
+    AssistantMessage,
+    SystemMessage,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
 
 
 def _trace(*cells: str | tuple[str, str], reply: str = "{}") -> vf.Trace:

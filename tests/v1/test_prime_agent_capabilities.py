@@ -8,7 +8,7 @@ from prime_agent_capabilities_v1.taskset import (
     PrimeAgentCapabilitiesTaskset,
 )
 
-from verifiers.v1.harnesses.prime_agent.metadata import NAMESPACE
+from verifiers.v1.utils.prime_agent_metadata import NAMESPACE
 
 
 def _trace(**info):

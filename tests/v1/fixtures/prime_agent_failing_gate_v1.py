@@ -1,7 +1,7 @@
 """Prime Agent gate failure metadata fixture."""
 
 import verifiers.v1 as vf
-from verifiers.v1.harnesses.prime_agent.metadata import gate_failure_reported
+from verifiers.v1.utils.prime_agent_metadata import gate_failure_reported
 
 
 class PrimeAgentFailingGateTask(vf.Task):

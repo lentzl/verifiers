@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import Field
 
 import verifiers.v1 as vf
-from verifiers.v1.harnesses.prime_agent.metadata import (
+from verifiers.v1.utils.prime_agent_metadata import (
     MissingAcpMeta,
     child_tokens_attributed,
     goal_progressed,

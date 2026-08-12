@@ -1,6 +1,6 @@
 """Compatibility imports for the packaged Prime Agent metadata guards."""
 
-from verifiers.v1.harnesses.prime_agent.metadata import (
+from verifiers.v1.utils.prime_agent_metadata import (
     NAMESPACE,
     MissingAcpMeta,
     autonomous_continued,
