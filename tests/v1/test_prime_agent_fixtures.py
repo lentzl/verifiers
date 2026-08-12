@@ -537,6 +537,24 @@ def test_version_validator_rejects_malformed_semver():
             config(id="x", version=bad, tarball_sha256=digest)
 
 
+def test_default_prime_agent_release_is_a_matching_public_pin():
+    from verifiers.v1.harnesses.prime_agent.harness import (
+        DEFAULT_TARBALL_SHA256,
+        DEFAULT_VERSION,
+        PrimeAgentHarness,
+        PrimeAgentHarnessConfig,
+    )
+
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(id="prime-agent"))
+    assert DEFAULT_VERSION == "0.7.1"
+    assert DEFAULT_TARBALL_SHA256 == (
+        "d68612c83239caafab72cc76c55ac572bfd07a059ea8fbd2a3ddbe1f2b55dcdb"
+    )
+    assert harness.tarball_url().endswith(
+        "/releases/v0.7.1/prime-agent-0.7.1.tgz"
+    )
+
+
 @pytest.mark.asyncio
 async def test_daemon_log_tail_never_masks_the_original_failure():
     """Diagnostics run on the failure path, so they must not raise themselves.

@@ -24,8 +24,7 @@ max_total_tokens = 20000
 [env.agent.harness]
 id = "prime_agent"
 version = "0.7.1"
-tarball_url = "https://t-1-8e904716e6479832.tunnel.pinfra.io/prime-agent-0.7.1.tgz"
-tarball_sha256 = "d601e0dd88103cddfe93b7a1da286a1869259b2fb2b7430c0ce5472eaec93cf9"
+tarball_sha256 = "d68612c83239caafab72cc76c55ac572bfd07a059ea8fbd2a3ddbe1f2b55dcdb"
 
 [env.agent.runtime]
 type = "prime"

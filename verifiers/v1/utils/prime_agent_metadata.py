@@ -93,7 +93,19 @@ def quiescent_at_end(trace) -> bool:
 
 
 def no_outstanding_subagents(trace) -> bool:
-    return field_history(trace, "quiescence")[-1].get("outstandingSubagents") == 0
+    try:
+        return (
+            field_history(trace, "quiescence")[-1].get("outstandingSubagents") == 0
+        )
+    except MissingAcpMeta:
+        # Public Prime Agent 0.7.1 emits the ordered subagent roster but not the
+        # staged quiescence counter. Terminal final statuses prove the narrower
+        # invariant this guard names without treating missing metadata as success.
+        terminal = {"completed", "done", "error", "cancelled"}
+        return all(
+            history and history[-1] in terminal
+            for history in observed_child_statuses(trace).values()
+        )
 
 
 def autonomous_continued(trace) -> bool:

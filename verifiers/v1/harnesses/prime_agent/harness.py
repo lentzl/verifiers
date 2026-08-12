@@ -31,9 +31,9 @@ KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 # Prime Agent reads its agent directory from its packaged config name.
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
-DEFAULT_VERSION = "0.7.0"
+DEFAULT_VERSION = "0.7.1"
 DEFAULT_TARBALL_SHA256 = (
-    "88b6578518c72cd51a825bc80f28e0fef9a64c67de4a7d6fd7afd7ca1b34da0b"
+    "d68612c83239caafab72cc76c55ac572bfd07a059ea8fbd2a3ddbe1f2b55dcdb"
 )
 RELEASE_BASE_URL = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
 NODE_VERSION = "22.19.0"
@@ -86,7 +86,7 @@ class PrimeAgentHarnessConfig(HarnessConfig):
             r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
             value,
         ):
-            raise ValueError("version must be a semantic version, e.g. 0.7.0")
+            raise ValueError("version must be a semantic version, e.g. 0.7.1")
         return value
 
     @field_validator("tarball_sha256")

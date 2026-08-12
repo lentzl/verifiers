@@ -81,6 +81,13 @@ def test_quiescence_guards_track_the_final_snapshot():
     assert not quiescence_blocked_scoring(trace_with(idle))
 
 
+def test_public_agent_roster_proves_no_outstanding_children_without_quiescence():
+    running = {"subagents": [{"id": "c1", "status": "running"}]}
+    done = {"subagents": [{"id": "c1", "status": "done"}]}
+    assert no_outstanding_subagents(trace_with(running, done))
+    assert not no_outstanding_subagents(trace_with(running))
+
+
 def test_autonomous_guards_reject_inert_configuration():
     inert = {"autonomous": {"enabled": True, "continuationsUsed": 0}}
     engaged = {

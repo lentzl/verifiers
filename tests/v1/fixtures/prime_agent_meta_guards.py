@@ -111,7 +111,16 @@ def quiescent_at_end(trace) -> bool:
 
 
 def no_outstanding_subagents(trace) -> bool:
-    return field_history(trace, "quiescence")[-1].get("outstandingSubagents") == 0
+    try:
+        return (
+            field_history(trace, "quiescence")[-1].get("outstandingSubagents") == 0
+        )
+    except MissingAcpMeta:
+        terminal = {"completed", "done", "error", "cancelled"}
+        return all(
+            history and history[-1] in terminal
+            for history in observed_child_statuses(trace).values()
+        )
 
 
 def autonomous_continued(trace) -> bool:
