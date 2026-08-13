@@ -1031,10 +1031,15 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     assert "receiver_role='child'" in followup.data.prompt
     assert "name='key-worker'" in followup.data.prompt
     assert "You are key-worker, my child" in followup.data.prompt
+    assert "top-level JSON value is the integer list itself, not an object" in followup.data.prompt
+    assert f"values = json.loads(Path({followup.data.child_paths['key-worker']!r}).read_text())" in (
+        followup.data.prompt
+    )
+    assert "subtotal = sum(values)" in followup.data.prompt
     assert "Do not call rlm or message a child" in followup.data.prompt
-    assert "resume only when my parent follow-up arrives" in followup.data.prompt
+    assert "resume only when the visible [from parent] follow-up arrives" in followup.data.prompt
     assert f"retain multiplier = {followup.data.followup_secret}" in followup.data.prompt
-    assert "bind the integer body of the latest [from parent] message" in followup.data.prompt
+    assert "Bind its integer body with int(...)" in followup.data.prompt
     assert "rather than guessing or hardcoding it" in followup.data.prompt
     assert "There is no `agent_message.list_messages` API" in followup.data.prompt
     assert "[from child:<name>]" in followup.data.prompt

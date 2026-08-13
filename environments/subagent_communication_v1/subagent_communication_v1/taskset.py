@@ -104,10 +104,15 @@ def _child_instruction(path: str) -> str:
 
 def _followup_child_instruction(path: str) -> str:
     return (
-        f"You are key-worker, my child. Read {path} and retain its subtotal. "
-        "Do not call rlm or message a child. Send 'need multiplier' to your parent, "
-        "end the turn, then use the multiplier from the parent's reply to compute and "
-        "send the final subtotal and result."
+        f"You are key-worker, my child. Read {path}. Its top-level JSON value is the integer list "
+        f"itself, not an object: bind values = json.loads(Path({path!r}).read_text()), then retain "
+        "subtotal = sum(values). "
+        "Do not call rlm or message a child. In a separate IPython call execute exactly "
+        "await agent_message.send('need multiplier', receiver_role='parent'). End that turn and "
+        "resume only when the visible [from parent] follow-up arrives. Bind its integer body with "
+        "int(...) rather than guessing or hardcoding it while preserving subtotal, compute "
+        "result = subtotal * multiplier, then make a "
+        "second successful receiver_role='parent' message containing subtotal and result."
     )
 
 
@@ -967,17 +972,10 @@ def _task_prompt(
         children = ("key-worker",)
         child_paths = {"key-worker": remote_path}
         files = {remote_path: json.dumps(remote)}
+        child_instruction = _followup_child_instruction(remote_path)
         guidance = (
             f"Do not open {remote_path} in the coordinator. First retain multiplier = {secret} in "
-            'coordinator IPython state. Then assign child = await rlm("You are '
-            f"key-worker, my child. Read {remote_path} and retain its subtotal. Do not call rlm "
-            "or message a child. In a separate IPython call exactly await "
-            "agent_message.send('need multiplier', receiver_role='parent'). End that turn and "
-            "resume only when my parent follow-up arrives. In the resumed turn, bind the integer "
-            "body of the latest [from parent] message to multiplier with int(...) rather than "
-            "guessing or hardcoding it. Then multiply the retained subtotal and make a second "
-            "successful receiver_role='parent' message containing subtotal and result. Your task "
-            'is incomplete until both parent messages succeed.", '
+            f"coordinator IPython state. Then assign child = await rlm({child_instruction!r}, "
             "name='key-worker'). Do not put the multiplier in that string. Retain child and stop "
             "calling tools for this turn. After its request arrives, use await "
             "agent_message.send(str(multiplier), receiver_role='child', "
