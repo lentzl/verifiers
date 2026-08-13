@@ -304,7 +304,7 @@ def test_single_tasks_expose_task_specific_opsd_demonstrations() -> None:
     demonstration = task.data.demonstration
     assert demonstration is not None
     path = task.data.child_paths["shard-worker"]
-    assert f"Read {path} as the JSON list values" in demonstration
+    assert f"Read {path}. Its top-level JSON value is the integer list itself" in demonstration
     assert WEIGHTED_CHECKSUM_FORMULA in demonstration
     assert "execute exactly once" in demonstration
     assert "handle = await rlm(" in demonstration
@@ -1025,6 +1025,8 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     assert "stop calling tools" in single.data.prompt
     assert "explicit child message" in single.data.prompt
     assert single.data.prompt.count(WEIGHTED_CHECKSUM_FORMULA) == 1
+    assert "top-level JSON value is the integer list itself, not an object" in single.data.prompt
+    assert f"values = json.loads(Path({single.data.child_paths['shard-worker']!r}).read_text())" in single.data.prompt
     assert "agent_observe.get_agent" not in single.data.prompt
     assert "receiver_role='child'" in followup.data.prompt
     assert "name='key-worker'" in followup.data.prompt
@@ -1040,6 +1042,7 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     parallel = next(task for task in tasks if task.data.family == "parallel")
     assert "There is no `agent_message.list_messages` API" in parallel.data.prompt
     assert parallel.data.prompt.count(WEIGHTED_CHECKSUM_FORMULA) == 2
+    assert parallel.data.prompt.count("top-level JSON value is the integer list itself, not an object") == 2
     assert json.dumps(single.data.answer) not in single.data.prompt
     assert json.dumps(parallel.data.answer) not in parallel.data.prompt
 

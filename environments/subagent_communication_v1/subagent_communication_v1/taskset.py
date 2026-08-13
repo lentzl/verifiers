@@ -94,8 +94,9 @@ def _json(values: list[int]) -> str:
 
 def _child_instruction(path: str) -> str:
     return (
-        f"Read {path} as the JSON list values and compute its weighted checksum using exactly "
-        f"{WEIGHTED_CHECKSUM_FORMULA}. Then execute exactly once: "
+        f"Read {path}. Its top-level JSON value is the integer list itself, not an object: bind "
+        f"values = json.loads(Path({path!r}).read_text()) without indexing a dictionary key. "
+        f"Compute its weighted checksum using exactly {WEIGHTED_CHECKSUM_FORMULA}. Then execute exactly once: "
         "await agent_message.send(str(checksum), receiver_role='parent'). After the delivery "
         "receipt succeeds, answer with a concise confirmation and stop."
     )
