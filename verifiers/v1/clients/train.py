@@ -10,8 +10,14 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
 from openai import OpenAIError
+from renderers import (
+    MultiModalData,
+    PlaceholderRange,
+    RenderedTokens,
+    Renderer,
+    RendererConfig,
+)
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus
 
 from verifiers.v1.clients.base import build_async_openai
@@ -226,6 +232,54 @@ def _has_multimodal_content(messages) -> bool:
     return False
 
 
+def _prepend_system_tokens(
+    prefix: RenderedTokens, prompt: RenderedTokens
+) -> RenderedTokens:
+    """Prepend a non-conversation system block without shifting attribution."""
+    prefix_len = len(prefix.token_ids)
+    multimodal = prompt.multi_modal_data
+    if multimodal is not None:
+        multimodal = MultiModalData(
+            mm_hashes=multimodal.mm_hashes,
+            mm_items=multimodal.mm_items,
+            mm_placeholders={
+                modality: [
+                    PlaceholderRange(
+                        offset=placeholder.offset + prefix_len,
+                        length=placeholder.length,
+                    )
+                    for placeholder in placeholders
+                ]
+                for modality, placeholders in multimodal.mm_placeholders.items()
+            },
+        )
+    return RenderedTokens(
+        token_ids=[*prefix.token_ids, *prompt.token_ids],
+        message_indices=[-1] * prefix_len + prompt.message_indices,
+        sampled_mask=([False] * prefix_len + prompt.sampled_mask)
+        if prompt.sampled_mask
+        else [],
+        is_content=([False] * prefix_len + prompt.is_content)
+        if prompt.is_content
+        else [],
+        message_roles=prompt.message_roles,
+        message_tool_names=prompt.message_tool_names,
+        multi_modal_data=multimodal,
+    )
+
+
+def _task_system_prefix(config: TrainClientConfig, turn: PendingTurn | None) -> str | None:
+    field = config.task_system_prefix_field
+    if field is None:
+        return None
+    if turn is None:
+        raise ValueError("task_system_prefix_field requires a graph-resolved turn")
+    value = getattr(turn.trace.task.data, field, None)
+    if not isinstance(value, str):
+        raise TypeError(f"task data field {field!r} must contain a string")
+    return config.task_system_prefix_template.format(value=value)
+
+
 @dataclass
 class RendererSlot:
     """One renderer and the rollouts currently holding it. Encoding mutates a fast
@@ -407,6 +461,7 @@ class TrainClient(Client):
             multiplex=self.config.multiplex,
         )
         bridged_turn: PendingTurn | None = None
+        task_system_prefix = _task_system_prefix(self.config, turn)
 
         async with pool.acquire() as slot:
             renderer = slot.renderer
@@ -450,6 +505,14 @@ class TrainClient(Client):
                         wire_messages, tools=wire_tools, add_generation_prompt=True
                     )
                 )
+                if task_system_prefix is not None:
+                    prefix = await slot.run(
+                        lambda: renderer.render(
+                            [{"role": "system", "content": task_system_prefix}],
+                            add_generation_prompt=False,
+                        )
+                    )
+                    rendered = _prepend_system_tokens(prefix, rendered)
                 prompt_ids = rendered.token_ids
                 multi_modal_data = rendered.multi_modal_data
                 prompt_attribution = rendered

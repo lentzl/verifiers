@@ -83,6 +83,23 @@ class TrainClientConfig(BaseClientConfig):
     for the render itself (ms against a multi-second turn), so one absorbs many rollouts;
     lower this when rendering is the slow part (very long prompts, frequent bridge misses)."""
 
+    task_system_prefix_field: str | None = None
+    """Optional ``TaskData`` field whose string value is rendered as a standalone
+    leading system message before the ordinary task prompt. This is intended for
+    exact teacher-context admission checks; unlike modifying ``system_prompt``, it
+    preserves the separate system-message boundary used by token-prefix methods."""
+
+    task_system_prefix_template: str = "{value}"
+    """Template for ``task_system_prefix_field``. It must contain ``{value}``."""
+
+    @model_validator(mode="after")
+    def validate_task_system_prefix(self) -> "TrainClientConfig":
+        if self.task_system_prefix_field is None:
+            return self
+        if "{value}" not in self.task_system_prefix_template:
+            raise ValueError("task_system_prefix_template must contain '{value}'")
+        return self
+
 
 # Discriminated union for a CLI-selectable client (`--client.type eval|train`).
 ClientConfig = Annotated[
