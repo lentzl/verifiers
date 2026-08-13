@@ -1044,6 +1044,7 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     assert f"multiplier = {followup.data.followup_secret}" in followup.data.prompt
     assert "Bind its integer body with int(...)" in followup.data.prompt
     assert "rather than guessing or hardcoding it" in followup.data.prompt
+    assert "Do not print, inspect, or split that computation and send across cells" in followup.data.prompt
     assert "There is no `agent_message.list_messages` API" in followup.data.prompt
     assert "[from child:<name>]" in followup.data.prompt
     assert "Use three causally separate phases" in followup.data.prompt

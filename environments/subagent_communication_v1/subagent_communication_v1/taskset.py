@@ -110,10 +110,12 @@ def _followup_child_instruction(path: str) -> str:
         "subtotal = sum(values). "
         "Do not call rlm or message a child. In a separate IPython call execute exactly "
         "await agent_message.send('need multiplier', receiver_role='parent'). End that turn and "
-        "resume only when the visible [from parent] follow-up arrives. Bind its integer body with "
-        "int(...) rather than guessing or hardcoding it while preserving subtotal, compute "
-        "result = subtotal * multiplier, then make a "
-        "second successful receiver_role='parent' message containing subtotal and result."
+        "resume only when the visible [from parent] follow-up arrives. Then make exactly one "
+        "IPython call. Bind its integer body with int(...) rather than guessing or hardcoding it "
+        "while preserving subtotal, compute result = subtotal * multiplier, and execute await "
+        "agent_message.send(json.dumps({'subtotal': subtotal, 'result': result}), "
+        "receiver_role='parent'). Do not print, inspect, or split that computation and send across "
+        "cells; then stop."
     )
 
 
@@ -317,7 +319,7 @@ def _bidirectional_turn_demonstrations(
                 "result = subtotal * multiplier\n"
                 "await agent_message.send(json.dumps({'subtotal': subtotal, 'result': result}), "
                 "receiver_role='parent')\n"
-                "Then stop."
+                "This must be one IPython cell with no print or inspection; then stop."
             ),
         ]
     elif family == "handshake":
