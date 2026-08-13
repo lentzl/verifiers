@@ -66,6 +66,7 @@ class SubagentCommunicationData(vf.TaskData):
     family: Family
     template_variant: int
     instruction_level: InstructionLevel = "standard"
+    teacher_conditioned: bool = False
     answer: dict[str, int]
     expected_children: tuple[str, ...] = ()
     child_paths: dict[str, str] = Field(default_factory=dict)
@@ -2037,6 +2038,7 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                                 family=family,
                                 template_variant=variant,
                                 instruction_level=self.config.instruction_level,
+                                teacher_conditioned=self.config.teacher_conditioned,
                                 answer=answer,
                                 expected_children=children,
                                 child_paths=child_paths,

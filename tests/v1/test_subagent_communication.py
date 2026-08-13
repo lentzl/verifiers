@@ -908,6 +908,7 @@ def test_teacher_conditioned_preflight_uses_prime_opsd_template() -> None:
     assert "\n<Demonstration>\n" in task.data.prompt
     assert task.data.demonstration is not None
     assert task.data.demonstration in task.data.prompt
+    assert task.data.teacher_conditioned is True
     assert "next assistant response itself must be exactly `Waiting for shard-worker's explicit reply.`" in (
         task.data.demonstration
     )
