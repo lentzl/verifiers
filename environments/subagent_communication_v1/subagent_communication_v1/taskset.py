@@ -939,19 +939,17 @@ def _task_prompt(
         children = ("relay-worker",)
         child_paths = {"relay-worker": "need nonce"}
         files = {}
+        child_instruction = _handshake_child_instruction()
         guidance = (
-            f"First retain nonce = {secret} in coordinator IPython state. Then assign child = await "
-            'rlm("You are relay-worker, my child. Do not call rlm or message '
-            "a child. In a separate IPython call exactly await agent_message.send('need nonce', "
-            "receiver_role='parent'). End that turn and resume only when my parent follow-up "
-            "arrives. In the resumed turn, bind the exact body of the latest [from parent] message "
-            "to a nonce variable rather than guessing it. Then make a second successful "
-            "receiver_role='parent' message containing that nonce. Your task is incomplete until "
-            'both parent messages succeed.", '
-            "name='relay-worker'). Do not put the nonce in that string. Retain child and stop "
-            "calling tools for this turn. After its request arrives, use await "
-            "agent_message.send(str(nonce), receiver_role='child', "
-            "receiver_name=child.name), then wait for its final reply. "
+            "Use three causally separate phases. Initial phase: make exactly one IPython call whose "
+            f"cell is nonce = {secret} followed by child = await rlm({child_instruction!r}, "
+            "name='relay-worker'). Do not put the nonce in the child string. End the cell immediately "
+            "after the child assignment with no print or other statement, then end the assistant "
+            "turn. Request phase: do not message the child until a later resumed coordinator turn "
+            "visibly contains `[from child:relay-worker]` with `need nonce`. Only then make exactly "
+            "one IPython call: await agent_message.send(str(nonce), receiver_role='child', "
+            "receiver_name=child.name). End that cell and turn immediately. Result phase: after the "
+            "later visible child echo, call no tool and return the requested bare JSON. "
             f"{MESSAGE_DELIVERY_GUIDANCE}"
         )
     else:
@@ -974,12 +972,17 @@ def _task_prompt(
         files = {remote_path: json.dumps(remote)}
         child_instruction = _followup_child_instruction(remote_path)
         guidance = (
-            f"Do not open {remote_path} in the coordinator. First retain multiplier = {secret} in "
-            f"coordinator IPython state. Then assign child = await rlm({child_instruction!r}, "
-            "name='key-worker'). Do not put the multiplier in that string. Retain child and stop "
-            "calling tools for this turn. After its request arrives, use await "
-            "agent_message.send(str(multiplier), receiver_role='child', "
-            "receiver_name=child.name), then wait for its final reply. "
+            f"Do not open {remote_path} in the coordinator. Use three causally separate phases. "
+            "Initial phase: make exactly one IPython call whose cell is "
+            f"multiplier = {secret} followed by child = await rlm({child_instruction!r}, "
+            "name='key-worker'). Do not put the multiplier in the child string. End the cell "
+            "immediately after the child assignment with no print or other statement, then end the "
+            "assistant turn. Request phase: do not message the child until a later resumed "
+            "coordinator turn visibly contains `[from child:key-worker]` with `need multiplier`. "
+            "Only then make exactly one IPython call: await agent_message.send(str(multiplier), "
+            "receiver_role='child', receiver_name=child.name). End that cell and turn immediately. "
+            "Result phase: after the later visible child result, call no tool and return the "
+            "requested bare JSON. "
             f"{MESSAGE_DELIVERY_GUIDANCE}"
         )
 

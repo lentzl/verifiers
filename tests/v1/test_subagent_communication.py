@@ -1038,11 +1038,27 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     assert "subtotal = sum(values)" in followup.data.prompt
     assert "Do not call rlm or message a child" in followup.data.prompt
     assert "resume only when the visible [from parent] follow-up arrives" in followup.data.prompt
-    assert f"retain multiplier = {followup.data.followup_secret}" in followup.data.prompt
+    assert f"multiplier = {followup.data.followup_secret}" in followup.data.prompt
     assert "Bind its integer body with int(...)" in followup.data.prompt
     assert "rather than guessing or hardcoding it" in followup.data.prompt
     assert "There is no `agent_message.list_messages` API" in followup.data.prompt
     assert "[from child:<name>]" in followup.data.prompt
+    assert "Use three causally separate phases" in followup.data.prompt
+    assert "do not message the child until a later resumed coordinator turn" in followup.data.prompt
+    assert "[from child:key-worker]` with `need multiplier`" in followup.data.prompt
+    assert "End that cell and turn immediately" in followup.data.prompt
+
+    handshake = SubagentCommunicationTaskset(
+        SubagentCommunicationConfig(
+            split="train",
+            families=("handshake",),
+            instruction_level="guided",
+            instances_per_template=1,
+        )
+    ).load()[0]
+    assert "Use three causally separate phases" in handshake.data.prompt
+    assert "[from child:relay-worker]` with `need nonce`" in handshake.data.prompt
+    assert "do not message the child until a later resumed coordinator turn" in handshake.data.prompt
 
     parallel = next(task for task in tasks if task.data.family == "parallel")
     assert "There is no `agent_message.list_messages` API" in parallel.data.prompt
