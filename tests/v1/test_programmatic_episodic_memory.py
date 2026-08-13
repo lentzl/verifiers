@@ -341,3 +341,19 @@ def test_identical_repeated_cells_are_rejected() -> None:
 
     assert behavior["no_repeated_cell"] == 0.0
     assert behavior["strict_success"] == 0.0
+
+
+def test_history_dump_is_not_selective_retrieval() -> None:
+    behavior = _behavior(
+        _trace(
+            [("call-1", "open('/workspace/history.log').read()")],
+            outputs=("x" * 5000,),
+        ),
+        _data(),
+    )
+
+    assert behavior["answer_correct"] == 1.0
+    assert behavior["retrieval_decision"] == 1.0
+    assert behavior["bounded_retrieval"] == 0.0
+    assert behavior["observation_chars"] == 5000.0
+    assert behavior["strict_success"] == 0.0

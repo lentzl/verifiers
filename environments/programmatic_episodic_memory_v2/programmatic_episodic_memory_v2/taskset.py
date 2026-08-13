@@ -135,6 +135,8 @@ def _behavior(
         and answer_correct == 0.0
     )
     valid_tool_behavior = float(valid_calls and not unresolved_errors)
+    observation_chars = sum(len(outputs.get(call_id, "")) for call_id, _ in calls)
+    bounded_retrieval = float(not data.requires_history or observation_chars <= 4096)
     no_repeat = float(
         len(codes) == len(dict.fromkeys(source.strip() for source in codes))
     )
@@ -178,6 +180,7 @@ def _behavior(
         retrieval_decision == 1.0,
         grounded_answer == 1.0,
         valid_tool_behavior == 1.0,
+        bounded_retrieval == 1.0,
         no_repeat == 1.0,
         persistent_reuse,
         stale_resolution,
@@ -196,6 +199,8 @@ def _behavior(
         "retrieval_decision": retrieval_decision,
         "grounded_answer": grounded_answer,
         "valid_tool_behavior": valid_tool_behavior,
+        "bounded_retrieval": bounded_retrieval,
+        "observation_chars": float(observation_chars),
         "no_repeated_cell": no_repeat,
         "persistent_index_required": float(persistent_required),
         "persistent_index_reuse": float(persistent_reuse),
