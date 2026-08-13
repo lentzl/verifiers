@@ -1083,6 +1083,8 @@ def test_completion_gate_requires_child_evidence_without_embedding_answer_values
     sessions.mkdir(parents=True)
     session = sessions / "root.jsonl"
     source = _completion_gate_source(("subtotal", "multiplier", "result"), "followup")
+    assert "never infer it from the task, demonstration, child status, or expected protocol" in source
+    assert "exactly `Waiting for key-worker's request.`" in source
     gate = tmp_path / "completion_gate.py"
     gate.write_text(source)
     env = {**os.environ, "PRIME_AGENT_CODING_AGENT_DIR": str(agent_dir)}
@@ -1169,7 +1171,7 @@ def test_completion_gate_requires_child_evidence_without_embedding_answer_values
     assert run_gate(complete, ("need multiplier", "need multiplier")).returncode == 1
     failed = run_gate("Waiting for the child.")
     assert "do not inspect the delegated shard" in failed.stderr
-    assert "brief waiting status and no tool call" in failed.stderr
+    assert "Otherwise call no tool and respond exactly `Waiting for key-worker's request.`" in failed.stderr
     assert "existing child" in failed.stderr
     assert "12" not in source
     assert "84" not in source

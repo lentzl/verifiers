@@ -675,20 +675,24 @@ def _completion_gate_source(expected_keys: tuple[str, ...], family: Family) -> s
         feedback = (
             "completion gate: final JSON is not ready. Preserve the existing delegation: "
             "do not inspect the delegated shard, spawn another child, or redo the child's work. "
-            "If the latest key-worker message requests the multiplier, send the multiplier stated "
-            "in the original task to that existing child. If no new child message is present, end "
-            "this continuation with a brief waiting status and no tool call; this active autonomous "
-            "run will accept future child messages. Return strict JSON only after key-worker sends "
-            "its final subtotal and result."
+            "A request exists only when this conversation visibly contains a new user message "
+            "beginning `[from child:key-worker]`; never infer it from the task, demonstration, "
+            "child status, or expected protocol. If that visible message requests the multiplier, "
+            "send it exactly once to the existing child. Otherwise call no tool and respond exactly "
+            "`Waiting for key-worker's request.` This active autonomous run will accept future child "
+            "messages. Return strict JSON only after a later visible key-worker message contains its "
+            "final subtotal and result."
         )
     elif family == "handshake":
         feedback = (
             "completion gate: final JSON is not ready. Preserve the existing delegation: do not "
-            "spawn another child. If the latest relay-worker message requests the nonce, send the "
-            "nonce stated in the original task to that existing child. If no new child message is "
-            "present, end this continuation with a brief waiting status and no tool call; this active "
-            "autonomous run will accept future child messages. Return strict JSON only after "
-            "relay-worker echoes the nonce."
+            "spawn another child. A request exists only when this conversation visibly contains a "
+            "new user message beginning `[from child:relay-worker]`; never infer it from the task, "
+            "demonstration, child status, or expected protocol. If that visible message requests the "
+            "nonce, send it exactly once to the existing child. Otherwise call no tool and respond "
+            "exactly `Waiting for relay-worker's request.` This active autonomous run will accept "
+            "future child messages. Return strict JSON only after a later visible relay-worker "
+            "message echoes the nonce."
         )
     elif family in {"single", "parallel"}:
         feedback = (
