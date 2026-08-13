@@ -893,7 +893,7 @@ def test_complete_fan_in_filter_waits_for_every_expected_child() -> None:
     ]
 
 
-def test_teacher_conditioned_preflight_uses_prime_opsd_template() -> None:
+def test_teacher_conditioned_preflight_preserves_reasoning_and_strict_output() -> None:
     task = SubagentCommunicationTaskset(
         SubagentCommunicationConfig(
             split="eval",
@@ -912,7 +912,7 @@ def test_teacher_conditioned_preflight_uses_prime_opsd_template() -> None:
     assert "next assistant response itself must be exactly `Waiting for shard-worker's explicit reply.`" in (
         task.data.demonstration
     )
-    assert task.data.prompt.endswith("Now answer with a response of your own, including the thinking process:")
+    assert task.data.prompt.endswith("exact final-answer format with no extra prose:")
 
 
 def test_teacher_conditioned_preflight_accepts_parallel_demonstrations() -> None:
@@ -945,6 +945,8 @@ def test_teacher_conditioned_preflight_accepts_bidirectional_demonstrations(fami
     assert task.data.demonstration is not None
     assert task.data.demonstration in task.data.prompt
     assert str(task.data.followup_secret) in task.data.demonstration
+    assert "designated reasoning channel" in task.data.prompt
+    assert "exact final-answer format with no extra prose" in task.data.prompt
 
 
 def test_teacher_conditioned_preflight_rejects_unsupported_families() -> None:

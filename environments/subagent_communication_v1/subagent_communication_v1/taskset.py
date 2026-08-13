@@ -24,11 +24,13 @@ FAMILIES: tuple[Family, ...] = ("direct", "single", "parallel", "followup")
 TRAIN_VARIANTS = (0, 1, 2, 3)
 EVAL_VARIANTS = (4, 5)
 COMPLETION_GATE_PATH = "/workspace/.subagent-communication/completion_gate.py"
-OPSD_TEMPLATE = (
+TEACHER_CONDITIONING_TEMPLATE = (
     "<Question>\n{question}\n"
     "This is an example for a response to the question:\n"
     "<Demonstration>\n{demonstration}\n"
-    "Now answer with a response of your own, including the thinking process:"
+    "Now answer with a response of your own. Keep the thinking process in the model's "
+    "designated reasoning channel. In assistant content, obey the question's exact final-answer "
+    "format with no extra prose:"
 )
 
 SYSTEM_PROMPT = (
@@ -2029,7 +2031,7 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                     if self.config.teacher_conditioned:
                         if demonstration is None:
                             raise ValueError("teacher_conditioned preflight requires a supported demonstration family")
-                        prompt = OPSD_TEMPLATE.format(
+                        prompt = TEACHER_CONDITIONING_TEMPLATE.format(
                             question=prompt,
                             demonstration=demonstration,
                         )
