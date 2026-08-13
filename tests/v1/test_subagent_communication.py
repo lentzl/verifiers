@@ -16,6 +16,7 @@ from subagent_communication_v1.taskset import (
     SubagentCommunicationTaskset,
     _answer_score,
     _completion_gate_source,
+    _contains_integer_literal,
     _duplicate_cells,
     _ipython_events,
     _ownership_transition_behavior,
@@ -1076,6 +1077,14 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     assert parallel.data.prompt.count("top-level JSON value is the integer list itself, not an object") == 2
     assert json.dumps(single.data.answer) not in single.data.prompt
     assert json.dumps(parallel.data.answer) not in parallel.data.prompt
+
+
+def test_secret_detection_ignores_digits_embedded_in_a_delegated_path() -> None:
+    prompt = "Read /workspace/subagent-shards/v0-i44000-followup.json."
+
+    assert not _contains_integer_literal(prompt, 44)
+    assert _contains_integer_literal(f"{prompt} Use multiplier 44.", 44)
+    assert _contains_integer_literal("Use nonce=-44.", -44)
 
 
 def test_completion_gate_requires_child_evidence_without_embedding_answer_values(

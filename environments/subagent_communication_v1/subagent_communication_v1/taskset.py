@@ -1275,6 +1275,10 @@ def _spawn_prompt(call: ast.Call) -> str | None:
     return None
 
 
+def _contains_integer_literal(text: str, value: int) -> bool:
+    return re.search(rf"(?<!\d){re.escape(str(value))}(?!\d)", text) is not None
+
+
 def _delegated_path_used_outside_spawn(source: str, path: str) -> bool:
     try:
         tree = ast.parse(source)
@@ -1472,7 +1476,9 @@ def _protocol_behavior(
     secret_withheld = True
     if followup_secret is not None and spawns:
         first_prompt = _spawn_prompt(spawns[0][0])
-        secret_withheld = bool(first_prompt and str(followup_secret) not in first_prompt)
+        secret_withheld = bool(
+            first_prompt and not _contains_integer_literal(first_prompt, followup_secret)
+        )
 
     expected_messages = [message for message in parent_messages if message.name in expected_children]
     parent_send_indices = _originating_parent_send_indices(trace, expected_messages, parent_sends)
@@ -1809,7 +1815,9 @@ def _ownership_transition_behavior(
         )
     else:
         delegated = one_spawn and all(path in prompt for path in child_paths.values())
-    secret_withheld = followup_secret is None or str(followup_secret) not in prompt
+    secret_withheld = followup_secret is None or not _contains_integer_literal(
+        prompt, followup_secret
+    )
     path_owned = all(
         not _delegated_path_used_outside_spawn(event.code, path)
         for path in child_paths.values()
