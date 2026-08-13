@@ -6,6 +6,8 @@ from ownership_invariant_v1.taskset import (
     TRAIN_RESOURCE_FAMILIES,
     OwnershipInvariantConfig,
     OwnershipInvariantData,
+    OwnershipInvariantTask,
+    OwnershipInvariantTaskConfig,
     OwnershipInvariantTaskset,
     _first_decision_behavior,
 )
@@ -183,6 +185,7 @@ def test_child_owned_strict_success_requires_complete_first_decision() -> None:
     behavior = _first_decision_behavior(_trace(_valid_code()), _data())
 
     assert behavior["strict_success"] == 1.0
+    assert behavior["dense_reward"] == 1.0
     assert behavior["parent_path_access"] == 0.0
     assert behavior["local_state_leaked"] == 0.0
 
@@ -257,6 +260,37 @@ def test_child_owned_rejects_a_second_coordinator_cell() -> None:
     assert behavior["post_spawn_action"] == 1.0
 
 
+def test_dense_reward_orders_partial_and_strict_child_decisions() -> None:
+    no_action = _first_decision_behavior(
+        _trace("request_tag = 'coord-json-sum'"), _data()
+    )
+    near_miss = _first_decision_behavior(
+        _trace(f"{_valid_code()}\nprint('waiting')"), _data()
+    )
+    strict = _first_decision_behavior(_trace(_valid_code()), _data())
+
+    assert (
+        0.0
+        < no_action["dense_reward"]
+        < near_miss["dense_reward"]
+        < strict["dense_reward"]
+    )
+    assert no_action["strict_success"] == near_miss["strict_success"] == 0.0
+    assert strict["strict_success"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_task_can_opt_into_dense_reward_without_changing_strict_default() -> None:
+    trace = _trace(f"{_valid_code()}\nprint('waiting')")
+    strict = OwnershipInvariantTask(_data(), OwnershipInvariantTaskConfig())
+    dense = OwnershipInvariantTask(
+        _data(), OwnershipInvariantTaskConfig(reward_shape="dense")
+    )
+
+    assert await strict.ownership_invariant_reward(trace) == 0.0
+    assert 0.0 < await dense.ownership_invariant_reward(trace) < 1.0
+
+
 @pytest.mark.parametrize(
     "tail",
     [
@@ -325,6 +359,7 @@ def test_coordinator_owned_control_requires_direct_correct_work() -> None:
     behavior = _first_decision_behavior(trace, _data("coordinator"))
 
     assert behavior["strict_success"] == 1.0
+    assert behavior["dense_reward"] == 1.0
     assert behavior["direct_answer_accuracy"] == 1.0
 
 

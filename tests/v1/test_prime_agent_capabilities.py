@@ -43,6 +43,22 @@ def test_taskset_crosses_families_and_instances() -> None:
     ]
 
 
+def test_taskset_offset_keeps_training_instances_disjoint() -> None:
+    tasks = PrimeAgentCapabilitiesTaskset(
+        PrimeAgentCapabilitiesConfig(
+            families=("ipython_cell",),
+            instances_per_family=2,
+            instance_offset=100,
+        )
+    ).load()
+
+    assert [task.data.name for task in tasks] == [
+        "ipython_cell-i100",
+        "ipython_cell-i101",
+    ]
+    assert [task.data.instance for task in tasks] == [100, 101]
+
+
 def test_ipython_reward_requires_exact_cell_and_live_output() -> None:
     task = PrimeAgentCapabilitiesTaskset(
         PrimeAgentCapabilitiesConfig(

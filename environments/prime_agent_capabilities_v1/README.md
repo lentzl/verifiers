@@ -9,3 +9,6 @@ The environment is a capability and infrastructure layer, not a complete agent
 curriculum. Pair it with natural task environments such as `oolong-synth-v1` and
 with higher-level delegation environments for routing, ownership, fan-in, follow-up,
 and recovery semantics.
+
+Use `instance_offset` with `instances_per_family` to keep parameterized training and
+evaluation instances disjoint.

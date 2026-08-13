@@ -11,6 +11,12 @@ The coordinator-owned arm is a matched restraint gate. It requires local state,
 direct resource access, no delegation, and the correct result. It must not be mixed
 into the initial SDPO source.
 
+The task reward defaults to `strict`. Broad GRPO curricula may set
+`task.reward_shape = "dense"` to receive the mean structural-atom score plus a strict
+completion bonus. Strict success remains the promotion metric; dense shaping only
+provides contrast between incomplete on-policy decisions and cannot outscore a
+complete decision.
+
 The frozen splits are:
 
 - `admission`: eight training resource families with two alternating ownership phrasings;

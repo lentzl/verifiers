@@ -315,6 +315,7 @@ def _first_decision_behavior(
 ) -> dict[str, float]:
     keys = (
         "strict_success",
+        "dense_reward",
         "first_decision_only",
         "state_retained",
         "state_precedes_spawn",
@@ -430,8 +431,12 @@ def _first_decision_behavior(
             answer_accuracy == 1.0,
         )
 
+    dense_reward = (
+        sum(float(component) for component in components) + float(all(components))
+    ) / (len(components) + 1)
     return {
         "strict_success": float(all(components)),
+        "dense_reward": dense_reward,
         "first_decision_only": float(first_decision_only),
         "state_retained": float(state_retained),
         "state_precedes_spawn": float(state_precedes_spawn),
@@ -451,6 +456,7 @@ def _first_decision_behavior(
 
 class OwnershipInvariantTaskConfig(vf.TaskConfig):
     yield_policy: YieldPolicy = "literal"
+    reward_shape: Literal["strict", "dense"] = "strict"
 
 
 class OwnershipInvariantTask(vf.Task[OwnershipInvariantData, vf.State, OwnershipInvariantTaskConfig]):
@@ -464,7 +470,9 @@ class OwnershipInvariantTask(vf.Task[OwnershipInvariantData, vf.State, Ownership
 
     @vf.reward(weight=1.0)
     async def ownership_invariant_reward(self, trace: vf.Trace) -> float:
-        return _first_decision_behavior(trace, self.data, self.config.yield_policy)["strict_success"]
+        behavior = _first_decision_behavior(trace, self.data, self.config.yield_policy)
+        key = "dense_reward" if self.config.reward_shape == "dense" else "strict_success"
+        return behavior[key]
 
     @vf.metric
     async def ownership_behavior(self, trace: vf.Trace) -> dict[str, float]:

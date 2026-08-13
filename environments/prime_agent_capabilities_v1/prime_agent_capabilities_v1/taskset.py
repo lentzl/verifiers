@@ -204,6 +204,7 @@ class PrimeAgentCapabilitiesEnv(vf.SingleAgentEnv):
 class PrimeAgentCapabilitiesConfig(vf.TasksetConfig):
     families: tuple[Family, ...] = Field(FAMILIES, min_length=1)
     instances_per_family: int = Field(2, ge=1)
+    instance_offset: int = Field(0, ge=0)
 
 
 def _task_data(family: Family, instance: int, idx: int) -> PrimeAgentCapabilityData:
@@ -282,7 +283,10 @@ class PrimeAgentCapabilitiesTaskset(
 ):
     def load(self) -> list[PrimeAgentCapabilitiesTask]:
         tasks = []
-        for instance in range(self.config.instances_per_family):
+        for instance in range(
+            self.config.instance_offset,
+            self.config.instance_offset + self.config.instances_per_family,
+        ):
             for family in self.config.families:
                 tasks.append(
                     PrimeAgentCapabilitiesTask(
