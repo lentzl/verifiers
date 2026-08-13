@@ -719,6 +719,7 @@ def _completion_gate_source(expected_keys: tuple[str, ...], family: Family) -> s
     return f"""import json
 import os
 import sys
+import time
 from pathlib import Path
 
 EXPECTED_KEYS = {expected_keys!r}
@@ -776,65 +777,100 @@ def child_message_sender(message):
     return text[len(prefix):].split("]", 1)[0]
 
 
-agent_dir = Path(os.environ.get("PRIME_AGENT_CODING_AGENT_DIR", ""))
-session_files = sorted(
-    (agent_dir / "sessions").rglob("*.jsonl"),
-    key=lambda path: path.stat().st_mtime,
-    reverse=True,
-)
-child_evidence_observed = False
-for path in session_files:
-    entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    if not entries:
-        continue
-    header = entries[0]
-    if header.get("rlmDepth") not in (None, 0):
-        continue
-    if header.get("parentSession") or header.get("parentSessionId"):
-        continue
-    final_index = None
-    final_payload = None
-    for index in range(len(entries) - 1, -1, -1):
-        message = session_message(entries[index])
-        if message.get("role") != "assistant":
+def inspect_sessions():
+    agent_dir = Path(os.environ.get("PRIME_AGENT_CODING_AGENT_DIR", ""))
+    session_files = sorted(
+        (agent_dir / "sessions").rglob("*.jsonl"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    observed_counts = {{name: 0 for name in REQUIRED_CHILD_MESSAGES}}
+    valid = False
+    for path in session_files:
+        entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        if not entries:
             continue
-        final_index = index
-        try:
-            final_payload = json.loads(content_text(message.get("content")).strip())
-        except (TypeError, json.JSONDecodeError):
-            final_payload = None
-        break
-    if final_index is None:
-        continue
-    child_message_counts = {{name: 0 for name in REQUIRED_CHILD_MESSAGES}}
-    seen_child_message_ids = set()
-    for entry in entries[:final_index]:
-        message = session_message(entry)
-        child_name = child_message_sender(message)
-        if child_name not in child_message_counts:
+        header = entries[0]
+        if header.get("rlmDepth") not in (None, 0):
             continue
-        details = message.get("details")
-        message_id = details.get("id") if isinstance(details, dict) else None
-        if isinstance(message_id, str) and message_id in seen_child_message_ids:
+        if header.get("parentSession") or header.get("parentSessionId"):
             continue
-        if isinstance(message_id, str):
-            seen_child_message_ids.add(message_id)
-        child_message_counts[child_name] += 1
-    child_evidence_ready = all(
-        child_message_counts.get(name, 0) >= count
+        final_index = None
+        final_payload = None
+        for index in range(len(entries) - 1, -1, -1):
+            message = session_message(entries[index])
+            if message.get("role") != "assistant":
+                continue
+            final_index = index
+            try:
+                final_payload = json.loads(content_text(message.get("content")).strip())
+            except (TypeError, json.JSONDecodeError):
+                final_payload = None
+            break
+        if final_index is None:
+            continue
+        child_message_counts = {{name: 0 for name in REQUIRED_CHILD_MESSAGES}}
+        all_child_message_counts = {{name: 0 for name in REQUIRED_CHILD_MESSAGES}}
+        seen_child_message_ids = set()
+        for index, entry in enumerate(entries):
+            message = session_message(entry)
+            child_name = child_message_sender(message)
+            if child_name not in child_message_counts:
+                continue
+            details = message.get("details")
+            message_id = details.get("id") if isinstance(details, dict) else None
+            if isinstance(message_id, str) and message_id in seen_child_message_ids:
+                continue
+            if isinstance(message_id, str):
+                seen_child_message_ids.add(message_id)
+            all_child_message_counts[child_name] += 1
+            if index < final_index:
+                child_message_counts[child_name] += 1
+        for child_name, count in all_child_message_counts.items():
+            observed_counts[child_name] = max(observed_counts[child_name], count)
+        child_evidence_ready = all(
+            child_message_counts.get(name, 0) >= count
+            for name, count in REQUIRED_CHILD_MESSAGES.items()
+        )
+        valid = valid or (
+            child_evidence_ready
+            and isinstance(final_payload, dict)
+            and set(final_payload) == set(EXPECTED_KEYS)
+            and all(
+                isinstance(value, int) and not isinstance(value, bool)
+                for value in final_payload.values()
+            )
+        )
+    observed = tuple(observed_counts[name] for name in REQUIRED_CHILD_MESSAGES)
+    ready = all(
+        observed_counts.get(name, 0) >= count
         for name, count in REQUIRED_CHILD_MESSAGES.items()
     )
-    child_evidence_observed = child_evidence_observed or child_evidence_ready
-    if (
-        child_evidence_ready
-        and isinstance(final_payload, dict)
-        and set(final_payload) == set(EXPECTED_KEYS)
-        and all(
-            isinstance(value, int) and not isinstance(value, bool)
-            for value in final_payload.values()
-        )
-    ):
+    return valid, ready, observed
+
+
+valid, child_evidence_observed, observed = inspect_sessions()
+if valid:
+    raise SystemExit(0)
+
+# Child messages are asynchronous session state, not worktree changes. Wait for
+# one bounded state transition so Prime Agent's unchanged-worktree retry guard
+# cannot exhaust the autonomous loop before a live child reply is delivered.
+try:
+    grace_seconds = float(
+        os.environ.get("VF_PRIME_AGENT_CHILD_EVIDENCE_GRACE_SECONDS", "30")
+    )
+except ValueError:
+    grace_seconds = 30.0
+grace_seconds = max(0.0, min(grace_seconds, 60.0))
+deadline = time.monotonic() + grace_seconds
+while REQUIRED_CHILD_MESSAGES and time.monotonic() < deadline:
+    time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+    valid, child_evidence_observed, current = inspect_sessions()
+    if valid:
         raise SystemExit(0)
+    if current != observed:
+        break
 
 print(
     {format_feedback!r} if child_evidence_observed else {feedback!r},

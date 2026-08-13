@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1089,7 +1090,11 @@ def test_completion_gate_requires_child_evidence_without_embedding_answer_values
     assert "exactly `Waiting for key-worker's request.`" in source
     gate = tmp_path / "completion_gate.py"
     gate.write_text(source)
-    env = {**os.environ, "PRIME_AGENT_CODING_AGENT_DIR": str(agent_dir)}
+    env = {
+        **os.environ,
+        "PRIME_AGENT_CODING_AGENT_DIR": str(agent_dir),
+        "VF_PRIME_AGENT_CHILD_EVIDENCE_GRACE_SECONDS": "0",
+    }
 
     def run_gate(
         reply: str,
@@ -1177,6 +1182,81 @@ def test_completion_gate_requires_child_evidence_without_embedding_answer_values
     assert "existing child" in failed.stderr
     assert "12" not in source
     assert "84" not in source
+
+    request = {
+        "type": "custom_message",
+        "customType": "agent_message",
+        "content": "[from child:key-worker]\n\nneed multiplier",
+        "details": {
+            "id": "agentmsg_request",
+            "message": "need multiplier",
+            "from": {"sessionName": "key-worker"},
+            "fromRelationship": "child",
+        },
+    }
+    waiting = {
+        "type": "message",
+        "message": {"role": "assistant", "content": "Waiting for key-worker's final result."},
+    }
+    session.write_text(
+        "\n".join(
+            json.dumps(entry)
+            for entry in (
+                {"type": "session", "rlmDepth": 0},
+                request,
+                waiting,
+            )
+        )
+        + "\n"
+    )
+    waiting_env = {
+        **env,
+        "VF_PRIME_AGENT_CHILD_EVIDENCE_GRACE_SECONDS": "2",
+    }
+    process = subprocess.Popen(
+        [sys.executable, str(gate)],
+        env=waiting_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    time.sleep(0.2)
+    result = {
+        "type": "custom_message",
+        "customType": "agent_message",
+        "content": '[from child:key-worker]\n\n{"subtotal": 12, "result": 84}',
+        "details": {
+            "id": "agentmsg_result",
+            "message": '{"subtotal": 12, "result": 84}',
+            "from": {"sessionName": "key-worker"},
+            "fromRelationship": "child",
+        },
+    }
+    with session.open("a") as stream:
+        stream.write(json.dumps(result) + "\n")
+    _, stderr = process.communicate(timeout=3)
+    assert process.returncode == 1
+    assert "all required child evidence is already present" in stderr
+
+    with session.open("a") as stream:
+        stream.write(
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {"role": "assistant", "content": complete},
+                }
+            )
+            + "\n"
+        )
+    completed_after_delivery = subprocess.run(
+        [sys.executable, str(gate)],
+        env=waiting_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=3,
+    )
+    assert completed_after_delivery.returncode == 0
 
 
 @pytest.mark.asyncio
