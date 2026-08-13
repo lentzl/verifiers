@@ -1,0 +1,13 @@
+[project]
+name = "programmatic-episodic-memory-v2"
+version = "0.1.0"
+description = "Executable programmatic episodic-memory tasks for Prime Agent."
+requires-python = ">=3.11"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["programmatic_episodic_memory_v2"]
