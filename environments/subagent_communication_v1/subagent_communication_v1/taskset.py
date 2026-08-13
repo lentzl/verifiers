@@ -119,9 +119,12 @@ def _followup_child_instruction(path: str) -> str:
 
 def _handshake_child_instruction() -> str:
     return (
-        "You are relay-worker, my child. Do not call rlm or message a child. Send "
-        "'need nonce' to your parent, end the turn, then echo the nonce from the "
-        "parent's reply in a second message to your parent."
+        "You are relay-worker, my child. Do not call rlm or message a child. "
+        "agent_message is a Python module, not a direct model tool. In one IPython call execute "
+        "exactly await agent_message.send('need nonce', receiver_role='parent'), then end the turn "
+        "without another tool call. Resume only after a visible [from parent] reply arrives. In one "
+        "IPython call bind its integer body with int(...) and execute await "
+        "agent_message.send(str(nonce), receiver_role='parent'), then stop."
     )
 
 
@@ -258,7 +261,7 @@ def _bidirectional_child_demonstration(
         child_prompt = _handshake_child_instruction()
         child_demo = (
             "A successful Prime Agent relay-worker trajectory is:\n\n"
-            "First execute exactly once:\n"
+            "First execute this IPython cell exactly once:\n"
             "await agent_message.send('need nonce', receiver_role='parent')\n\n"
             "End the turn without polling. After the parent's explicit reply arrives, bind only "
             "its integer body:\n"
@@ -339,12 +342,12 @@ def _bidirectional_turn_demonstrations(
         ]
         child_steps = [
             (
-                "Execute exactly once:\n"
+                "Execute one IPython cell exactly once:\n"
                 "await agent_message.send('need nonce', receiver_role='parent')\n"
                 "Then end the turn without polling or answering the task."
             ),
             (
-                "Bind only the integer body of the visible parent message, then execute once:\n"
+                "Bind only the integer body of the visible parent message, then execute one IPython cell:\n"
                 f"nonce = {answer['nonce']}\n"
                 "await agent_message.send(str(nonce), receiver_role='parent')\n"
                 "Then stop."

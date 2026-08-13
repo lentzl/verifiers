@@ -973,6 +973,8 @@ def test_handshake_family_is_available_without_changing_the_default_mix() -> Non
 
     assert len(tasks) == 4
     assert {task.data.family for task in tasks} == {"handshake"}
+    assert all("agent_message is a Python module, not a direct model tool" in task.data.prompt for task in tasks)
+    assert all("In one IPython call execute exactly" in task.data.prompt for task in tasks)
     assert all("need nonce" in task.data.prompt for task in tasks)
     spawn_prompts = [task.data.prompt.split('rlm("', 1)[1].split('", name=', 1)[0] for task in tasks]
     assert all(str(task.data.followup_secret) not in prompt for task, prompt in zip(tasks, spawn_prompts))
