@@ -20,11 +20,12 @@ router pins a rollout's turns to one engine and its growing prefix stays KV-cach
 
 @dataclass
 class RelayReply:
-    """A relayed upstream response: content type, complete SSE events, and connection cleanup."""
+    """A streamed response: complete SSE events, connection cleanup, and its typed result."""
 
     content_type: str
     chunks: AsyncIterator[bytes]
     close: Callable[[], Awaitable[None]]
+    response: Response | None = None
 
 
 class Client(ABC):
@@ -51,11 +52,14 @@ class Client(ABC):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
-        """Stream a (possibly SSE) response back, relaying the provider's bytes — the proxy's
-        path for a streaming request. Only the relay (eval) client supports it; the renderer
-        generates and cannot stream."""
+        """Return complete SSE events for a streaming request.
+
+        Relay clients forward provider bytes. Renderer clients may synthesize events from a
+        complete response and attach it to the reply so its training tokens survive parsing.
+        """
         raise NotImplementedError(f"{type(self).__name__} does not support streaming")
 
     async def relay_aux(

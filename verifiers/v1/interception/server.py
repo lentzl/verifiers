@@ -531,8 +531,8 @@ class InterceptionServer(Interception):
         tools: list[Tool] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
-        incrementally assembling the response to record on the trace (the only client that
-        streams is the eval relay)."""
+        incrementally assembling the response to record on the trace. Renderer clients attach
+        their complete response so the committed turn retains training tokens."""
         if session.released:  # concluded while this request queued — seal holds
             return web.json_response(
                 dialect.error_body("rollout concluded"), status=409
@@ -569,6 +569,7 @@ class InterceptionServer(Interception):
                     session.ctx.sampling,
                     headers=request.headers,
                     session_id=session.trace.id,
+                    turn=turn,
                 )
             except OverlongPromptError as e:
                 error = e
@@ -668,7 +669,8 @@ class InterceptionServer(Interception):
             try:
                 if parser_error is not None:
                     raise parser_error
-                response = parser.finish()
+                parsed_response = parser.finish()
+                response = reply.response or parsed_response
                 if not session.released:  # concluded mid-stream — seal holds
                     node = turn.commit(response, tools)
                     logger.debug("intercept stream turn: id=%s", session.trace.id)

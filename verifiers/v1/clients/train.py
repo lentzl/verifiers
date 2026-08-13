@@ -15,7 +15,7 @@ from renderers import RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus
 
 from verifiers.v1.clients.base import build_async_openai
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
+from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.configs.client import TrainClientConfig
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
 from verifiers.v1.dialects.chat import message_to_wire
@@ -94,6 +94,47 @@ def serialize_completion(response: Response, model: str) -> dict:
         ],
         "usage": usage,
     }
+
+
+def serialize_stream(response: Response, model: str) -> tuple[bytes, bytes, bytes]:
+    """Serialize one complete renderer response as OpenAI-compatible SSE events."""
+    completion = serialize_completion(response, model)
+    choice = completion["choices"][0]
+    message = choice["message"]
+    delta = {key: value for key, value in message.items() if value is not None}
+    content = {
+        **{
+            key: value
+            for key, value in completion.items()
+            if key not in {"choices", "usage"}
+        },
+        "object": "chat.completion.chunk",
+        "choices": [
+            {
+                "index": choice["index"],
+                "delta": delta,
+                "finish_reason": None,
+            }
+        ],
+    }
+    finish = {
+        "id": completion["id"],
+        "object": "chat.completion.chunk",
+        "created": completion["created"],
+        "model": completion["model"],
+        "choices": [
+            {
+                "index": choice["index"],
+                "delta": {},
+                "finish_reason": choice["finish_reason"],
+            }
+        ],
+        "usage": completion["usage"],
+    }
+    def event(data: dict) -> bytes:
+        return b"data: " + json.dumps(data, separators=(",", ":")).encode() + b"\n\n"
+
+    return event(content), event(finish), b"data: [DONE]\n\n"
 
 
 def response_from_generate(
@@ -437,6 +478,40 @@ class TrainClient(Client):
         # interception server hands `Response.raw` back regardless of client.
         response.raw = serialize_completion(response, model)
         return response
+
+    async def relay(
+        self,
+        dialect: Dialect,
+        body: dict,
+        model: str,
+        sampling_args: SamplingConfig,
+        session_id: str | None = None,
+        turn: PendingTurn | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> RelayReply:
+        response = await self.get_response(
+            dialect,
+            body,
+            model,
+            sampling_args,
+            session_id=session_id,
+            turn=turn,
+            headers=headers,
+        )
+
+        async def chunks() -> AsyncIterator[bytes]:
+            for chunk in serialize_stream(response, model):
+                yield chunk
+
+        async def close() -> None:
+            return None
+
+        return RelayReply(
+            content_type="text/event-stream",
+            chunks=chunks(),
+            close=close,
+            response=response,
+        )
 
     async def close(self) -> None:
         await self.client.close()

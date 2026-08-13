@@ -165,6 +165,7 @@ class EvalClient(Client):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
         # Relay complete SSE events so the interception server can safely insert keepalives
