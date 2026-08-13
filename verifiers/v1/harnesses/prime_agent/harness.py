@@ -1,5 +1,6 @@
 """Run Prime Agent against interception through its native ACP mode."""
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -47,6 +48,7 @@ STATE_ROOT = "/tmp/vf-prime-agent-state"
 # timeout -- surfacing only as an opaque ACP "create" timeout. Keep the socket
 # root short and separate from the (longer) state root.
 TMP_ROOT = "/tmp/vfpa"
+REMOVE_RETRY_DELAYS = (0.05, 0.1, 0.2)
 
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 # Prime Agent's model-facing tool surface is IPython; there is no per-tool
@@ -477,7 +479,9 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             try:
                 result = await runtime.run(command, {})
             except TimeoutError as error:
-                raise infrastructure_error(operation, path, "timed out", removed) from error
+                raise infrastructure_error(
+                    operation, path, "timed out", removed
+                ) from error
             except Exception as error:
                 raise infrastructure_error(
                     operation, path, f"runtime failed: {error}", removed
@@ -499,18 +503,28 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
             return result
 
         async def remove(path: str, label: str, removed: list[str]) -> None:
-            result = await checked_run(
-                ["rm", "-rf", path], f"removal of {label}", path, removed
-            )
-            if result.exit_code != 0:
-                stderr = str(getattr(result, "stderr", "")).strip()[-300:]
-                raise infrastructure_error(
-                    f"removal of {label}",
-                    path,
-                    f"exit {result.exit_code}: {stderr}",
-                    removed,
+            for attempt in range(len(REMOVE_RETRY_DELAYS) + 1):
+                result = await checked_run(
+                    ["rm", "-rf", path], f"removal of {label}", path, removed
                 )
-            removed.append(path)
+                if result.exit_code == 0:
+                    removed.append(path)
+                    return
+
+                stderr = str(getattr(result, "stderr", "")).strip()[-300:]
+                # Node can finish a compile-cache write after its worker has
+                # exited but while rm is traversing TMPDIR. Retry only this
+                # transient race; every other cleanup failure stays fail-closed.
+                if "Directory not empty" not in stderr or attempt == len(
+                    REMOVE_RETRY_DELAYS
+                ):
+                    raise infrastructure_error(
+                        f"removal of {label}",
+                        path,
+                        f"exit {result.exit_code}: {stderr}",
+                        removed,
+                    )
+                await asyncio.sleep(REMOVE_RETRY_DELAYS[attempt])
 
         try:
             # Cleanup is also called after a failed launch, before a daemon ever
@@ -569,7 +583,10 @@ class PrimeAgentHarness(Harness[PrimeAgentHarnessConfig]):
                     ) from error
                 if stopped is None:
                     raise infrastructure_error(
-                        "daemon stop", None, "runtime returned no authoritative result", []
+                        "daemon stop",
+                        None,
+                        "runtime returned no authoritative result",
+                        [],
                     )
                 if getattr(stopped, "timed_out", False):
                     raise infrastructure_error("daemon stop", None, "timed out", [])

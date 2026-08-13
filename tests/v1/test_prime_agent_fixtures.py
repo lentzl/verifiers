@@ -374,6 +374,72 @@ async def test_prime_agent_cleanup_first_deletion_failure_preserves_retry_paths(
 
 
 @pytest.mark.asyncio
+async def test_prime_agent_cleanup_retries_directory_not_empty_race(
+    prime_agent_cleanup, monkeypatch
+):
+    harness, trace = prime_agent_cleanup
+    sleeps = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(
+        "verifiers.v1.harnesses.prime_agent.harness.asyncio.sleep", fake_sleep
+    )
+    runtime = _CleanupRuntime(
+        [
+            _cleanup_result(),
+            _cleanup_result(),
+            _cleanup_result(exit_code=1, stderr="Directory not empty"),
+            _cleanup_result(),
+            _cleanup_result(),
+        ]
+    )
+
+    await harness.cleanup(trace, runtime)
+
+    tmp_dir = harness.tmp_dir(trace)
+    assert [call[0] for call in runtime.calls[2:]] == [
+        ["rm", "-rf", tmp_dir],
+        ["rm", "-rf", tmp_dir],
+        ["rm", "-rf", harness.trace_root(trace)],
+    ]
+    assert sleeps == [0.05]
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_cleanup_bounds_directory_not_empty_retries(
+    prime_agent_cleanup, monkeypatch
+):
+    from verifiers.v1.errors import SandboxError
+
+    harness, trace = prime_agent_cleanup
+    sleeps = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(
+        "verifiers.v1.harnesses.prime_agent.harness.asyncio.sleep", fake_sleep
+    )
+    runtime = _CleanupRuntime(
+        [
+            _cleanup_result(),
+            _cleanup_result(),
+            *[
+                _cleanup_result(exit_code=1, stderr="Directory not empty")
+                for _ in range(4)
+            ],
+        ]
+    )
+
+    with pytest.raises(SandboxError, match="Directory not empty"):
+        await harness.cleanup(trace, runtime)
+
+    assert sleeps == [0.05, 0.1, 0.2]
+
+
+@pytest.mark.asyncio
 async def test_prime_agent_cleanup_second_deletion_failure_reports_partial_cleanup(
     prime_agent_cleanup,
 ):
@@ -552,9 +618,7 @@ def test_default_prime_agent_release_is_a_matching_public_pin():
     assert DEFAULT_TARBALL_SHA256 == (
         "d68612c83239caafab72cc76c55ac572bfd07a059ea8fbd2a3ddbe1f2b55dcdb"
     )
-    assert harness.tarball_url().endswith(
-        "/releases/v0.7.1/prime-agent-0.7.1.tgz"
-    )
+    assert harness.tarball_url().endswith("/releases/v0.7.1/prime-agent-0.7.1.tgz")
 
 
 @pytest.mark.asyncio
