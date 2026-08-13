@@ -14,6 +14,8 @@ import ast
 import datetime
 from typing import Literal
 
+from pydantic import Field
+
 import verifiers.v1 as vf
 from oolong_synth_v1.judge import OolongJudge, OolongJudgeConfig
 
@@ -139,6 +141,10 @@ class OolongSynthConfig(vf.TasksetConfig):
     """Use the label-augmented context window (`context_window_text_with_labels`)."""
     context_len: ContextLen = 262144
     """Which `context_len` (token) bucket to evaluate (default: 256K)."""
+    example_offset: int = Field(0, ge=0)
+    """Skip this many matching examples before materializing tasks."""
+    num_examples: int | None = Field(None, ge=1)
+    """Materialize at most this many matching examples (default: all)."""
     task: OolongSynthTaskConfig = OolongSynthTaskConfig()
 
 
@@ -154,9 +160,16 @@ class OolongSynthTaskset(vf.Taskset[OolongSynthTask, OolongSynthConfig]):
         )
         rows = load_dataset("oolongbench/oolong-synth", split=cfg.split, streaming=True)
         tasks: list[OolongSynthTask] = []
+        matching_index = 0
         for i, row in enumerate(rows):
             if row.get("context_len") != cfg.context_len:
                 continue
+            if matching_index < cfg.example_offset:
+                matching_index += 1
+                continue
+            if cfg.num_examples is not None and len(tasks) >= cfg.num_examples:
+                break
+            matching_index += 1
             answer_type = row.get("answer_type", "")
             if answer_type not in ("ANSWER_TYPE.NUMERIC", "ANSWER_TYPE.DATE"):
                 answer_type = ""

@@ -5,6 +5,9 @@ Oolong synthetic long-context tasks solved by an agent in a sandbox: each task's
 ## Taskset
 
 - **Source:** [oolongbench/oolong-synth](https://huggingface.co/datasets/oolongbench/oolong-synth)
+
+Use `example_offset` and `num_examples` to materialize disjoint slices from a
+context-length bucket for training and evaluation.
 - **Size:** 1300 tasks (`validation` split), filtered at load time to a single `context_len` token bucket (default 262144)
 
 ## Changelog
