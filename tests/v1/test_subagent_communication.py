@@ -1046,7 +1046,8 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     assert "Use three causally separate phases" in followup.data.prompt
     assert "do not message the child until a later resumed coordinator turn" in followup.data.prompt
     assert "[from child:key-worker]` with `need multiplier`" in followup.data.prompt
-    assert "End that cell and turn immediately" in followup.data.prompt
+    assert "exactly `Waiting for key-worker's request.`" in followup.data.prompt
+    assert "exactly `Waiting for key-worker's final result.`" in followup.data.prompt
 
     handshake = SubagentCommunicationTaskset(
         SubagentCommunicationConfig(
@@ -1059,6 +1060,8 @@ def test_guided_tasks_explain_native_contract_without_revealing_answers() -> Non
     assert "Use three causally separate phases" in handshake.data.prompt
     assert "[from child:relay-worker]` with `need nonce`" in handshake.data.prompt
     assert "do not message the child until a later resumed coordinator turn" in handshake.data.prompt
+    assert "exactly `Waiting for relay-worker's request.`" in handshake.data.prompt
+    assert "exactly `Waiting for relay-worker's final echo.`" in handshake.data.prompt
 
     parallel = next(task for task in tasks if task.data.family == "parallel")
     assert "There is no `agent_message.list_messages` API" in parallel.data.prompt
