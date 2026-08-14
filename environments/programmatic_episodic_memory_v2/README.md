@@ -22,3 +22,9 @@ retrieval, state-reuse, error-repair, or event-semantics rule without exposing
 the expected answer. The trace records feedback and final per-request answers,
 so repaired trajectories can receive ordinary RL credit while unrepaired
 attempts retain trustworthy feedback for later conditioned replay.
+
+Set `record_causal_feedback = true` with zero retries for failure-only SDPO.
+The environment records the diagnostic in `trace.info["feedback"]` without
+sending it back to the student, so the sampled branch contains only the
+original attempt. Successful attempts record no feedback and therefore receive
+no SDPO target unless a separate sibling-solution route is configured.

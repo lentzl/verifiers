@@ -417,3 +417,21 @@ def test_behavior_scores_only_final_answers_after_causal_retry() -> None:
     assert behavior["answer_correct"] == 1.0
     assert behavior["causal_feedback_count"] == 1.0
     assert behavior["causal_feedback_repair"] == 1.0
+
+
+def test_causal_feedback_recording_is_opt_in_and_retry_independent() -> None:
+    base = {
+        "dataset_path": "/tmp/memory.jsonl",
+        "split": "train",
+    }
+
+    default = ProgrammaticEpisodicMemoryConfig(**base)
+    recorded = ProgrammaticEpisodicMemoryConfig(
+        **base,
+        record_causal_feedback=True,
+        causal_feedback_retries=0,
+    )
+
+    assert default.record_causal_feedback is False
+    assert recorded.record_causal_feedback is True
+    assert recorded.causal_feedback_retries == 0

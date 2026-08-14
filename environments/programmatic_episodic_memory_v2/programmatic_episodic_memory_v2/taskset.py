@@ -376,6 +376,7 @@ class ProgrammaticEpisodicMemoryConfig(vf.TasksetConfig):
     split: Split
     condition_on_demonstration: bool = False
     causal_feedback_retries: int = Field(0, ge=0, le=2)
+    record_causal_feedback: bool = False
     instance_offset: int = Field(0, ge=0)
     instances_per_family: int | None = Field(None, ge=1)
     offset: int = Field(0, ge=0)
@@ -492,6 +493,17 @@ class ProgrammaticEpisodicMemoryEnv(vf.SingleAgentEnv):
                     if segment.terminated:
                         break
                     answer = segment.last_reply.strip()
+                if self.taskset.config.record_causal_feedback:
+                    feedback = _causal_feedback(
+                        interaction.trace,
+                        task.data,
+                        expected=expected,
+                        call_start=call_start,
+                        turn_index=turn_index,
+                    )
+                    if feedback is not None:
+                        feedback_sent.append(feedback)
+                        interaction.trace.info["feedback"] = feedback
                 final_answers.append(answer)
                 interaction.trace.info["memory_final_answers"] = final_answers
                 interaction.trace.info["memory_causal_feedback"] = feedback_sent
