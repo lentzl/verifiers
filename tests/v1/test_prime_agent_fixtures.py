@@ -254,6 +254,11 @@ def test_prime_agent_installer_bootstraps_https_certificates_and_tools():
     assert "https://astral.sh/uv/${uv_version}/install.sh" in installer
     assert '"uv==$uv_version"' in installer
     assert "both uv installers failed" in installer
+    # npm metadata can be briefly inconsistent across registry edges. Retry
+    # from a clean partial tree without changing the pinned release artifact.
+    assert 'if [ "$npm_attempt" -ge 4 ]' in installer
+    assert 'rm -rf "$staging/node_modules" "$staging/package-lock.json"' in installer
+    assert "npm_retry_delay=$((npm_retry_delay * 2))" in installer
 
 
 def test_prime_agent_installer_handles_musl_without_glibc_download():

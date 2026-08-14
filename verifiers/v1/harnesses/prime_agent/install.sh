@@ -155,7 +155,20 @@ if [ "$actual" != "$digest" ]; then
     exit 1
 fi
 
-npm install --no-audit --no-fund --prefix "$staging" "$staging/prime-agent.tgz" >/dev/null
+npm_attempt=1
+npm_retry_delay=5
+while ! npm install --no-audit --no-fund --prefix "$staging" "$staging/prime-agent.tgz" >/dev/null; do
+    if [ "$npm_attempt" -ge 4 ]; then
+        echo "prime-agent: npm install failed after $npm_attempt attempts" >&2
+        exit 1
+    fi
+    # A failed resolution can leave a partial tree or lockfile that poisons the retry.
+    rm -rf "$staging/node_modules" "$staging/package-lock.json"
+    echo "prime-agent: npm install attempt $npm_attempt failed; retrying in ${npm_retry_delay}s" >&2
+    sleep "$npm_retry_delay"
+    npm_attempt=$((npm_attempt + 1))
+    npm_retry_delay=$((npm_retry_delay * 2))
+done
 rm -f "$staging/prime-agent.tgz"
 printf %s "$digest" > "$staging/.installed"
 
