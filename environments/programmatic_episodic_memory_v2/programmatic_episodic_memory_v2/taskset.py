@@ -11,6 +11,13 @@ from typing import Literal
 from pydantic import Field
 
 import verifiers.v1 as vf
+from programmatic_episodic_memory_v2.feedback import (
+    MemoryFailureDiagnostic,
+    MemoryFailureSignals,
+    diagnose_memory_failure,
+    feedback_contract_payload,
+    render_memory_feedback,
+)
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage, content_text
 
 Split = Literal["train", "familiar_heldout", "semantic_ood"]
@@ -25,29 +32,6 @@ _ERROR_PATTERN = re.compile(
     r"(?:Traceback \(most recent call last\)|\b(?:NameError|TypeError|KeyError|"
     r"FileNotFoundError|SyntaxError|ImportError|ModuleNotFoundError)\b)",
 )
-
-_FAMILY_FEEDBACK = {
-    "accepted_requirement": "Distinguish accepted requirements from merely later proposals or rejections.",
-    "approval_revocation": "Reconstruct the grant/revoke sequence instead of selecting an isolated approval event.",
-    "checkpoint_resume": "Select the latest stable checkpoint, not a later corrupt or merely started checkpoint.",
-    "child_result_verification": "Prefer the result that was explicitly verified after the child disagreement.",
-    "constraint_update": "Apply the latest valid constraint update and account for superseded values.",
-    "context_reset_resume": "Recover the durable state from history rather than guessing from the compacted context.",
-    "correction_aggregate": "Apply every relevant correction as well as the base value and deltas.",
-    "dataset_provenance": "Resolve provenance status from the authoritative event sequence and preserve the requested source detail.",
-    "dependency_next_action": "Follow dependency order and choose the first unfinished or blocked action.",
-    "experiment_best_valid_checkpoint": "Compare scores only among checkpoints whose recorded state is valid.",
-    "latest_state": "Select the latest active state for the requested key.",
-    "multi_key_join": "Join the requested keys from their current records before forming the answer.",
-    "ownership_reclaim": "Track the ownership transition through failure and explicit reclaim.",
-    "provenance_conflict": "Use the latest evidential verdict together with its source, following the requested output contract.",
-    "repeated_lookup_index": "Build the persistent binding index once, then reuse that retained variable for the follow-up.",
-    "research_retraction": "Exclude retracted findings and report the surviving supported result.",
-    "software_debug_resolution": "Select the fix whose later validation resolved the failure.",
-    "stale_note_override": "Treat derived notes as a cache and resolve conflicts against the append-only history.",
-    "successful_attempt": "Filter attempts by recorded outcome and preserve the one that succeeded.",
-}
-
 
 class ProgrammaticEpisodicMemoryData(vf.TaskData):
     split: Split
@@ -252,15 +236,15 @@ def _behavior(
     }
 
 
-def _causal_feedback(
+def _causal_diagnostic(
     trace: vf.Trace,
     data: ProgrammaticEpisodicMemoryData,
     *,
     expected: str,
     call_start: int,
     turn_index: int,
-) -> str | None:
-    """Return diagnostic feedback about the attempt without exposing the answer."""
+) -> MemoryFailureDiagnostic | None:
+    """Extract bounded trace signals and classify one unsuccessful attempt."""
     calls = _ipython_calls(trace)
     current_calls = calls[call_start:]
     current_codes = [source for _, source in current_calls]
@@ -269,72 +253,58 @@ def _causal_feedback(
     answer = answers[-1].strip() if answers else ""
     repeated_followup = data.family == "repeated_lookup_index" and turn_index > 0
 
-    if data.uses_ipython and not current_calls:
-        return (
-            "That attempt did not use the persistent IPython environment. "
-            "Perform the required retrieval or computation, preserve useful state, "
-            "and then answer the same request again."
-        )
-    if not data.uses_ipython and current_calls:
-        return (
-            "The current request is authoritative and self-contained. Do not consult "
-            "older workspace history; answer the same request from the current turn."
-        )
-    if (
-        data.requires_history
-        and not repeated_followup
-        and not any(data.history_path in source for source in current_codes)
-    ):
-        return (
-            "This decision depends on earlier events, but the attempt did not inspect "
-            f"the append-only history at {data.history_path}. Retrieve only the relevant "
-            "events and retry."
-        )
-    if not data.requires_history and any(
-        data.history_path in source for source in current_codes
-    ):
-        return (
-            "The current user turn is the source of truth, so consulting historical "
-            "state can only introduce stale information. Retry without reading history."
-        )
-    if any(
-        _ERROR_PATTERN.search(outputs.get(call_id, "")) for call_id, _ in current_calls
-    ):
-        return (
-            "The attempted operation produced an error. Inspect the actual traceback, "
-            "change the failing operation rather than repeating it, and retry using "
-            "state that was already established successfully."
-        )
-    if sum(len(outputs.get(call_id, "")) for call_id, _ in current_calls) > 4096:
-        return (
-            "The retrieval exposed too much history to the active context. Filter or "
-            "parse it programmatically and retry using only the small relevant slice."
-        )
+    persistent_state_reused: bool | None = None
     if repeated_followup:
         prior_codes = [source for _, source in calls[:call_start]]
         retained = set().union(*(_assigned_names(source) for source in prior_codes))
-        reused = any(
+        persistent_state_reused = any(
             data.history_path not in source and bool(retained & _loaded_names(source))
             for source in current_codes
         )
-        if not reused:
-            return (
-                "The follow-up should reuse the persistent index created during the "
-                "first lookup. Use the retained variable instead of rereading history "
-                "or guessing from kernel names."
-            )
-    if answer == expected:
-        return None
-    if expected.casefold() in answer.casefold():
-        return (
-            "The requested value is present, but the response violates the output "
-            "contract. Retry with only the requested value and no explanation."
-        )
-    guidance = _FAMILY_FEEDBACK.get(
-        data.family,
-        "Apply the task's recorded status, correction, and source-of-truth rules to the retrieved evidence.",
+
+    observation_chars = sum(
+        len(outputs.get(call_id, "")) for call_id, _ in current_calls
     )
-    return f"The answer is not yet supported by the required event semantics. {guidance} Retry the same request."
+    signals = MemoryFailureSignals(
+        family=data.family,
+        turn_index=turn_index,
+        history_path=data.history_path,
+        uses_ipython=data.uses_ipython,
+        requires_history=data.requires_history,
+        repeated_followup=repeated_followup,
+        tool_calls=len(current_calls),
+        history_reads=sum(
+            data.history_path in source for source in current_codes
+        ),
+        observation_chars=observation_chars,
+        tool_error=any(
+            _ERROR_PATTERN.search(outputs.get(call_id, ""))
+            for call_id, _ in current_calls
+        ),
+        persistent_state_reused=persistent_state_reused,
+        answer_exact=answer == expected,
+        expected_value_present=expected.casefold() in answer.casefold(),
+    )
+    return diagnose_memory_failure(signals)
+
+
+def _causal_feedback(
+    trace: vf.Trace,
+    data: ProgrammaticEpisodicMemoryData,
+    *,
+    expected: str,
+    call_start: int,
+    turn_index: int,
+) -> str | None:
+    """Return deterministic answer-free feedback while retaining the legacy API."""
+    diagnostic = _causal_diagnostic(
+        trace,
+        data,
+        expected=expected,
+        call_start=call_start,
+        turn_index=turn_index,
+    )
+    return None if diagnostic is None else render_memory_feedback(diagnostic)
 
 
 class ProgrammaticEpisodicMemoryTask(
@@ -466,6 +436,7 @@ class ProgrammaticEpisodicMemoryEnv(vf.SingleAgentEnv):
             prompts = (None, *task.data.followup_prompts)
             final_answers: list[str] = []
             feedback_sent: list[str] = []
+            feedback_contracts: list[dict] = []
             for turn_index, (prompt, expected) in enumerate(
                 zip(prompts, task.data.expected_answers, strict=True)
             ):
@@ -479,34 +450,45 @@ class ProgrammaticEpisodicMemoryEnv(vf.SingleAgentEnv):
                     break
                 answer = segment.last_reply.strip()
                 for _ in range(self.taskset.config.causal_feedback_retries):
-                    feedback = _causal_feedback(
+                    diagnostic = _causal_diagnostic(
                         interaction.trace,
                         task.data,
                         expected=expected,
                         call_start=call_start,
                         turn_index=turn_index,
                     )
-                    if feedback is None:
+                    if diagnostic is None:
                         break
+                    feedback = render_memory_feedback(diagnostic)
                     feedback_sent.append(feedback)
+                    feedback_contracts.append(
+                        feedback_contract_payload(diagnostic)
+                    )
                     segment = await interaction.turn([UserMessage(content=feedback)])
                     if segment.terminated:
                         break
                     answer = segment.last_reply.strip()
                 if self.taskset.config.record_causal_feedback:
-                    feedback = _causal_feedback(
+                    diagnostic = _causal_diagnostic(
                         interaction.trace,
                         task.data,
                         expected=expected,
                         call_start=call_start,
                         turn_index=turn_index,
                     )
-                    if feedback is not None:
+                    if diagnostic is not None:
+                        feedback = render_memory_feedback(diagnostic)
+                        contract = feedback_contract_payload(diagnostic)
                         feedback_sent.append(feedback)
+                        feedback_contracts.append(contract)
                         interaction.trace.info["feedback"] = feedback
+                        interaction.trace.info["feedback_contract"] = contract
                 final_answers.append(answer)
                 interaction.trace.info["memory_final_answers"] = final_answers
                 interaction.trace.info["memory_causal_feedback"] = feedback_sent
+                interaction.trace.info["memory_causal_feedback_contracts"] = (
+                    feedback_contracts
+                )
 
 
 class ProgrammaticEpisodicMemoryTaskset(

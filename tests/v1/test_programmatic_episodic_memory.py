@@ -1,12 +1,20 @@
 import json
+from types import SimpleNamespace
 
 import pytest
+from programmatic_episodic_memory_v2.feedback import (
+    FEEDBACK_SCHEMA_VERSION,
+    MemoryFailureCode,
+    feedback_contract_payload,
+)
 from programmatic_episodic_memory_v2.taskset import (
     DEMONSTRATION_TEMPLATE,
     ProgrammaticEpisodicMemoryConfig,
     ProgrammaticEpisodicMemoryData,
+    ProgrammaticEpisodicMemoryEnv,
     ProgrammaticEpisodicMemoryTaskset,
     _behavior,
+    _causal_diagnostic,
     _causal_feedback,
 )
 
@@ -376,6 +384,58 @@ def test_causal_feedback_reports_missing_history_without_revealing_answer() -> N
     assert "secret-42" not in feedback
 
 
+def test_trace_adapter_emits_typed_missing_history_contract() -> None:
+    secret = "secret-42"
+    diagnostic = _causal_diagnostic(
+        _trace([("call-1", "print('guess')")], answers=("wrong",)),
+        _data(expected_answers=(secret,)),
+        expected=secret,
+        call_start=0,
+        turn_index=0,
+    )
+
+    assert diagnostic is not None
+    assert diagnostic.code is MemoryFailureCode.REQUIRED_HISTORY_NOT_RETRIEVED
+    payload = feedback_contract_payload(diagnostic)
+    assert payload["schema_version"] == FEEDBACK_SCHEMA_VERSION
+    assert payload["code"] == "required_history_not_retrieved"
+    assert payload["evidence"]["history_reads"] == 0
+    assert secret not in json.dumps(payload, sort_keys=True)
+
+
+def test_trace_adapter_classifies_real_tool_traceback() -> None:
+    diagnostic = _causal_diagnostic(
+        _trace(
+            [
+                (
+                    "call-1",
+                    (
+                        "from pathlib import Path\n"
+                        "Path('/workspace/history.log').read_text()"
+                    ),
+                )
+            ],
+            answers=("wrong",),
+            outputs=(
+                (
+                    "Traceback (most recent call last):\n"
+                    "  File \"<stdin>\", line 1, in <module>\n"
+                    "NameError: name 'missing' is not defined"
+                ),
+            ),
+        ),
+        _data(),
+        expected="42",
+        call_start=0,
+        turn_index=0,
+    )
+
+    assert diagnostic is not None
+    assert diagnostic.code is MemoryFailureCode.TOOL_EXECUTION_ERROR
+    assert diagnostic.tool_error is True
+    assert "actual traceback" in feedback_contract_payload(diagnostic)["message"]
+
+
 def test_causal_feedback_distinguishes_output_contract_from_semantics() -> None:
     trace = _trace(
         [
@@ -435,3 +495,116 @@ def test_causal_feedback_recording_is_opt_in_and_retry_independent() -> None:
     assert default.record_causal_feedback is False
     assert recorded.record_causal_feedback is True
     assert recorded.causal_feedback_retries == 0
+
+
+class _InteractionContext:
+    def __init__(self, interaction) -> None:
+        self.interaction = interaction
+
+    async def __aenter__(self):
+        return self.interaction
+
+    async def __aexit__(self, exc_type, exc, traceback) -> bool:
+        return False
+
+
+class _RecordedFailureInteraction:
+    def __init__(self, trace: vf.Trace, completed_trace: vf.Trace) -> None:
+        self.trace = trace
+        self.completed_trace = completed_trace
+
+    async def turn(self, prompt=None):
+        self.trace.nodes = self.completed_trace.nodes
+        return SimpleNamespace(last_reply="wrong", terminated=False)
+
+
+class _RetryInteraction:
+    def __init__(
+        self,
+        trace: vf.Trace,
+        failed_trace: vf.Trace,
+        repaired_trace: vf.Trace,
+    ) -> None:
+        self.trace = trace
+        self.traces = [failed_trace, repaired_trace]
+        self.replies = ["wrong", "42"]
+
+    async def turn(self, prompt=None):
+        self.trace.nodes = self.traces.pop(0).nodes
+        return SimpleNamespace(last_reply=self.replies.pop(0), terminated=False)
+
+
+@pytest.mark.asyncio
+async def test_environment_records_legacy_and_typed_feedback_without_answer_leak() -> None:
+    secret = "NEVER-LEAK-42"
+    trace = _trace([], answers=())
+    completed_trace = _trace(
+        [("call-1", "print('guess')")], answers=("wrong",)
+    )
+    interaction = _RecordedFailureInteraction(trace, completed_trace)
+    agents = SimpleNamespace(
+        agent=SimpleNamespace(
+            interaction=lambda task: _InteractionContext(interaction)
+        )
+    )
+    env = object.__new__(ProgrammaticEpisodicMemoryEnv)
+    env.taskset = SimpleNamespace(
+        config=ProgrammaticEpisodicMemoryConfig(
+            dataset_path="/tmp/not-read.jsonl",
+            split="train",
+            record_causal_feedback=True,
+            causal_feedback_retries=0,
+        )
+    )
+    task = SimpleNamespace(data=_data(expected_answers=(secret,)))
+
+    await env.run(task, agents)
+
+    contract = trace.info["feedback_contract"]
+    assert trace.info["feedback"] == contract["message"]
+    assert trace.info["memory_causal_feedback"] == [contract["message"]]
+    assert trace.info["memory_causal_feedback_contracts"] == [contract]
+    assert contract["code"] == "required_history_not_retrieved"
+    assert secret not in json.dumps(trace.info, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_retry_feedback_and_contract_lists_remain_aligned() -> None:
+    trace = _trace([], answers=())
+    failed_trace = _trace([("call-1", "print('guess')")], answers=("wrong",))
+    repaired_trace = _trace(
+        [
+            ("call-1", "print('guess')"),
+            (
+                "call-2",
+                (
+                    "from pathlib import Path\n"
+                    "Path('/workspace/history.log').read_text()"
+                ),
+            ),
+        ],
+        answers=("wrong", "42"),
+    )
+    interaction = _RetryInteraction(trace, failed_trace, repaired_trace)
+    agents = SimpleNamespace(
+        agent=SimpleNamespace(
+            interaction=lambda task: _InteractionContext(interaction)
+        )
+    )
+    env = object.__new__(ProgrammaticEpisodicMemoryEnv)
+    env.taskset = SimpleNamespace(
+        config=ProgrammaticEpisodicMemoryConfig(
+            dataset_path="/tmp/not-read.jsonl",
+            split="train",
+            causal_feedback_retries=1,
+        )
+    )
+
+    await env.run(SimpleNamespace(data=_data()), agents)
+
+    feedback = trace.info["memory_causal_feedback"]
+    contracts = trace.info["memory_causal_feedback_contracts"]
+    assert len(feedback) == len(contracts) == 1
+    assert feedback[0] == contracts[0]["message"]
+    assert contracts[0]["code"] == "required_history_not_retrieved"
+    assert trace.info["memory_final_answers"] == ["42"]
