@@ -26,6 +26,28 @@ _ERROR_PATTERN = re.compile(
     r"FileNotFoundError|SyntaxError|ImportError|ModuleNotFoundError)\b)",
 )
 
+_FAMILY_FEEDBACK = {
+    "accepted_requirement": "Distinguish accepted requirements from merely later proposals or rejections.",
+    "approval_revocation": "Reconstruct the grant/revoke sequence instead of selecting an isolated approval event.",
+    "checkpoint_resume": "Select the latest stable checkpoint, not a later corrupt or merely started checkpoint.",
+    "child_result_verification": "Prefer the result that was explicitly verified after the child disagreement.",
+    "constraint_update": "Apply the latest valid constraint update and account for superseded values.",
+    "context_reset_resume": "Recover the durable state from history rather than guessing from the compacted context.",
+    "correction_aggregate": "Apply every relevant correction as well as the base value and deltas.",
+    "dataset_provenance": "Resolve provenance status from the authoritative event sequence and preserve the requested source detail.",
+    "dependency_next_action": "Follow dependency order and choose the first unfinished or blocked action.",
+    "experiment_best_valid_checkpoint": "Compare scores only among checkpoints whose recorded state is valid.",
+    "latest_state": "Select the latest active state for the requested key.",
+    "multi_key_join": "Join the requested keys from their current records before forming the answer.",
+    "ownership_reclaim": "Track the ownership transition through failure and explicit reclaim.",
+    "provenance_conflict": "Use the latest evidential verdict together with its source, following the requested output contract.",
+    "repeated_lookup_index": "Build the persistent binding index once, then reuse that retained variable for the follow-up.",
+    "research_retraction": "Exclude retracted findings and report the surviving supported result.",
+    "software_debug_resolution": "Select the fix whose later validation resolved the failure.",
+    "stale_note_override": "Treat derived notes as a cache and resolve conflicts against the append-only history.",
+    "successful_attempt": "Filter attempts by recorded outcome and preserve the one that succeeded.",
+}
+
 
 class ProgrammaticEpisodicMemoryData(vf.TaskData):
     split: Split
@@ -85,6 +107,18 @@ def _text_answers(trace: vf.Trace) -> list[str]:
     return answers
 
 
+def _observed_answers(trace: vf.Trace, expected: list[str]) -> list[str]:
+    final_answers = trace.info.get("memory_final_answers")
+    if (
+        isinstance(final_answers, list)
+        and len(final_answers) == len(expected)
+        and all(isinstance(answer, str) for answer in final_answers)
+    ):
+        return [answer.strip() for answer in final_answers]
+    answers = _text_answers(trace)
+    return answers[-len(expected) :] if expected else []
+
+
 def _assigned_names(source: str) -> set[str]:
     try:
         tree = ast.parse(source)
@@ -115,9 +149,8 @@ def _behavior(
     calls = _ipython_calls(trace)
     outputs = _tool_outputs(trace)
     codes = [source for _, source in calls]
-    answers = _text_answers(trace)
     expected = list(data.expected_answers)
-    observed = answers[-len(expected) :] if expected else []
+    observed = _observed_answers(trace, expected)
     answer_correct = float(observed == expected)
 
     history_reads = [data.history_path in source for source in codes]
@@ -192,6 +225,8 @@ def _behavior(
         required_components
     )
     dense_reward = 0.9 * dense_core + 0.1 * efficient
+    feedback = trace.info.get("memory_causal_feedback", [])
+    feedback_count = len(feedback) if isinstance(feedback, list) else 0
     return {
         "strict_success": strict_success,
         "dense_reward": dense_reward,
@@ -212,7 +247,94 @@ def _behavior(
         "current_turn_override": float(current_turn_override),
         "efficient_calls": efficient,
         "ipython_calls": float(len(calls)),
+        "causal_feedback_count": float(feedback_count),
+        "causal_feedback_repair": float(feedback_count == 0 or strict_success == 1.0),
     }
+
+
+def _causal_feedback(
+    trace: vf.Trace,
+    data: ProgrammaticEpisodicMemoryData,
+    *,
+    expected: str,
+    call_start: int,
+    turn_index: int,
+) -> str | None:
+    """Return diagnostic feedback about the attempt without exposing the answer."""
+    calls = _ipython_calls(trace)
+    current_calls = calls[call_start:]
+    current_codes = [source for _, source in current_calls]
+    outputs = _tool_outputs(trace)
+    answers = _text_answers(trace)
+    answer = answers[-1].strip() if answers else ""
+    repeated_followup = data.family == "repeated_lookup_index" and turn_index > 0
+
+    if data.uses_ipython and not current_calls:
+        return (
+            "That attempt did not use the persistent IPython environment. "
+            "Perform the required retrieval or computation, preserve useful state, "
+            "and then answer the same request again."
+        )
+    if not data.uses_ipython and current_calls:
+        return (
+            "The current request is authoritative and self-contained. Do not consult "
+            "older workspace history; answer the same request from the current turn."
+        )
+    if (
+        data.requires_history
+        and not repeated_followup
+        and not any(data.history_path in source for source in current_codes)
+    ):
+        return (
+            "This decision depends on earlier events, but the attempt did not inspect "
+            f"the append-only history at {data.history_path}. Retrieve only the relevant "
+            "events and retry."
+        )
+    if not data.requires_history and any(
+        data.history_path in source for source in current_codes
+    ):
+        return (
+            "The current user turn is the source of truth, so consulting historical "
+            "state can only introduce stale information. Retry without reading history."
+        )
+    if any(
+        _ERROR_PATTERN.search(outputs.get(call_id, "")) for call_id, _ in current_calls
+    ):
+        return (
+            "The attempted operation produced an error. Inspect the actual traceback, "
+            "change the failing operation rather than repeating it, and retry using "
+            "state that was already established successfully."
+        )
+    if sum(len(outputs.get(call_id, "")) for call_id, _ in current_calls) > 4096:
+        return (
+            "The retrieval exposed too much history to the active context. Filter or "
+            "parse it programmatically and retry using only the small relevant slice."
+        )
+    if repeated_followup:
+        prior_codes = [source for _, source in calls[:call_start]]
+        retained = set().union(*(_assigned_names(source) for source in prior_codes))
+        reused = any(
+            data.history_path not in source and bool(retained & _loaded_names(source))
+            for source in current_codes
+        )
+        if not reused:
+            return (
+                "The follow-up should reuse the persistent index created during the "
+                "first lookup. Use the retained variable instead of rereading history "
+                "or guessing from kernel names."
+            )
+    if answer == expected:
+        return None
+    if expected.casefold() in answer.casefold():
+        return (
+            "The requested value is present, but the response violates the output "
+            "contract. Retry with only the requested value and no explanation."
+        )
+    guidance = _FAMILY_FEEDBACK.get(
+        data.family,
+        "Apply the task's recorded status, correction, and source-of-truth rules to the retrieved evidence.",
+    )
+    return f"The answer is not yet supported by the required event semantics. {guidance} Retry the same request."
 
 
 class ProgrammaticEpisodicMemoryTask(
@@ -253,6 +375,7 @@ class ProgrammaticEpisodicMemoryConfig(vf.TasksetConfig):
     dataset_path: str
     split: Split
     condition_on_demonstration: bool = False
+    causal_feedback_retries: int = Field(0, ge=0, le=2)
     instance_offset: int = Field(0, ge=0)
     instances_per_family: int | None = Field(None, ge=1)
     offset: int = Field(0, ge=0)
@@ -339,11 +462,39 @@ def _row_to_task(
 class ProgrammaticEpisodicMemoryEnv(vf.SingleAgentEnv):
     async def run(self, task, agents) -> None:
         async with agents.agent.interaction(task) as interaction:
-            segment = await interaction.turn()
-            for prompt in task.data.followup_prompts:
+            prompts = (None, *task.data.followup_prompts)
+            final_answers: list[str] = []
+            feedback_sent: list[str] = []
+            for turn_index, (prompt, expected) in enumerate(
+                zip(prompts, task.data.expected_answers, strict=True)
+            ):
+                call_start = len(_ipython_calls(interaction.trace))
+                segment = (
+                    await interaction.turn()
+                    if prompt is None
+                    else await interaction.turn([UserMessage(content=prompt)])
+                )
                 if segment.terminated:
                     break
-                segment = await interaction.turn([UserMessage(content=prompt)])
+                answer = segment.last_reply.strip()
+                for _ in range(self.taskset.config.causal_feedback_retries):
+                    feedback = _causal_feedback(
+                        interaction.trace,
+                        task.data,
+                        expected=expected,
+                        call_start=call_start,
+                        turn_index=turn_index,
+                    )
+                    if feedback is None:
+                        break
+                    feedback_sent.append(feedback)
+                    segment = await interaction.turn([UserMessage(content=feedback)])
+                    if segment.terminated:
+                        break
+                    answer = segment.last_reply.strip()
+                final_answers.append(answer)
+                interaction.trace.info["memory_final_answers"] = final_answers
+                interaction.trace.info["memory_causal_feedback"] = feedback_sent
 
 
 class ProgrammaticEpisodicMemoryTaskset(

@@ -7,6 +7,7 @@ from programmatic_episodic_memory_v2.taskset import (
     ProgrammaticEpisodicMemoryData,
     ProgrammaticEpisodicMemoryTaskset,
     _behavior,
+    _causal_feedback,
 )
 
 import verifiers.v1 as vf
@@ -357,3 +358,62 @@ def test_history_dump_is_not_selective_retrieval() -> None:
     assert behavior["bounded_retrieval"] == 0.0
     assert behavior["observation_chars"] == 5000.0
     assert behavior["strict_success"] == 0.0
+
+
+def test_causal_feedback_reports_missing_history_without_revealing_answer() -> None:
+    trace = _trace([("call-1", "print('guess')")], answers=("wrong",))
+
+    feedback = _causal_feedback(
+        trace,
+        _data(expected_answers=("secret-42",)),
+        expected="secret-42",
+        call_start=0,
+        turn_index=0,
+    )
+
+    assert feedback is not None
+    assert "append-only history" in feedback
+    assert "secret-42" not in feedback
+
+
+def test_causal_feedback_distinguishes_output_contract_from_semantics() -> None:
+    trace = _trace(
+        [
+            (
+                "call-1",
+                "from pathlib import Path\nPath('/workspace/history.log').read_text()",
+            )
+        ],
+        answers=("The value is 42.",),
+    )
+
+    feedback = _causal_feedback(
+        trace,
+        _data(),
+        expected="42",
+        call_start=0,
+        turn_index=0,
+    )
+
+    assert feedback is not None
+    assert "output contract" in feedback
+
+
+def test_behavior_scores_only_final_answers_after_causal_retry() -> None:
+    trace = _trace(
+        [
+            (
+                "call-1",
+                "from pathlib import Path\nPath('/workspace/history.log').read_text()",
+            )
+        ],
+        answers=("The value is 42.", "42"),
+    )
+    trace.info["memory_final_answers"] = ["42"]
+    trace.info["memory_causal_feedback"] = ["Return only the value."]
+
+    behavior = _behavior(trace, _data())
+
+    assert behavior["answer_correct"] == 1.0
+    assert behavior["causal_feedback_count"] == 1.0
+    assert behavior["causal_feedback_repair"] == 1.0

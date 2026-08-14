@@ -15,3 +15,10 @@ Set `condition_on_demonstration = true` only for the pre-gradient self-teacher
 admission audit. OPSD training should leave the environment unconditioned: the
 algorithm itself prepends the demonstration while scoring the sampled policy
 tokens.
+
+Set `causal_feedback_retries = 1` to give an unsuccessful turn one bounded
+retry with diagnostic environment feedback. Feedback names the violated
+retrieval, state-reuse, error-repair, or event-semantics rule without exposing
+the expected answer. The trace records feedback and final per-request answers,
+so repaired trajectories can receive ordinary RL credit while unrepaired
+attempts retain trustworthy feedback for later conditioned replay.
