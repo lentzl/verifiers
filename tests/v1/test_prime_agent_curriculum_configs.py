@@ -19,7 +19,7 @@ CONFIGS = sorted(
 
 
 def test_prime_agent_supports_required_native_capabilities() -> None:
-    assert PrimeAgentHarnessConfig().version == "0.7.3"
+    assert PrimeAgentHarnessConfig().version == "0.7.2-beta.495.1.97b994c"
     assert PrimeAgentHarness.SUPPORTS_MCP
     assert PrimeAgentHarness.SUPPORTS_RESUME
     assert PrimeAgentHarness.SUPPORTS_SKILLS
@@ -29,7 +29,10 @@ def test_prime_agent_supports_required_native_capabilities() -> None:
 def test_curriculum_uses_official_prime_agent_contract(path: Path) -> None:
     raw = tomllib.load(path.open("rb"))
     harness = raw["env"]["agent"]["harness"]
-    assert harness == {"id": "prime_agent", "version": "0.7.3"}
+    assert harness == {
+        "id": "prime_agent",
+        "version": "0.7.2-beta.495.1.97b994c",
+    }
 
     config = EvalConfig.model_validate(raw)
     assert isinstance(config.env.agent.harness, PrimeAgentHarnessConfig)

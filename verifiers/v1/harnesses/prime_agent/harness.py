@@ -24,6 +24,7 @@ SKILLS_DIR = ".agents/skills"
 PROVIDER = "intercept"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
+DEFAULT_VERSION = "0.7.2-beta.495.1.97b994c"
 
 INSTALL = r"""
 set -e
@@ -37,7 +38,7 @@ curl -fsSL "$VF_PRIME_AGENT_INSTALL_URL" | sh
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    version: str = Field(default="0.7.3", pattern=r"^[A-Za-z0-9._+-]+$")
+    version: str = Field(default=DEFAULT_VERSION, pattern=r"^[A-Za-z0-9._+-]+$")
     """Prime Agent release to install, pinned for reproducibility."""
 
 

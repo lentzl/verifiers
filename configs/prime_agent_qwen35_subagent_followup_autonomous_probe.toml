@@ -32,7 +32,7 @@ max_total_tokens = 65536
 
 [env.agent.harness]
 id = "prime_agent"
-version = "0.7.3"
+version = "0.7.2-beta.495.1.97b994c"
 
 [env.agent.runtime]
 type = "docker"
