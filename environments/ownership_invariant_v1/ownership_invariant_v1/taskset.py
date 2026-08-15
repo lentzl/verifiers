@@ -26,6 +26,13 @@ from subagent_communication_v1.taskset import (
 )
 
 import verifiers.v1 as vf
+from ownership_invariant_v1.feedback import (
+    OwnershipFailureDiagnostic,
+    OwnershipFailureSignals,
+    diagnose_ownership_failure,
+    feedback_contract_payload,
+    render_ownership_feedback,
+)
 
 Ownership = Literal["child", "coordinator"]
 Split = Literal["admission", "heldout_phrasing", "heldout_resource"]
@@ -316,6 +323,8 @@ def _first_decision_behavior(
     keys = (
         "strict_success",
         "dense_reward",
+        "coordinator_ipython_calls",
+        "spawn_calls",
         "first_decision_only",
         "state_retained",
         "state_precedes_spawn",
@@ -437,6 +446,8 @@ def _first_decision_behavior(
     return {
         "strict_success": float(all(components)),
         "dense_reward": dense_reward,
+        "coordinator_ipython_calls": float(len(coordinator_events)),
+        "spawn_calls": float(len(spawns)),
         "first_decision_only": float(first_decision_only),
         "state_retained": float(state_retained),
         "state_precedes_spawn": float(state_precedes_spawn),
@@ -452,6 +463,37 @@ def _first_decision_behavior(
         "post_spawn_action": float(post_spawn_action),
         "direct_answer_accuracy": answer_accuracy,
     }
+
+
+def _ownership_causal_diagnostic(
+    trace: vf.Trace,
+    data: OwnershipInvariantData,
+    yield_policy: YieldPolicy = "literal",
+) -> OwnershipFailureDiagnostic | None:
+    """Classify one failed decision from the verifier's bounded audit atoms."""
+
+    behavior = _first_decision_behavior(trace, data, yield_policy)
+    return diagnose_ownership_failure(
+        OwnershipFailureSignals(
+            ownership=data.ownership,
+            resource_family=data.resource_family,
+            expected_child=data.expected_child,
+            resource_path=data.resource_path,
+            coordinator_ipython_calls=int(behavior["coordinator_ipython_calls"]),
+            spawn_calls=int(behavior["spawn_calls"]),
+            strict_success=behavior["strict_success"] == 1.0,
+            state_retained=behavior["state_retained"] == 1.0,
+            state_precedes_spawn=behavior["state_precedes_spawn"] == 1.0,
+            retained_handle=behavior["retained_handle"] == 1.0,
+            expected_child_selected=behavior["expected_child"] == 1.0,
+            delegated_path=behavior["delegated_path"] == 1.0,
+            parent_path_access=behavior["parent_path_access"] == 1.0,
+            local_state_leaked=behavior["local_state_leaked"] == 1.0,
+            prohibited_control=behavior["prohibited_control"] == 1.0,
+            post_spawn_action=behavior["post_spawn_action"] == 1.0,
+            direct_answer_accurate=behavior["direct_answer_accuracy"] == 1.0,
+        )
+    )
 
 
 class OwnershipInvariantTaskConfig(vf.TaskConfig):
@@ -485,6 +527,7 @@ class OwnershipInvariantConfig(vf.TasksetConfig):
     ownership: Ownership = "child"
     yield_policy: YieldPolicy = "literal"
     instruction_level: InstructionLevel = "standard"
+    record_causal_feedback: bool = False
     families: tuple[ResourceFamily, ...] | None = None
     instances_per_family: int = Field(1, ge=1)
     instance_offset: int = Field(0, ge=0)
@@ -580,3 +623,26 @@ class OwnershipInvariantTaskset(vf.Taskset[OwnershipInvariantTask, OwnershipInva
                     )
                 )
         return tasks
+
+
+class OwnershipInvariantEnv(vf.SingleAgentEnv):
+    """Single-turn ownership environment with opt-in diagnostic recording."""
+
+    async def run(self, task, agents) -> None:
+        async with agents.agent.interaction(task) as interaction:
+            segment = await interaction.turn()
+            if segment.terminated or not self.taskset.config.record_causal_feedback:
+                return
+            diagnostic = _ownership_causal_diagnostic(
+                interaction.trace,
+                task.data,
+                task.config.yield_policy,
+            )
+            if diagnostic is None:
+                return
+            feedback = render_ownership_feedback(diagnostic)
+            contract = feedback_contract_payload(diagnostic)
+            interaction.trace.info["feedback"] = feedback
+            interaction.trace.info["feedback_contract"] = contract
+            interaction.trace.info["ownership_causal_feedback"] = [feedback]
+            interaction.trace.info["ownership_causal_feedback_contracts"] = [contract]

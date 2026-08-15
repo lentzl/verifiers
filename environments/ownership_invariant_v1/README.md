@@ -26,3 +26,18 @@ The frozen splits are:
 Synthetic resources define executable tasks and verifier state only. They are never
 teacher policy. Any privileged SDPO solution must come from a strict native success
 in the same rollout group.
+
+## Causal feedback
+
+`record_causal_feedback = true` enables a separate failure-diagnostic route. After
+one unsuccessful first decision, the environment records a versioned
+`feedback_contract` and its exact natural-language `feedback` in trace metadata.
+The contract contains only task-public resource identifiers and bounded verifier
+atoms such as whether the child handle was retained or the coordinator accessed a
+child-owned path. It never contains the expected result, model code, or a golden
+response. Strict successes receive no feedback target.
+
+This route is intended for feedback-conditioned SDPO with an action filter selecting
+the causally responsible coordinator action. It is not a replacement for native
+successful-sibling SDPO, and normal evaluation remains unchanged unless recording is
+explicitly enabled.
