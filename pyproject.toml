@@ -92,6 +92,7 @@ examples = [
     "oolong-synth-v1",
     "ownership-invariant-v1",
     "prime-agent-foundations-v2",
+    "prime-agent-resilience-v1",
     "programmatic-episodic-memory-v2",
     "subagent-admission-v1",
     "subagent-communication-v1",
@@ -186,6 +187,7 @@ kuhn-poker = { path = "environments/kuhn_poker", editable = true }
 oolong-synth-v1 = { path = "environments/oolong_synth_v1", editable = true }
 ownership-invariant-v1 = { path = "environments/ownership_invariant_v1", editable = true }
 prime-agent-foundations-v2 = { path = "environments/prime_agent_foundations_v2", editable = true }
+prime-agent-resilience-v1 = { path = "environments/prime_agent_resilience_v1", editable = true }
 programmatic-episodic-memory-v2 = { path = "environments/programmatic_episodic_memory_v2", editable = true }
 subagent-admission-v1 = { path = "environments/subagent_admission_v1", editable = true }
 subagent-communication-v1 = { path = "environments/subagent_communication_v1", editable = true }

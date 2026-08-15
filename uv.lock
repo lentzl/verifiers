@@ -3341,6 +3341,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prime-agent-resilience-v1"
+version = "0.1.0"
+source = { editable = "environments/prime_agent_resilience_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "prime-pydantic-config"
 version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
@@ -5225,6 +5233,7 @@ examples = [
     { name = "openenv-wordle" },
     { name = "ownership-invariant-v1" },
     { name = "prime-agent-foundations-v2" },
+    { name = "prime-agent-resilience-v1" },
     { name = "programmatic-episodic-memory-v2" },
     { name = "proposer-solver" },
     { name = "reverse-text" },
