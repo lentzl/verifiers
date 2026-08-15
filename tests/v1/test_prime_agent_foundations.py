@@ -5,6 +5,7 @@ import pytest
 from prime_agent_foundations_v2.taskset import (
     FAMILIES,
     PrimeAgentFoundationsConfig,
+    PrimeAgentFoundationsEnv,
     PrimeAgentFoundationsTaskset,
     _child_cancelled,
     _child_result_delivered,
@@ -16,6 +17,10 @@ from prime_agent_foundations_v2.taskset import (
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolCall, ToolMessage, UserMessage
+
+
+def test_taskset_resolves_its_multiturn_environment() -> None:
+    assert vf.environment_class("prime-agent-foundations-v2") is PrimeAgentFoundationsEnv
 
 
 def _trace(
