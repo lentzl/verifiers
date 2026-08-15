@@ -1,0 +1,52 @@
+# Fresh admission probe for the isolated bidirectional handshake rung.
+
+model = "/ephemeral/subagent-rung/outputs/10-handshake-grpo-r1/weights/step_2"
+num_tasks = 1
+num_rollouts = 4
+shuffle = false
+max_concurrent = 1
+verbose = false
+rich = false
+server = false
+push = false
+output_dir = "/ephemeral/evals/qwen35-subagent-handshake-probe"
+
+[env]
+max_concurrent_agents = 1
+
+[env.taskset]
+id = "subagent-communication-v1"
+split = "train"
+families = ["handshake"]
+instruction_level = "guided"
+instances_per_template = 1
+instance_offset = 20
+seed = 20260902
+
+[env.agent]
+max_turns = 16
+max_output_tokens = 8192
+max_total_tokens = 32768
+
+[env.agent.harness]
+id = "prime_agent"
+version = "0.7.3"
+
+[env.agent.runtime]
+type = "docker"
+image = "python:3.11-slim"
+
+[env.agent.timeout]
+setup = 300.0
+rollout = 240.0
+finalize = 60.0
+scoring = 60.0
+
+[client]
+base_url = "http://127.0.0.1:8000/v1"
+api_key_var = "PRIME_API_KEY"
+type = "eval"
+
+[sampling]
+temperature = 0.8
+max_tokens = 1024

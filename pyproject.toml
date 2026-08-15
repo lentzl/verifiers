@@ -89,6 +89,11 @@ examples = [
     "alphabet-sort",
     "scratchpad",
     "kuhn-poker",
+    "oolong-synth-v1",
+    "ownership-invariant-v1",
+    "programmatic-episodic-memory-v2",
+    "subagent-admission-v1",
+    "subagent-communication-v1",
     "interception",
     "grayscale-interception",
     "bash-interception",
@@ -177,6 +182,11 @@ color-codeword = { path = "environments/color_codeword", editable = true }
 alphabet-sort = { path = "environments/alphabet_sort", editable = true }
 scratchpad = { path = "environments/scratchpad", editable = true }
 kuhn-poker = { path = "environments/kuhn_poker", editable = true }
+oolong-synth-v1 = { path = "environments/oolong_synth_v1", editable = true }
+ownership-invariant-v1 = { path = "environments/ownership_invariant_v1", editable = true }
+programmatic-episodic-memory-v2 = { path = "environments/programmatic_episodic_memory_v2", editable = true }
+subagent-admission-v1 = { path = "environments/subagent_admission_v1", editable = true }
+subagent-communication-v1 = { path = "environments/subagent_communication_v1", editable = true }
 interception = { path = "environments/interception", editable = true }
 grayscale-interception = { path = "environments/grayscale_interception", editable = true }
 bash-interception = { path = "environments/bash_interception", editable = true }

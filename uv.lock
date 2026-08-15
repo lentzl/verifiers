@@ -2901,6 +2901,15 @@ wheels = [
 ]
 
 [[package]]
+name = "oolong-synth-v1"
+version = "0.1.0"
+source = { editable = "environments/oolong_synth_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "python-dateutil" },
+]
+
+[[package]]
 name = "openai"
 version = "2.45.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3151,6 +3160,15 @@ wheels = [
 ]
 
 [[package]]
+name = "ownership-invariant-v1"
+version = "0.1.0"
+source = { editable = "environments/ownership_invariant_v1" }
+dependencies = [
+    { name = "subagent-communication-v1" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "packaging"
 version = "26.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3362,6 +3380,14 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/bf/26/7324b5b9ec117c21fc9320214bf04ecbe9144ee87ef48c7d6d6c3e3d3f7f/prime_tunnel-0.1.10.tar.gz", hash = "sha256:8bf575af659bcc107a98b0b5ec1ba3e958ea72ead535ced03c443134a1ad07ea", size = 15305, upload-time = "2026-06-17T00:01:02.392Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a9/b9/d767b4f6c7ce72b54aaba834b97f97c3c494f1865a37f8b5b9acfb1b2a68/prime_tunnel-0.1.10-py3-none-any.whl", hash = "sha256:6a1cb49a14cfc9622db5cae90665ebe7e7e8cd5d84e963e8c3572bce85288400", size = 16319, upload-time = "2026-06-17T00:01:01.095Z" },
+]
+
+[[package]]
+name = "programmatic-episodic-memory-v2"
+version = "0.1.0"
+source = { editable = "environments/programmatic_episodic_memory_v2" }
+dependencies = [
+    { name = "verifiers" },
 ]
 
 [[package]]
@@ -4659,6 +4685,23 @@ wheels = [
 ]
 
 [[package]]
+name = "subagent-admission-v1"
+version = "0.1.0"
+source = { editable = "environments/subagent_admission_v1" }
+dependencies = [
+    { name = "subagent-communication-v1" },
+    { name = "verifiers" },
+]
+
+[[package]]
+name = "subagent-communication-v1"
+version = "0.1.0"
+source = { editable = "environments/subagent_communication_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "supabase"
 version = "2.31.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5170,10 +5213,15 @@ examples = [
     { name = "gsm8k" },
     { name = "interception" },
     { name = "kuhn-poker" },
+    { name = "oolong-synth-v1" },
     { name = "openenv-wordle" },
+    { name = "ownership-invariant-v1" },
+    { name = "programmatic-episodic-memory-v2" },
     { name = "proposer-solver" },
     { name = "reverse-text" },
     { name = "scratchpad" },
+    { name = "subagent-admission-v1" },
+    { name = "subagent-communication-v1" },
     { name = "web-search-interception" },
     { name = "wiki-search" },
     { name = "wordle" },

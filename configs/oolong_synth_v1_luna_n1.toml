@@ -1,0 +1,35 @@
+# Oolong synth at the 256K context bucket, one Luna rollout (n=1).
+# The taskset exports only OolongSynthTaskset, so this resolves to SingleAgentEnv.
+#
+# Dry-load only (no sandbox/model is launched):
+#   uv run eval @ configs/oolong_synth_v1_luna_n1.toml --dry-run
+model = "openai/gpt-5.6-luna"
+num_tasks = 1
+num_rollouts = 1
+max_concurrent = 1
+push = false
+rich = false
+
+[env.taskset]
+id = "oolong-synth-v1"
+context_len = 1024
+
+[env.agent]
+# Explicit agent caps for a long-context, file-scanning task.
+max_turns = 4
+max_input_tokens = 16384
+max_output_tokens = 2048
+max_total_tokens = 20000
+
+[env.agent.harness]
+id = "prime_agent"
+version = "0.7.3"
+
+[env.agent.runtime]
+type = "prime"
+vm = true
+# VM runtime capacity caps; tune only with an approved run plan.
+cpu = 2
+memory = 4
+disk = 8
+idle_timeout = 1200

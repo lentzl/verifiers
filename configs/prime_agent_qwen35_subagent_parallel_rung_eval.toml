@@ -1,0 +1,51 @@
+# Event-driven held-out direct, single-child, and parallel-child rung admission.
+
+model = "/ephemeral/subagent-rung/outputs/03-parallel-sft-r1/weights/step_24"
+num_tasks = 3
+num_rollouts = 4
+shuffle = false
+max_concurrent = 1
+verbose = false
+rich = false
+server = false
+push = false
+output_dir = "/ephemeral/evals/qwen35-subagent-parallel-rung"
+
+[env]
+max_concurrent_agents = 1
+
+[env.taskset]
+id = "subagent-communication-v1"
+split = "eval"
+families = ["direct", "single", "parallel"]
+instruction_level = "standard"
+instances_per_template = 1
+seed = 20260809
+
+[env.agent]
+max_turns = 24
+max_output_tokens = 16384
+max_total_tokens = 65536
+
+[env.agent.harness]
+id = "prime_agent"
+version = "0.7.3"
+
+[env.agent.runtime]
+type = "docker"
+image = "python:3.11-slim"
+
+[env.agent.timeout]
+setup = 300.0
+rollout = 900.0
+finalize = 60.0
+scoring = 60.0
+
+[client]
+base_url = "http://127.0.0.1:8000/v1"
+api_key_var = "PRIME_API_KEY"
+type = "eval"
+
+[sampling]
+temperature = 0.8
+max_tokens = 2048
