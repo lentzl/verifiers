@@ -3333,6 +3333,14 @@ wheels = [
 ]
 
 [[package]]
+name = "prime-agent-foundations-v2"
+version = "0.1.0"
+source = { editable = "environments/prime_agent_foundations_v2" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "prime-pydantic-config"
 version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
@@ -5216,6 +5224,7 @@ examples = [
     { name = "oolong-synth-v1" },
     { name = "openenv-wordle" },
     { name = "ownership-invariant-v1" },
+    { name = "prime-agent-foundations-v2" },
     { name = "programmatic-episodic-memory-v2" },
     { name = "proposer-solver" },
     { name = "reverse-text" },
