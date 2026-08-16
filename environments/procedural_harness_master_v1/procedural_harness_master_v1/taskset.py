@@ -256,6 +256,9 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
                     poll_positions.append(position)
                     mark("poll", position)
                     mark("discover_child", position)
+                if call_name == "sleep" or call_name.endswith(".sleep"):
+                    poll_positions.append(position)
+                    mark("poll", position)
                 send_succeeded = _message_sent(event.output) or (
                     _is_awaited(statement, call) and not _failed(event.output)
                 )
