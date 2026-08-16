@@ -1191,7 +1191,6 @@ def test_completion_gate_requires_child_evidence_without_embedding_answer_values
     assert "existing child" in failed.stderr
     assert "12" not in source
     assert "84" not in source
-
     request = {
         "type": "custom_message",
         "customType": "agent_message",
@@ -1266,6 +1265,28 @@ def test_completion_gate_requires_child_evidence_without_embedding_answer_values
         timeout=3,
     )
     assert completed_after_delivery.returncode == 0
+
+
+def test_completion_gate_supports_typed_json_without_embedding_values() -> None:
+    source = _completion_gate_source(
+        ("child", "verified", "result"),
+        "direct",
+        expected_types={"child": "int", "verified": "bool", "result": "str"},
+        required_child_messages={"alpha-worker": 1},
+    )
+
+    assert "EXPECTED_TYPES = {'child': 'int', 'verified': 'bool', 'result': 'str'}" in source
+    assert "4915e5513dbd" not in source
+    assert "value_matches_type(final_payload[key], EXPECTED_TYPES[key])" in source
+
+
+def test_completion_gate_rejects_type_keys_that_do_not_match_answer_keys() -> None:
+    with pytest.raises(ValueError, match="types must match"):
+        _completion_gate_source(
+            ("child", "verified"),
+            "direct",
+            expected_types={"child": "int"},
+        )
 
 
 @pytest.mark.asyncio

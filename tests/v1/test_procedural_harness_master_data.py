@@ -85,6 +85,16 @@ def test_reclaim_forbids_parent_access_before_failure() -> None:
     } in contract["ordering"]
 
 
+def test_verify_prompt_distinguishes_digest_evidence_from_final_result() -> None:
+    row = MODULE.generate_episode("train_gen", 5)
+
+    assert row["metadata"]["episode_family"] == "verify"
+    assert "digest is verification evidence only" in row["public"]["user_prompt"]
+    assert "do not put the digest in the final JSON" in row["public"]["user_prompt"]
+    assert row["oracle"]["final_answer"]["child"] == row["oracle"]["final_answer"]["result"]
+    assert row["oracle"]["final_answer"]["verified"] is True
+
+
 def test_train_windows_change_but_frozen_eval_does_not(tmp_path) -> None:
     first, second = tmp_path / "a", tmp_path / "b"
     MODULE.materialize(first, 24, 24, 24, 0, 20260816)

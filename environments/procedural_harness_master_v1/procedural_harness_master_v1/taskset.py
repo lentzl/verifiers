@@ -144,6 +144,24 @@ def _answer_exact(reply: str, expected: Any) -> bool:
         return False
 
 
+def _json_type(value: Any) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, dict):
+        return "dict"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, list):
+        return "list"
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        return "str"
+    raise TypeError(f"unsupported JSON answer type: {type(value).__name__}")
+
+
 def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> dict[str, float]:
     oracle = data.oracle
     contract = oracle["trajectory_contract"]
@@ -402,11 +420,13 @@ class ProceduralHarnessMasterTask(
             count = len(contract) if isinstance(contract, list) else 1
             required_child_messages[child["name"]] = count
         family = "followup" if self.data.family == "followup" else "direct"
+        final_answer = self.data.oracle["final_answer"]
         await runtime.write(
             COMPLETION_GATE_PATH,
             _completion_gate_source(
-                tuple(self.data.oracle["final_answer"]),
+                tuple(final_answer),
                 family,
+                expected_types={key: _json_type(value) for key, value in final_answer.items()},
                 required_child_messages=required_child_messages,
                 feedback=COMPLETION_GATE_FEEDBACK,
             ).encode(),

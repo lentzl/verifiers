@@ -670,6 +670,7 @@ def _completion_gate_source(
     expected_keys: tuple[str, ...],
     family: Family,
     *,
+    expected_types: dict[str, str] | None = None,
     required_child_messages: dict[str, int] | None = None,
     feedback: str | None = None,
 ) -> str:
@@ -681,6 +682,14 @@ def _completion_gate_source(
     }.get(family, {})
     if required_child_messages is None:
         required_child_messages = default_child_messages
+    if expected_types is None:
+        expected_types = dict.fromkeys(expected_keys, "int")
+    if set(expected_types) != set(expected_keys):
+        raise ValueError("completion gate types must match the expected keys")
+    supported_types = {"bool", "dict", "float", "int", "list", "null", "str"}
+    unsupported_types = set(expected_types.values()) - supported_types
+    if unsupported_types:
+        raise ValueError(f"unsupported completion gate types: {sorted(unsupported_types)}")
     if feedback is not None:
         gate_feedback = feedback
     elif family == "followup":
@@ -724,7 +733,7 @@ def _completion_gate_source(
     format_feedback = (
         "completion gate: all required child evidence is already present. Do not call a tool, "
         "inspect state, repeat work, or wait. Return one bare JSON object now with exactly the "
-        f"keys {expected_keys!r} and integer values, with no prose or Markdown fence."
+        f"keys {expected_keys!r} and value types {expected_types!r}, with no prose or Markdown fence."
     )
     return f"""import json
 import os
@@ -733,6 +742,7 @@ import time
 from pathlib import Path
 
 EXPECTED_KEYS = {expected_keys!r}
+EXPECTED_TYPES = {expected_types!r}
 REQUIRED_CHILD_MESSAGES = {required_child_messages!r}
 
 
@@ -785,6 +795,24 @@ def child_message_sender(message):
     if not text.startswith(prefix) or "]" not in text[len(prefix):]:
         return None
     return text[len(prefix):].split("]", 1)[0]
+
+
+def value_matches_type(value, expected_type):
+    if expected_type == "bool":
+        return isinstance(value, bool)
+    if expected_type == "dict":
+        return isinstance(value, dict)
+    if expected_type == "float":
+        return isinstance(value, float)
+    if expected_type == "int":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "list":
+        return isinstance(value, list)
+    if expected_type == "null":
+        return value is None
+    if expected_type == "str":
+        return isinstance(value, str)
+    return False
 
 
 def inspect_sessions():
@@ -847,8 +875,8 @@ def inspect_sessions():
             and isinstance(final_payload, dict)
             and set(final_payload) == set(EXPECTED_KEYS)
             and all(
-                isinstance(value, int) and not isinstance(value, bool)
-                for value in final_payload.values()
+                value_matches_type(final_payload[key], EXPECTED_TYPES[key])
+                for key in EXPECTED_KEYS
             )
         )
     observed = tuple(observed_counts[name] for name in REQUIRED_CHILD_MESSAGES)

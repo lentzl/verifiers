@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 SCHEMA_VERSION = "procedural-harness-master-v1/episode/v1"
-GENERATOR_VERSION = "2026-08-16.v1"
+GENERATOR_VERSION = "2026-08-16.v2"
+# Preserve the frozen task assignments while repairing public contract wording.
+SEED_VERSION = "2026-08-16.v1"
 Split = Literal["train_gen", "valid_gen", "ood_gen"]
 
 SYSTEM_PROMPT = (
@@ -78,7 +80,7 @@ class Resource:
 
 
 def _seed(master: int, split: Split, index: int) -> int:
-    raw = f"{GENERATOR_VERSION}|{master}|{split}|{index}".encode()
+    raw = f"{SEED_VERSION}|{master}|{split}|{index}".encode()
     return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big")
 
 
@@ -247,7 +249,7 @@ def generate_episode(split: Split, index: int, master_seed: int = 20260816) -> d
 
     if family == "verify":
         manifest = root + "/verification.json"; digest = hashlib.sha256(remote.content.encode()).hexdigest()[:12]; files[manifest] = json.dumps({"expected_digest": digest}); own[manifest] = {"owner": "coordinator", "family": "verification_manifest", "operation": "compare child digest to expected_digest"}; children = [_child(names[0], remote, "send JSON with result and 12-char SHA-256 digest")]
-        prompt = f"{_header(style, None)} {names[0]} owns {remote.path} and must {remote.operation} plus report its 12-char SHA-256 digest. Coordinator owns {manifest}; verify before accepting. Never inspect the child resource. Return {SCHEMAS[family]}."
+        prompt = f"{_header(style, None)} {names[0]} owns {remote.path} and must {remote.operation} plus report its 12-char SHA-256 digest. Coordinator owns {manifest}; verify before accepting. The digest is verification evidence only: after it matches, set both child and result to the child's computed resource result, and do not put the digest in the final JSON. Never inspect the child resource. Return {SCHEMAS[family]}."
         req = [f"spawn:{names[0]}", "coordinator_read_verification_manifest", "yield", f"receive:{names[0]}", "verify_child_digest", "final_answer"]; order = [(req[i], req[i + 1]) for i in range(len(req) - 1)]
         oracle = {"expected_route": "single_verify", "final_answer": {"child": remote.result, "verified": True, "result": remote.result}, "resource_ownership": own, "children": children, "fault_plan": {"type": "none", "on_mismatch": "request one correction"}, "trajectory_contract": _contract(req, ["coordinator_read_child_owned", "poll", "accept_unverified_child_result"], order, {"spawn_child": 1})}
         return _row(split, index, seed, family, style, prompt, files, oracle, ["ownership", "single_child", "verification", "fanin"], 4, "verify_after_message")

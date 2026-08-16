@@ -9,7 +9,7 @@
       "start_index": 0
     }
   },
-  "generator_version": "2026-08-16.v1",
+  "generator_version": "2026-08-16.v2",
   "master_seed": 20260816,
   "schema_version": "procedural-harness-master-v1/manifest/v1",
   "splits": {
@@ -41,7 +41,7 @@
         "tsv_total",
         "xml_items"
       ],
-      "sha256": "8352f39406f4c9fa78cc9da822d1b3ca89a0667a6cf6e5824039fe3803ef47bc"
+      "sha256": "0b3cf04a458eb24d70ac4bbdec329807d3cea77ffcbf3c4c7e037a20306e6422"
     },
     "train_gen": {
       "axis_signatures": 464,
@@ -73,7 +73,7 @@
         "sha_prefix",
         "word_count"
       ],
-      "sha256": "446ac265a9d551ba9d79fadc3cdecbe93c501973231169210f783cc56f663c44"
+      "sha256": "5c062d59d056b8b5177982981ff747e795eee5b761afddb895dd4f645af533fe"
     },
     "valid_gen": {
       "axis_signatures": 190,
@@ -104,7 +104,7 @@
         "sha_prefix",
         "word_count"
       ],
-      "sha256": "0ce7c1689236e12175a9f9d91b30b4f2a3440a18f3b61555a87afe7e7e4588fa"
+      "sha256": "6e25413f058fb569e7e73da9411ad9cd8348330283c0ef563210b0e51e3e1390"
     }
   },
   "train_stream": {

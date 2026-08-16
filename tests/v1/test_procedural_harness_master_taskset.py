@@ -1,4 +1,8 @@
+import asyncio
 import json
+import os
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -140,6 +144,72 @@ async def test_setup_materializes_only_public_files() -> None:
     for child in task.data.oracle["children"]:
         assert child["name"] in gate
     assert repr(task.data.oracle["final_answer"]) not in gate
+
+
+@pytest.mark.asyncio
+async def test_verify_completion_gate_accepts_oracle_types_without_oracle_values(
+    tmp_path,
+) -> None:
+    class Runtime:
+        def __init__(self):
+            self.writes = {}
+
+        async def run(self, argv, env):
+            return SimpleNamespace(exit_code=0, stderr="")
+
+        async def write(self, path, data):
+            self.writes[path] = data
+
+    task = _task("verify")
+    runtime = Runtime()
+    await task.setup(None, runtime)
+    gate_source = runtime.writes[COMPLETION_GATE_PATH].decode()
+    final_answer = task.data.oracle["final_answer"]
+    assert "'child': 'int'" in gate_source
+    assert "'verified': 'bool'" in gate_source
+    assert "'result': 'int'" in gate_source
+    assert json.dumps(final_answer) not in gate_source
+
+    agent_dir = tmp_path / "agent"
+    sessions = agent_dir / "sessions"
+    sessions.mkdir(parents=True)
+    child_name = task.data.oracle["children"][0]["name"]
+    entries = [
+        {"type": "session", "rlmDepth": 0},
+        {
+            "type": "custom_message",
+            "customType": "agent_message",
+            "content": f"[from child:{child_name}]\n\nresult",
+            "details": {
+                "id": "agentmsg_verify",
+                "from": {"sessionName": child_name},
+                "fromRelationship": "child",
+            },
+        },
+        {
+            "type": "message",
+            "message": {"role": "assistant", "content": json.dumps(final_answer)},
+        },
+    ]
+    (sessions / "root.jsonl").write_text(
+        "\n".join(json.dumps(entry) for entry in entries) + "\n"
+    )
+    gate = tmp_path / "completion_gate.py"
+    gate.write_text(gate_source)
+    result = await asyncio.to_thread(
+        subprocess.run,
+        [sys.executable, str(gate)],
+        env={
+            **os.environ,
+            "PRIME_AGENT_CODING_AGENT_DIR": str(agent_dir),
+            "VF_PRIME_AGENT_CHILD_EVIDENCE_GRACE_SECONDS": "0",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_direct_complete_trajectory_passes_conjunctive_gate() -> None:
