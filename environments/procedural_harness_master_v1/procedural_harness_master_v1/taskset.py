@@ -31,6 +31,7 @@ import verifiers.v1 as vf
 from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 
 Split = Literal["train_gen", "valid_gen", "ood_gen"]
+CurriculumRung = Literal["atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"]
 COMPLETION_GATE_PATH = "/workspace/.procedural-harness-master/completion_gate.py"
 COMPLETION_GATE_FEEDBACK = (
     "completion gate: the end-to-end coordinator task is not complete. Preserve successful "
@@ -119,8 +120,14 @@ def _incoming_messages(trace: vf.Trace) -> list[tuple[int, str, str]]:
             continue
         text = content_text(node.message.content)
         match = re.match(r"\[from child:([^\]]+)\]", text)
-        if match:
-            messages.append((index, match.group(1), text.rsplit("\n\n", 1)[-1].strip()))
+        if not match:
+            continue
+        body = text.rsplit("\n\n", 1)[-1].strip()
+        explicit_delivery = "Source: agent_message\n" in text
+        injected_failure = "Source: benchmark fault injector\n" in text
+        visible_child_failure = body.startswith("RLM child failure") or "RESOURCE_UNAVAILABLE" in body
+        if explicit_delivery or injected_failure or visible_child_failure:
+            messages.append((index, match.group(1), body))
     return messages
 
 
@@ -258,6 +265,7 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
     local_access_positions: list[tuple[str, float]] = []
     parent_sends: list[tuple[float, str | None]] = []
     aliases: dict[str, str] = {}
+    retained_state_nodes: dict[str, list[int]] = {name: [] for name in state}
 
     for event in coordinator_events:
         try:
@@ -272,6 +280,13 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
             for name, value in state.items():
                 if _assigned_state(statement, name, value):
                     mark("retain_state", position)
+                    retained_state_nodes[name].append(event.node_index)
+                reused_later = any(
+                    isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id == name
+                    for node in ast.walk(statement)
+                ) and any(node_index < event.node_index for node_index in retained_state_nodes[name])
+                if reused_later:
+                    mark(f"reuse_state:{name}", position)
             for call in (node for node in ast.walk(statement) if isinstance(node, ast.Call)):
                 raw_call_name = _dotted_name(call.func) or _call_name(call) or ""
                 call_name = _resolve_alias(raw_call_name, aliases)
@@ -287,6 +302,8 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
                             mark(f"spawn:{child_name}", position)
                         if id(call) in assigned_calls:
                             mark("retain_handle", position)
+                            if child_name:
+                                mark(f"retain_handle:{child_name}", position)
                     if any(path in prompt for path in local_paths):
                         mark("delegate_coordinator_owned", position)
                     if any(name in prompt for name in state):
@@ -495,7 +512,7 @@ class ProceduralHarnessMasterTask(
             contract = child.get("message_contract")
             count = len(contract) if isinstance(contract, list) else 1
             required_child_messages[child["name"]] = count
-        family = "followup" if self.data.family == "followup" else "direct"
+        family = "followup" if self.data.family in {"followup", "atomic_followup"} else "direct"
         final_answer = self.data.oracle["final_answer"]
         await runtime.write(
             COMPLETION_GATE_PATH,
@@ -527,6 +544,7 @@ class ProceduralHarnessMasterConfig(vf.TasksetConfig):
     start_index: int = Field(0, ge=0)
     master_seed: int = 20260816
     families: tuple[str, ...] | None = None
+    curriculum_rung: CurriculumRung | None = None
 
 
 class ProceduralHarnessMasterTaskset(
@@ -534,10 +552,15 @@ class ProceduralHarnessMasterTaskset(
 ):
     def load(self) -> list[ProceduralHarnessMasterTask]:
         generator = _generator()
+        if self.config.curriculum_rung is not None and self.config.families is not None:
+            raise ValueError("curriculum_rung and families are mutually exclusive")
         tasks = []
         index = self.config.start_index
         while len(tasks) < self.config.count:
-            row = generator.generate_episode(self.config.split, index, self.config.master_seed)
+            if self.config.curriculum_rung is None:
+                row = generator.generate_episode(self.config.split, index, self.config.master_seed)
+            else:
+                row = generator.generate_curriculum_episode(self.config.curriculum_rung, self.config.split, index, self.config.master_seed)
             index += 1
             family = row["metadata"]["episode_family"]
             if self.config.families is not None and family not in self.config.families:

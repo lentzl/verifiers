@@ -24,6 +24,12 @@ def _task(family: str, split: str = "train_gen"):
     ).load()[0]
 
 
+def _curriculum_task(rung: str, split: str = "train_gen"):
+    return ProceduralHarnessMasterTaskset(
+        ProceduralHarnessMasterConfig(split=split, count=1, curriculum_rung=rung)
+    ).load()[0]
+
+
 def _cell(nodes, parent: int, code: str, output: str = "") -> int:
     call_id = f"call-{len(nodes)}"
     nodes.append(
@@ -62,6 +68,23 @@ def _incoming(nodes, parent: int, child: str, body: str) -> int:
                     "Agent-to-agent message received.\n"
                     "Source: agent_message\n"
                     f"Message id: msg-{len(nodes)}\n\n{body}"
+                )
+            ),
+            sampled=False,
+        )
+    )
+    return len(nodes) - 1
+
+
+def _child_completion_notice(nodes, parent: int, child: str, body: str) -> int:
+    nodes.append(
+        MessageNode(
+            parent=parent,
+            message=UserMessage(
+                content=(
+                    f"[from child:{child}]\n"
+                    "RLM child completed without sending a reply. "
+                    f"Last assistant text: {body}"
                 )
             ),
             sampled=False,
@@ -309,6 +332,96 @@ def test_natural_followup_request_and_silent_awaited_send_pass() -> None:
     assert behavior["all_required_atoms"] == 1.0
     assert behavior["ordering_satisfied"] == 1.0
     assert behavior["cardinality_exact"] == 1.0
+
+
+def test_child_completion_notice_does_not_satisfy_explicit_message_contract() -> None:
+    task = _task("single")
+    child = task.data.oracle["children"][0]
+    nodes = [MessageNode(parent=None, message=UserMessage(content="task"), sampled=False)]
+    parent = _cell(nodes, 0, _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')")
+    parent = _child_completion_notice(nodes, parent, child["name"], f"The result is {child['expected_result']}")
+    nodes.append(MessageNode(parent=parent, message=AssistantMessage(content=json.dumps(task.data.oracle["final_answer"])), sampled=True))
+    trace = vf.Trace(
+        id="procedural-completion-notice-test",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type=type(task).__name__, data=task.data),
+        nodes=nodes,
+    )
+    behavior = _contract_behavior(trace, task.data)
+    assert behavior["final_answer_exact"] == 1.0
+    assert behavior["all_required_atoms"] == 0.0
+    assert behavior["cardinality_exact"] == 0.0
+    assert behavior["harness_score"] == 0.0
+
+
+@pytest.mark.parametrize("rung", ["atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"])
+def test_atomic_curriculum_rungs_require_complete_real_message_trajectories(rung: str) -> None:
+    task = _curriculum_task(rung)
+    children = task.data.oracle["children"]
+    if rung == "atomic_state":
+        state_name, state_value = next(iter(task.data.oracle["coordinator_state"].items()))
+        expected_result = task.data.oracle["final_answer"]["result"]
+        actions = [
+            ("cell", f"{state_name} = {state_value}"),
+            ("cell", f"result = {state_name} + {expected_result - state_value}\nprint(result)"),
+        ]
+        behavior = _contract_behavior(_trace(task, actions), task.data)
+        assert behavior["harness_score"] == 1.0, behavior
+        assert task.data.workspace_files == {}
+        assert task.data.generation_metadata["curriculum_rung"] == rung
+        return
+
+    state_lines = [f"{name} = {value!r}" for name, value in task.data.oracle.get("coordinator_state", {}).items()]
+    spawn_lines = [
+        f"handle_{index} = await rlm('execute the assigned task and send to parent', name={child['name']!r})"
+        for index, child in enumerate(children)
+    ]
+    actions = [("cell", "\n".join(state_lines + spawn_lines), "\n".join(f"RLMSpawnHandle(name='{child['name']}')" for child in children))]
+    if rung == "atomic_followup":
+        child = children[0]
+        actions.extend([
+            ("incoming", child["name"], "need multiplier"),
+            (
+                "cell",
+                f"await agent_message.send(str(multiplier), receiver_role='child', receiver_name={child['name']!r})",
+                "Agent message sent: agentmsg-followup",
+            ),
+            ("incoming", child["name"], str(child["expected_result"])),
+        ])
+    else:
+        for child in reversed(children):
+            actions.append(("incoming", child["name"], str(child["expected_result"])))
+    behavior = _contract_behavior(_trace(task, actions), task.data)
+    assert behavior["harness_score"] == 1.0, behavior
+    assert task.data.workspace_files == {}
+    assert task.data.generation_metadata["curriculum_rung"] == rung
+
+
+def test_atomic_state_rejects_assignment_and_reuse_in_one_ipython_call() -> None:
+    task = _curriculum_task("atomic_state")
+    state_name, state_value = next(iter(task.data.oracle["coordinator_state"].items()))
+    expected_result = task.data.oracle["final_answer"]["result"]
+    actions = [("cell", f"{state_name} = {state_value}\nresult = {state_name} + {expected_result - state_value}\nprint(result)")]
+    behavior = _contract_behavior(_trace(task, actions), task.data)
+    assert behavior["all_required_atoms"] == 0.0
+    assert behavior["harness_score"] == 0.0
+
+
+def test_atomic_parallel_requires_retaining_both_child_handles() -> None:
+    task = _curriculum_task("atomic_parallel")
+    first, second = task.data.oracle["children"]
+    actions = [
+        (
+            "cell",
+            f"handle = await rlm('send result', name={first['name']!r})\nawait rlm('send result', name={second['name']!r})",
+            f"RLMSpawnHandle(name='{first['name']}')\nRLMSpawnHandle(name='{second['name']}')",
+        ),
+        ("incoming", second["name"], str(second["expected_result"])),
+        ("incoming", first["name"], str(first["expected_result"])),
+    ]
+    behavior = _contract_behavior(_trace(task, actions), task.data)
+    assert behavior["all_required_atoms"] == 0.0
+    assert behavior["harness_score"] == 0.0
 
 
 @pytest.mark.asyncio

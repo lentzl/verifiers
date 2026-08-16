@@ -22,6 +22,29 @@ def test_generation_is_deterministic() -> None:
     )
 
 
+def test_atomic_curriculum_generation_is_deterministic_and_oracle_hidden() -> None:
+    for rung in ("atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"):
+        for split in ("train_gen", "valid_gen", "ood_gen"):
+            row = MODULE.generate_curriculum_episode(rung, split, 17)
+            assert row == MODULE.generate_curriculum_episode(rung, split, 17)
+            MODULE.validate_row(row)
+            assert row["generator_version"] == MODULE.CURRICULUM_VERSION
+            assert row["metadata"]["curriculum_rung"] == rung
+            assert row["metadata"]["episode_family"] == rung
+            assert row["public"]["workspace_files"] == {}
+            assert row["oracle"]["resource_ownership"] == {}
+            assert all(child["resource_path"] is None for child in row["oracle"]["children"])
+            assert "reasoning_content" not in json.dumps(row)
+            assert "trajectory_contract" not in json.dumps(row["public"])
+            assert "final_answer" not in json.dumps(row["public"])
+
+
+def test_default_generation_does_not_select_curriculum() -> None:
+    row = MODULE.generate_episode("train_gen", 17)
+    assert "curriculum_rung" not in row["metadata"]
+    assert row["metadata"]["episode_family"] in MODULE.TRAIN_FAMILIES
+
+
 def test_split_surfaces_are_separated() -> None:
     train = [MODULE.generate_episode("train_gen", i) for i in range(96)]
     valid = [MODULE.generate_episode("valid_gen", i) for i in range(96)]

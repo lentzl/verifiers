@@ -21,6 +21,8 @@ GENERATOR_VERSION = "2026-08-16.v2"
 # Preserve the frozen task assignments while repairing public contract wording.
 SEED_VERSION = "2026-08-16.v1"
 Split = Literal["train_gen", "valid_gen", "ood_gen"]
+CurriculumRung = Literal["atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"]
+CURRICULUM_VERSION = "2026-08-16.harness-actions-v1"
 
 SYSTEM_PROMPT = (
     "Coordinate through Prime Agent's persistent IPython kernel. Solve directly when "
@@ -67,6 +69,10 @@ SCHEMAS = {
     "verify": '{"child": <value>, "verified": true, "result": <value>}',
     "triple": '{"alpha": <value>, "beta": <value>, "gamma": <value>, "offset": <integer>, "result": <value>}',
     "reclaim": '{"reclaimed": true, "result": <value>}',
+    "atomic_state": '{"marker": <integer>, "result": <integer>}',
+    "atomic_send": '{"value": <integer>}',
+    "atomic_followup": '{"multiplier": <integer>, "result": <integer>}',
+    "atomic_parallel": '{"alpha": <integer>, "beta": <integer>, "result": <integer>}',
 }
 
 
@@ -200,6 +206,97 @@ def _row(split: Split, index: int, seed: int, family: str, style: str, prompt: s
     return {"schema_version": SCHEMA_VERSION, "generator_version": GENERATOR_VERSION, "episode_id": eid, "split": split, "index": index, "seed": seed, "public": {"system_prompt": SYSTEM_PROMPT, "user_prompt": prompt, "workspace_files": files}, "oracle": oracle, "metadata": metadata}
 
 
+def generate_curriculum_episode(rung: CurriculumRung, split: Split, index: int, master_seed: int = 20260816) -> dict[str, Any]:
+    raw_seed = f"{CURRICULUM_VERSION}|{master_seed}|{rung}|{split}|{index}".encode()
+    seed = int.from_bytes(hashlib.sha256(raw_seed).digest()[:8], "big")
+    rng = random.Random(seed); style = rng.choice(STYLES[split]); names = rng.sample(list(CHILD_NAMES[split]), 2)
+    children: list[dict[str, Any]] = []
+
+    if rung == "atomic_state":
+        state_name = rng.choice(STATE_NAMES[split]); state_value = rng.randint(2, 19); increment = rng.randint(2, 9)
+        prompt = (
+            f"Use persistent IPython state across exactly two calls. In the first call, assign {state_name}={state_value} and do nothing else. "
+            f"In a later IPython call, read that retained variable, add {increment}, and print the result. Do not delegate, poll, or combine the two calls. "
+            f"Return {SCHEMAS[rung]}."
+        )
+        oracle = {
+            "expected_route": "direct", "final_answer": {"marker": state_value, "result": state_value + increment},
+            "coordinator_state": {state_name: state_value}, "resource_ownership": {}, "children": [], "fault_plan": {"type": "none"},
+            "trajectory_contract": _contract(
+                ["retain_state", f"reuse_state:{state_name}", "final_answer"], ["spawn_child", "poll", "discover_child"],
+                [("retain_state", f"reuse_state:{state_name}"), (f"reuse_state:{state_name}", "final_answer")],
+                {"spawn_child": 0, "parent_to_child_message": 0},
+            ),
+        }
+        atoms = ["persistent_state", "later_cell_reuse", "nondelegation"]; timing = "two_ipython_cells"
+    elif rung == "atomic_send":
+        left, right = rng.randint(2, 19), rng.randint(2, 19); value = left + right
+        children.append({"name": names[0], "resource_path": None, "operation": f"compute {left} + {right}", "expected_result": value, "message_contract": "send result once to parent"})
+        prompt = (
+            f"{names[0]} owns the calculation {left} + {right}. Spawn exactly that named child with a self-contained instruction to compute it and execute an awaited "
+            "agent_message.send to parent with the integer result. Retain the child handle, end the turn after spawning, and react only to its explicit message. "
+            f"Never poll, sleep, observe, or discover children. Return {SCHEMAS[rung]}."
+        )
+        required = [f"spawn:{names[0]}", f"retain_handle:{names[0]}", "yield", f"receive:{names[0]}", "final_answer"]
+        oracle = {
+            "expected_route": "atomic_send", "final_answer": {"value": value}, "resource_ownership": {}, "children": children, "fault_plan": {"type": "none"},
+            "trajectory_contract": _contract(
+                required, ["poll", "discover_child"],
+                [(f"spawn:{names[0]}", "yield"), (f"retain_handle:{names[0]}", "yield"), ("yield", f"receive:{names[0]}"), (f"receive:{names[0]}", "final_answer")],
+                {"spawn_child": 1, "child_result_message": 1, "parent_to_child_message": 0},
+            ),
+        }
+        atoms = ["spawn", "retain_handle", "yield", "child_to_parent"]; timing = "one_resume_cycle"
+    elif rung == "atomic_followup":
+        multiplier = rng.randint(2, 19)
+        children.append({
+            "name": names[0], "resource_path": None, "operation": "request and echo the retained multiplier", "expected_result": multiplier,
+            "message_contract": ["send 'need multiplier' to parent", "after reply send multiplier as result"],
+        })
+        prompt = (
+            f"Retain multiplier={multiplier} in coordinator state. Spawn exactly one named child, {names[0]}, instructing it to execute an awaited agent_message.send "
+            "asking for the multiplier, then after your reply execute a second awaited send with that integer. End each waiting turn immediately; never poll, sleep, "
+            f"observe, or discover children. Return {SCHEMAS[rung]} only after the second explicit child message."
+        )
+        required = ["retain_state", f"spawn:{names[0]}", f"retain_handle:{names[0]}", "yield", f"receive_request:{names[0]}", f"send_followup:{names[0]}", "yield_after_followup", f"receive_result:{names[0]}", "final_answer"]
+        ordering = [
+            ("retain_state", f"spawn:{names[0]}"), (f"spawn:{names[0]}", "yield"), (f"retain_handle:{names[0]}", "yield"),
+            ("yield", f"receive_request:{names[0]}"), (f"receive_request:{names[0]}", f"send_followup:{names[0]}"),
+            (f"send_followup:{names[0]}", "yield_after_followup"), ("yield_after_followup", f"receive_result:{names[0]}"),
+            (f"receive_result:{names[0]}", "final_answer"),
+        ]
+        oracle = {
+            "expected_route": "atomic_followup", "final_answer": {"multiplier": multiplier, "result": multiplier},
+            "coordinator_state": {"multiplier": multiplier}, "resource_ownership": {}, "children": children, "fault_plan": {"type": "none"},
+            "trajectory_contract": _contract(required, ["poll", "discover_child", "guess_followup_value"], ordering, {"spawn_child": 1, "parent_to_child_message": 1, "child_to_parent_message": 2}),
+        }
+        atoms = ["state", "spawn", "yield", "child_to_parent", "parent_to_child", "resume"]; timing = "two_resume_cycles"
+    elif rung == "atomic_parallel":
+        values = [rng.randint(2, 19), rng.randint(2, 19)]
+        for name, value in zip(names, values, strict=True):
+            children.append({"name": name, "resource_path": None, "operation": f"return the owned integer {value}", "expected_result": value, "message_contract": "send result once to parent"})
+        prompt = (
+            f"{names[0]} owns integer {values[0]}; {names[1]} owns integer {values[1]}. Spawn both named children in separate calls before waiting. Each child must execute "
+            "an awaited agent_message.send to parent with its integer. Retain both handles, end the turn, and never poll, sleep, observe, or discover children. "
+            f"Return {SCHEMAS[rung]} after both explicit messages."
+        )
+        required = [f"spawn:{names[0]}", f"spawn:{names[1]}", f"retain_handle:{names[0]}", f"retain_handle:{names[1]}", "yield"] + [f"receive:{name}" for name in names] + ["final_answer"]
+        ordering = [(f"spawn:{name}", "yield") for name in names] + [("yield", f"receive:{name}") for name in names] + [(f"receive:{name}", "final_answer") for name in names]
+        oracle = {
+            "expected_route": "atomic_parallel", "final_answer": {"alpha": values[0], "beta": values[1], "result": sum(values)},
+            "resource_ownership": {}, "children": children, "fault_plan": {"type": "none", "delivery_order": list(reversed(names))},
+            "trajectory_contract": _contract(required, ["poll", "discover_child", "serialized_fanout_wait"], ordering, {"spawn_child": 2, "child_result_message": 2, "parent_to_child_message": 0}),
+        }
+        atoms = ["parallel", "spawn", "retain_handle", "yield", "child_to_parent", "fanin"]; timing = "reverse_delivery"
+    else:
+        raise ValueError(f"unknown curriculum rung {rung}")
+
+    row = _row(split, index, seed, rung, style, prompt, {}, oracle, atoms, 1, timing)
+    row["generator_version"] = CURRICULUM_VERSION; row["metadata"]["curriculum_rung"] = rung
+    row["metadata"]["axis_signature"] = hashlib.sha256(json.dumps(row["metadata"], sort_keys=True).encode()).hexdigest()[:16]
+    return row
+
+
 def generate_episode(split: Split, index: int, master_seed: int = 20260816) -> dict[str, Any]:
     seed = _seed(master_seed, split, index); rng = random.Random(seed); root = _root(split, index, rng)
     family = (OOD_FAMILIES if split == "ood_gen" else TRAIN_FAMILIES)[index % (8 if split == "ood_gen" else 6)]
@@ -272,8 +369,12 @@ def validate_row(row: dict[str, Any]) -> None:
     if set(contract["required_atoms"]) & set(contract["forbidden_atoms"]): raise ValueError("contradictory contract")
     if oracle["expected_route"] == "direct" and oracle["children"]: raise ValueError("direct route has children")
     if oracle["expected_route"] != "direct" and not oracle["children"]: raise ValueError("delegated route lacks children")
+    is_curriculum = "curriculum_rung" in row["metadata"]
     for child in oracle["children"]:
-        if child["resource_path"] not in files or not own[child["resource_path"]]["owner"].startswith("child:"):
+        path = child["resource_path"]
+        if path is None and is_curriculum:
+            continue
+        if path not in files or not own[path]["owner"].startswith("child:"):
             raise ValueError("invalid child resource ownership")
     if not all(contract["hard_gate"].values()): raise ValueError("hard gate must be conjunctive")
 
