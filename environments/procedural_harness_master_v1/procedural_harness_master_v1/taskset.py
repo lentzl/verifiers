@@ -237,6 +237,7 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
                     "agent_message.list_messages",
                 }:
                     poll_positions.append(position)
+                    mark("poll", position)
                     mark("discover_child", position)
                 if call_name == "agent_message.send" and _message_sent(event.output):
                     receiver = _keyword(call, "receiver_name")

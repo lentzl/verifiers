@@ -282,7 +282,19 @@ def test_environment_variable_counts_as_retained_coordinator_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_reward_is_bounded_and_forbidden_actions_get_no_shaping() -> None:
+@pytest.mark.parametrize(
+    "poll_call",
+    [
+        "await agent_observe.run()",
+        "await rlm.list_subagents()",
+        "await agent_message.list_agents()",
+        "await agent_message.recv()",
+        "await agent_message.list_messages()",
+    ],
+)
+async def test_bootstrap_reward_is_bounded_and_forbidden_actions_get_no_shaping(
+    poll_call: str,
+) -> None:
     task = _task("single")
     task.config.reward_mode = "bootstrap"
     child = task.data.oracle["children"][0]
@@ -295,10 +307,13 @@ async def test_bootstrap_reward_is_bounded_and_forbidden_actions_get_no_shaping(
 
     violating_actions = [
         ("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')"),
-        ("cell", "await agent_observe.run()"),
+        ("cell", poll_call),
         ("incoming", child["name"], str(child["expected_result"])),
     ]
     violating_trace = _trace(task, violating_actions)
+    behavior = _contract_behavior(violating_trace, task.data)
+    assert behavior["no_forbidden_atoms"] == 0.0
+    assert behavior["bootstrap_progress"] == 0.0
     assert await task.harness_score(violating_trace) == 0.0
 
 
