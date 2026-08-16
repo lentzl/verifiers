@@ -160,6 +160,7 @@ def test_answer_correct_shortcut_fails_required_trajectory_gate() -> None:
     assert behavior["final_answer_exact"] == 1.0
     assert behavior["all_required_atoms"] == 0.0
     assert behavior["harness_score"] == 0.0
+    assert behavior["bootstrap_progress"] == 0.0
 
 
 def test_single_complete_trajectory_passes_and_parent_resource_read_fails() -> None:
@@ -208,6 +209,27 @@ def test_environment_variable_counts_as_retained_coordinator_state() -> None:
     behavior = _contract_behavior(_trace(task, actions), task.data)
 
     assert behavior["harness_score"] == 1.0, behavior
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_reward_is_bounded_and_forbidden_actions_get_no_shaping() -> None:
+    task = _task("single")
+    task.config.reward_mode = "bootstrap"
+    child = task.data.oracle["children"][0]
+    clean_actions = [
+        ("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')"),
+        ("incoming", child["name"], str(child["expected_result"])),
+    ]
+    clean_trace = _trace(task, clean_actions)
+    assert await task.harness_score(clean_trace) == pytest.approx(1.1)
+
+    violating_actions = [
+        ("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')"),
+        ("cell", "await agent_observe.run()"),
+        ("incoming", child["name"], str(child["expected_result"])),
+    ]
+    violating_trace = _trace(task, violating_actions)
+    assert await task.harness_score(violating_trace) == 0.0
 
 
 @pytest.mark.parametrize("family", ["parallel", "mixed", "followup", "verify"])

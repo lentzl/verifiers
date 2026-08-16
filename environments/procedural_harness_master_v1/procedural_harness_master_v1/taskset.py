@@ -323,6 +323,24 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
         if counts[key] != expected
     ]
     required_fraction = (len(required) - len(missing)) / len(required) if required else 1.0
+    ordering_fraction = (
+        (len(contract["ordering"]) - len(ordering_failures)) / len(contract["ordering"])
+        if contract["ordering"]
+        else 1.0
+    )
+    cardinality_fraction = (
+        (len(contract["cardinality"]) - len(cardinality_failures))
+        / len(contract["cardinality"])
+        if contract["cardinality"]
+        else 1.0
+    )
+    bootstrap_progress = (
+        float(final_exact)
+        * float(not violations)
+        * required_fraction
+        * ordering_fraction
+        * cardinality_fraction
+    )
     hard_gate = bool(
         final_exact
         and not missing
@@ -338,6 +356,9 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
         "ordering_satisfied": float(not ordering_failures),
         "cardinality_exact": float(not cardinality_failures),
         "required_atoms_fraction": required_fraction,
+        "ordering_fraction": ordering_fraction,
+        "cardinality_fraction": cardinality_fraction,
+        "bootstrap_progress": bootstrap_progress,
         "missing_required_atoms": float(len(missing)),
         "forbidden_atom_violations": float(len(violations)),
         "ordering_failures": float(len(ordering_failures)),
@@ -346,8 +367,12 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
     }
 
 
+class ProceduralHarnessMasterTaskConfig(vf.TaskConfig):
+    reward_mode: Literal["hard", "bootstrap"] = "hard"
+
+
 class ProceduralHarnessMasterTask(
-    vf.Task[ProceduralHarnessMasterData, vf.State, vf.TaskConfig]
+    vf.Task[ProceduralHarnessMasterData, vf.State, ProceduralHarnessMasterTaskConfig]
 ):
     NEEDS_CONTAINER = True
 
@@ -389,7 +414,10 @@ class ProceduralHarnessMasterTask(
 
     @vf.reward(weight=1.0)
     async def harness_score(self, trace: vf.Trace) -> float:
-        return _contract_behavior(trace, self.data)["harness_score"]
+        behavior = _contract_behavior(trace, self.data)
+        if self.config.reward_mode == "bootstrap":
+            return behavior["harness_score"] + 0.1 * behavior["bootstrap_progress"]
+        return behavior["harness_score"]
 
     @vf.metric
     async def harness_contract(self, trace: vf.Trace) -> dict[str, float]:
@@ -397,6 +425,7 @@ class ProceduralHarnessMasterTask(
 
 
 class ProceduralHarnessMasterConfig(vf.TasksetConfig):
+    task: ProceduralHarnessMasterTaskConfig = ProceduralHarnessMasterTaskConfig()
     split: Split = "train_gen"
     count: int = Field(64, ge=1)
     start_index: int = Field(0, ge=0)
