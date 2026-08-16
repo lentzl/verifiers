@@ -141,6 +141,51 @@ def _is_awaited(statement: ast.stmt, call: ast.Call) -> bool:
     )
 
 
+def _dotted_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _dotted_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else None
+    return None
+
+
+def _resolve_alias(name: str, aliases: dict[str, str]) -> str:
+    seen = set()
+    while name not in seen:
+        seen.add(name)
+        head, separator, tail = name.partition(".")
+        target = aliases.get(head)
+        if target is None or target == head:
+            break
+        name = target + (separator + tail if separator else "")
+    return name
+
+
+def _update_aliases(statement: ast.stmt, aliases: dict[str, str]) -> None:
+    if isinstance(statement, ast.Import):
+        for item in statement.names:
+            bound = item.asname or item.name.split(".", 1)[0]
+            aliases[bound] = item.name if item.asname else bound
+        return
+    if isinstance(statement, ast.ImportFrom) and statement.module:
+        for item in statement.names:
+            if item.name != "*":
+                aliases[item.asname or item.name] = f"{statement.module}.{item.name}"
+        return
+    if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+        return
+    targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+    source = _dotted_name(statement.value)
+    resolved = _resolve_alias(source, aliases) if source else None
+    for target in targets:
+        if isinstance(target, ast.Name):
+            if resolved:
+                aliases[target.id] = resolved
+            else:
+                aliases.pop(target.id, None)
+
+
 def _final_node(trace: vf.Trace) -> int:
     return next(
         (
@@ -212,6 +257,7 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
     child_access_positions: list[float] = []
     local_access_positions: list[tuple[str, float]] = []
     parent_sends: list[tuple[float, str | None]] = []
+    aliases: dict[str, str] = {}
 
     for event in coordinator_events:
         try:
@@ -222,11 +268,13 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
         for statement_index, statement in enumerate(tree.body):
             position = event.node_index + statement_index / 1000
             statement_source = ast.unparse(statement)
+            _update_aliases(statement, aliases)
             for name, value in state.items():
                 if _assigned_state(statement, name, value):
                     mark("retain_state", position)
             for call in (node for node in ast.walk(statement) if isinstance(node, ast.Call)):
-                call_name = _call_name(call) or ""
+                raw_call_name = _dotted_name(call.func) or _call_name(call) or ""
+                call_name = _resolve_alias(raw_call_name, aliases)
                 if call_name == "rlm":
                     child_name = _spawn_name(call, event.output)
                     prompt = _spawn_prompt(call) or ""

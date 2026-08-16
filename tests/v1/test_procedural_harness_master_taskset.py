@@ -323,6 +323,10 @@ def test_natural_followup_request_and_silent_awaited_send_pass() -> None:
         "import asyncio\nawait asyncio.sleep(1)",
         "import time\ntime.sleep(1)",
         "from asyncio import sleep\nawait sleep(1)",
+        "from agent_message import list_agents\nawait list_agents()",
+        "from agent_message import list_agents as roster\nawait roster()",
+        "import agent_message as messaging\nawait messaging.list_agents()",
+        "roster = agent_message.list_agents\nawait roster()",
     ],
 )
 async def test_bootstrap_reward_is_bounded_and_forbidden_actions_get_no_shaping(
@@ -377,6 +381,36 @@ def test_sleep_after_followup_is_polling_not_yield(poll_call: str) -> None:
 
     assert behavior["no_forbidden_atoms"] == 0.0
     assert behavior.get("yield_after_followup", 0.0) == 0.0
+    assert behavior["bootstrap_progress"] == 0.0
+    assert behavior["harness_score"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("import_cell", "poll_cell"),
+    [
+        ("from agent_message import list_agents", "await list_agents()"),
+        ("from agent_message import list_agents as roster", "await roster()"),
+        ("import agent_message as messaging", "await messaging.list_agents()"),
+        ("import asyncio as aio", "await aio.sleep(1)"),
+        ("from asyncio import sleep as wait", "await wait(1)"),
+    ],
+)
+def test_poll_aliases_persist_across_ipython_cells(
+    import_cell: str,
+    poll_cell: str,
+) -> None:
+    task = _task("single")
+    child = task.data.oracle["children"][0]
+    actions = [
+        ("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')"),
+        ("cell", import_cell),
+        ("cell", poll_cell),
+        ("incoming", child["name"], str(child["expected_result"])),
+    ]
+
+    behavior = _contract_behavior(_trace(task, actions), task.data)
+
+    assert behavior["no_forbidden_atoms"] == 0.0
     assert behavior["bootstrap_progress"] == 0.0
     assert behavior["harness_score"] == 0.0
 
