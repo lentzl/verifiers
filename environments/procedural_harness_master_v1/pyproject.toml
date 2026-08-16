@@ -1,0 +1,13 @@
+[project]
+name = "procedural-harness-master-v1"
+version = "0.1.0"
+description = "Procedural executable Prime Agent harness-mastery benchmark."
+requires-python = ">=3.11"
+dependencies = ["verifiers", "subagent-communication-v1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["procedural_harness_master_v1"]

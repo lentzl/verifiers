@@ -3399,6 +3399,15 @@ wheels = [
 ]
 
 [[package]]
+name = "procedural-harness-master-v1"
+version = "0.1.0"
+source = { editable = "environments/procedural_harness_master_v1" }
+dependencies = [
+    { name = "subagent-communication-v1" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "programmatic-episodic-memory-v2"
 version = "0.1.0"
 source = { editable = "environments/programmatic_episodic_memory_v2" }
@@ -5234,6 +5243,7 @@ examples = [
     { name = "ownership-invariant-v1" },
     { name = "prime-agent-foundations-v2" },
     { name = "prime-agent-resilience-v1" },
+    { name = "procedural-harness-master-v1" },
     { name = "programmatic-episodic-memory-v2" },
     { name = "proposer-solver" },
     { name = "reverse-text" },
