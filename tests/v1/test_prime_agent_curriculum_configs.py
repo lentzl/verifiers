@@ -25,6 +25,19 @@ def test_prime_agent_supports_required_native_capabilities() -> None:
     assert PrimeAgentHarness.SUPPORTS_SKILLS
 
 
+def test_prime_agent_exposes_native_autonomous_completion_gates() -> None:
+    config = PrimeAgentHarnessConfig(
+        autonomous=True,
+        gates=["python /workspace/completion_gate.py"],
+        autonomous_max_continuations=8,
+    )
+
+    assert config.autonomous
+    assert config.gates == ["python /workspace/completion_gate.py"]
+    with pytest.raises(ValueError, match="autonomous options require"):
+        PrimeAgentHarnessConfig(gates=["python /workspace/completion_gate.py"])
+
+
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda path: path.name)
 def test_curriculum_uses_official_prime_agent_contract(path: Path) -> None:
     raw = tomllib.load(path.open("rb"))

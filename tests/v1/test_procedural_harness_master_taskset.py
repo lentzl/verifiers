@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from procedural_harness_master_v1.taskset import (
+    COMPLETION_GATE_PATH,
     ProceduralHarnessMasterConfig,
     ProceduralHarnessMasterTaskset,
     _contract_behavior,
@@ -131,9 +132,14 @@ async def test_setup_materializes_only_public_files() -> None:
     runtime = Runtime()
     await task.setup(None, runtime)
 
-    assert runtime.writes == {
+    assert {
         path: contents.encode() for path, contents in task.data.workspace_files.items()
-    }
+    }.items() <= runtime.writes.items()
+    assert COMPLETION_GATE_PATH in runtime.writes
+    gate = runtime.writes[COMPLETION_GATE_PATH].decode()
+    for child in task.data.oracle["children"]:
+        assert child["name"] in gate
+    assert repr(task.data.oracle["final_answer"]) not in gate
 
 
 def test_direct_complete_trajectory_passes_conjunctive_gate() -> None:

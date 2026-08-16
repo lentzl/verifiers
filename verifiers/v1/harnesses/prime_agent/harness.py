@@ -1,11 +1,13 @@
 """Prime Agent over its native ACP mode."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import logging
 import shlex
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
@@ -40,6 +42,32 @@ curl -fsSL "$VF_PRIME_AGENT_INSTALL_URL" | sh
 class PrimeAgentHarnessConfig(HarnessConfig):
     version: str = Field(default=DEFAULT_VERSION, pattern=r"^[A-Za-z0-9._+-]+$")
     """Prime Agent release to install, pinned for reproducibility."""
+    autonomous: bool = False
+    """Continue until the configured completion gates pass or a limit is reached."""
+    gates: list[str] = Field(default_factory=list)
+    autonomous_gate_retries: int | None = Field(default=None, strict=True, gt=0)
+    autonomous_gate_timeout_ms: int | None = Field(default=None, strict=True, gt=0)
+    autonomous_max_continuations: int | None = Field(default=None, strict=True, gt=0)
+    autonomous_max_turns: int | None = Field(default=None, strict=True, gt=0)
+    autonomous_max_tokens: int | None = Field(default=None, strict=True, gt=0)
+    autonomous_timeout_ms: int | None = Field(default=None, strict=True, gt=0)
+
+    @model_validator(mode="after")
+    def validate_autonomous_options(self) -> PrimeAgentHarnessConfig:
+        options = (
+            self.gates,
+            self.autonomous_gate_retries,
+            self.autonomous_gate_timeout_ms,
+            self.autonomous_max_continuations,
+            self.autonomous_max_turns,
+            self.autonomous_max_tokens,
+            self.autonomous_timeout_ms,
+        )
+        if not self.autonomous and any(options):
+            raise ValueError("autonomous options require autonomous=true")
+        if any(not gate.strip() for gate in self.gates):
+            raise ValueError("gates must contain non-empty commands")
+        return self
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -152,6 +180,21 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             args += ["--skill", f"{SKILLS_DIR}/{skill.resolve().name}"]
         if system_prompt:
             args += ["--append-system-prompt", system_prompt]
+        if self.config.autonomous:
+            args.append("--autonomous")
+            for gate in self.config.gates:
+                args += ["--autonomous-gate", gate]
+            limits = {
+                "--autonomous-gate-retries": self.config.autonomous_gate_retries,
+                "--autonomous-gate-timeout-ms": self.config.autonomous_gate_timeout_ms,
+                "--autonomous-max-continuations": self.config.autonomous_max_continuations,
+                "--autonomous-max-turns": self.config.autonomous_max_turns,
+                "--autonomous-max-tokens": self.config.autonomous_max_tokens,
+                "--autonomous-timeout-ms": self.config.autonomous_timeout_ms,
+            }
+            for flag, value in limits.items():
+                if value is not None:
+                    args += [flag, str(value)]
 
         wrapper = f"{root}/prime-agent"
         await runtime.write(

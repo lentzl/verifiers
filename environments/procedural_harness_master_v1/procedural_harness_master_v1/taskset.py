@@ -18,6 +18,7 @@ from subagent_communication_v1.taskset import (
     _assigned_call_names,
     _branch_root,
     _call_name,
+    _completion_gate_source,
     _delegated_path_used_outside_spawn,
     _failed,
     _ipython_events,
@@ -30,6 +31,15 @@ import verifiers.v1 as vf
 from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 
 Split = Literal["train_gen", "valid_gen", "ood_gen"]
+COMPLETION_GATE_PATH = "/workspace/.procedural-harness-master/completion_gate.py"
+COMPLETION_GATE_FEEDBACK = (
+    "completion gate: the end-to-end coordinator task is not complete. Preserve successful "
+    "state and existing child handles. React only to visible child messages; do not poll, "
+    "invent a result, or spawn replacement children. If a visible failure explicitly transfers "
+    "resource ownership, continue from that transition. Otherwise end the next waiting turn "
+    "briefly so this active autonomous run can accept the child reply. Return bare strict JSON "
+    "only after all required child evidence has arrived."
+)
 
 
 @lru_cache(maxsize=1)
@@ -338,13 +348,33 @@ class ProceduralHarnessMasterTask(
         deferred = set()
         if self.data.family == "reclaim":
             deferred = {child["resource_path"] for child in self.data.oracle["children"]}
-        directories = sorted({str(Path(path).parent) for path in self.data.workspace_files})
+        directories = sorted(
+            {
+                str(Path(COMPLETION_GATE_PATH).parent),
+                *(str(Path(path).parent) for path in self.data.workspace_files),
+            }
+        )
         result = await runtime.run(["mkdir", "-p", *directories], {})
         if result.exit_code != 0:
             raise RuntimeError(f"procedural workspace setup failed: {result.stderr[-500:]}")
         for path, contents in self.data.workspace_files.items():
             if path not in deferred:
                 await runtime.write(path, contents.encode())
+        required_child_messages = {}
+        for child in self.data.oracle["children"]:
+            contract = child.get("message_contract")
+            count = len(contract) if isinstance(contract, list) else 1
+            required_child_messages[child["name"]] = count
+        family = "followup" if self.data.family == "followup" else "direct"
+        await runtime.write(
+            COMPLETION_GATE_PATH,
+            _completion_gate_source(
+                tuple(self.data.oracle["final_answer"]),
+                family,
+                required_child_messages=required_child_messages,
+                feedback=COMPLETION_GATE_FEEDBACK,
+            ).encode(),
+        )
 
     @vf.reward(weight=1.0)
     async def harness_score(self, trace: vf.Trace) -> float:

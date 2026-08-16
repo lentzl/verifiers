@@ -666,15 +666,25 @@ def keep_child_request_phase_responses(trace: vf.Trace) -> list[list[bool]]:
     return masks
 
 
-def _completion_gate_source(expected_keys: tuple[str, ...], family: Family) -> str:
-    required_child_messages = {
+def _completion_gate_source(
+    expected_keys: tuple[str, ...],
+    family: Family,
+    *,
+    required_child_messages: dict[str, int] | None = None,
+    feedback: str | None = None,
+) -> str:
+    default_child_messages = {
         "single": {"shard-worker": 1},
         "parallel": {"alpha-worker": 1, "beta-worker": 1},
         "followup": {"key-worker": 2},
         "handshake": {"relay-worker": 2},
     }.get(family, {})
-    if family == "followup":
-        feedback = (
+    if required_child_messages is None:
+        required_child_messages = default_child_messages
+    if feedback is not None:
+        gate_feedback = feedback
+    elif family == "followup":
+        gate_feedback = (
             "completion gate: final JSON is not ready. Preserve the existing delegation: "
             "do not inspect the delegated shard, spawn another child, or redo the child's work. "
             "A request exists only when this conversation visibly contains a new user message "
@@ -686,7 +696,7 @@ def _completion_gate_source(expected_keys: tuple[str, ...], family: Family) -> s
             "final subtotal and result."
         )
     elif family == "handshake":
-        feedback = (
+        gate_feedback = (
             "completion gate: final JSON is not ready. Preserve the existing delegation: do not "
             "spawn another child. A request exists only when this conversation visibly contains a "
             "new user message beginning `[from child:relay-worker]`; never infer it from the task, "
@@ -697,7 +707,7 @@ def _completion_gate_source(expected_keys: tuple[str, ...], family: Family) -> s
             "message echoes the nonce."
         )
     elif family in {"single", "parallel"}:
-        feedback = (
+        gate_feedback = (
             "completion gate: final JSON is not ready. Preserve every existing delegation: do not "
             "inspect a delegated shard, spawn replacement children, or redo their work. If no new "
             "child message is present, your next assistant response itself must be a brief waiting "
@@ -707,7 +717,7 @@ def _completion_gate_source(expected_keys: tuple[str, ...], family: Family) -> s
             "with no prose or Markdown."
         )
     else:
-        feedback = (
+        gate_feedback = (
             "completion gate: final JSON is not ready. Complete the coordinator-local computation "
             "and return one JSON object with exactly the requested keys and integer values."
         )
@@ -873,7 +883,7 @@ while REQUIRED_CHILD_MESSAGES and time.monotonic() < deadline:
         break
 
 print(
-    {format_feedback!r} if child_evidence_observed else {feedback!r},
+    {format_feedback!r} if child_evidence_observed else {gate_feedback!r},
     file=sys.stderr,
 )
 raise SystemExit(1)
