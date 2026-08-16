@@ -1,0 +1,115 @@
+{
+  "frozen_eval": {
+    "ood_gen": {
+      "count": 512,
+      "start_index": 0
+    },
+    "valid_gen": {
+      "count": 512,
+      "start_index": 0
+    }
+  },
+  "generator_version": "2026-08-16.v1",
+  "master_seed": 20260816,
+  "schema_version": "procedural-harness-master-v1/manifest/v1",
+  "splits": {
+    "ood_gen": {
+      "axis_signatures": 145,
+      "episode_families": [
+        "direct",
+        "followup",
+        "mixed",
+        "parallel",
+        "reclaim",
+        "single",
+        "triple",
+        "verify"
+      ],
+      "episodes": 512,
+      "fault_modes": [
+        "inject_child_failure",
+        "none"
+      ],
+      "file": "ood_gen.jsonl",
+      "instruction_styles": [
+        "narrative",
+        "terse"
+      ],
+      "resource_families": [
+        "ini_quota_sum",
+        "jsonl_active_sum",
+        "tsv_total",
+        "xml_items"
+      ],
+      "sha256": "8352f39406f4c9fa78cc9da822d1b3ca89a0667a6cf6e5824039fe3803ef47bc"
+    },
+    "train_gen": {
+      "axis_signatures": 464,
+      "episode_families": [
+        "direct",
+        "followup",
+        "mixed",
+        "parallel",
+        "single",
+        "verify"
+      ],
+      "episodes": 4096,
+      "fault_modes": [
+        "none"
+      ],
+      "file": "train_gen.jsonl",
+      "instruction_styles": [
+        "explicit",
+        "natural_a",
+        "natural_b"
+      ],
+      "resource_families": [
+        "csv_total",
+        "json_max",
+        "json_sum",
+        "log_error",
+        "md_h2",
+        "python_defs",
+        "sha_prefix",
+        "word_count"
+      ],
+      "sha256": "446ac265a9d551ba9d79fadc3cdecbe93c501973231169210f783cc56f663c44"
+    },
+    "valid_gen": {
+      "axis_signatures": 190,
+      "episode_families": [
+        "direct",
+        "followup",
+        "mixed",
+        "parallel",
+        "single",
+        "verify"
+      ],
+      "episodes": 512,
+      "fault_modes": [
+        "none"
+      ],
+      "file": "valid_gen.jsonl",
+      "instruction_styles": [
+        "compact",
+        "natural_c"
+      ],
+      "resource_families": [
+        "csv_total",
+        "json_max",
+        "json_sum",
+        "log_error",
+        "md_h2",
+        "python_defs",
+        "sha_prefix",
+        "word_count"
+      ],
+      "sha256": "0ce7c1689236e12175a9f9d91b30b4f2a3440a18f3b61555a87afe7e7e4588fa"
+    }
+  },
+  "train_stream": {
+    "count_materialized": 4096,
+    "index_space": "non-negative integers",
+    "start_index": 0
+  }
+}
