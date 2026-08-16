@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import random
+import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import Literal
@@ -31,6 +32,20 @@ VARIANTS: dict[Split, tuple[int, ...]] = {
 }
 DELAY_SECONDS = 2.0
 MIN_OBSERVED_DELAY_SECONDS = 1.0
+RECOVERABLE_FAILURE_NAMES: tuple[str, ...] = (
+    "NameError",
+    "ModuleNotFoundError",
+    "TypeError",
+    "AttributeError",
+    "KeyError",
+    "FileNotFoundError",
+    "SyntaxError",
+    "RuntimeError",
+    "ValueError",
+)
+RECOVERABLE_FAILURE_LINE = re.compile(
+    rf"^(?:{'|'.join(RECOVERABLE_FAILURE_NAMES)}):(?:\s|$)"
+)
 
 SYSTEM_PROMPT = (
     "Use Prime Agent's persistent IPython kernel and native RLM messaging. Retain successful "
@@ -108,6 +123,59 @@ def _ipython_events(trace: vf.Trace) -> list[IpythonEvent]:
                 )
             )
     return events
+
+
+def _recoverable_failure(output: str) -> bool:
+    lines = (line.strip() for line in output.splitlines())
+    return any(
+        RECOVERABLE_FAILURE_LINE.match(line)
+        or line.startswith("I/O Error:")
+        or line.startswith("<coroutine object")
+        for line in lines
+    )
+
+
+def keep_failed_ipython_tool_calls(
+    trace: vf.Trace,
+    *,
+    start_token_id: int = 248058,
+    end_token_id: int = 248059,
+) -> list[list[bool]]:
+    """Select serialized IPython calls whose observed output is a recoverable failure."""
+    failed_node_ids = {
+        id(trace.nodes[event.node_index])
+        for event in _ipython_events(trace)
+        if _recoverable_failure(event.output)
+    }
+    masks: list[list[bool]] = []
+    trained_nodes: set[int] = set()
+    for branch in trace.branches:
+        branch_mask: list[bool] = []
+        has_trainable_tokens = False
+        for node in branch.nodes:
+            span = len(node.token_ids)
+            is_new_trainable = (
+                node.sampled and any(node.mask) and id(node) not in trained_nodes
+            )
+            if is_new_trainable:
+                trained_nodes.add(id(node))
+                has_trainable_tokens = True
+            node_mask = [False] * span
+            if is_new_trainable and id(node) in failed_node_ids:
+                search_from = 0
+                while search_from < span:
+                    try:
+                        start = node.token_ids.index(start_token_id, search_from)
+                        end = node.token_ids.index(end_token_id, start + 1)
+                    except ValueError:
+                        break
+                    for index in range(start, end + 1):
+                        node_mask[index] = node.mask[index]
+                    search_from = end + 1
+            branch_mask.extend(node_mask)
+        if has_trainable_tokens:
+            masks.append(branch_mask)
+    return masks
 
 
 def _call_name(call: ast.Call) -> str | None:

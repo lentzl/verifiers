@@ -7,6 +7,7 @@ from prime_agent_resilience_v1.taskset import (
     PrimeAgentResilienceConfig,
     PrimeAgentResilienceTaskset,
     _behavior,
+    keep_failed_ipython_tool_calls,
 )
 
 import verifiers.v1 as vf
@@ -214,6 +215,34 @@ def _trace(family: str) -> tuple[vf.Trace, object]:
     return trace, data
 
 
+def _tokenize_sampled_nodes(trace: vf.Trace) -> None:
+    for index, node in enumerate(trace.nodes):
+        if not node.sampled:
+            node.token_ids = [index]
+            node.mask = [False]
+        elif isinstance(node.message, AssistantMessage) and node.message.tool_calls:
+            node.token_ids = [index, 248058, index + 100, 248059, index + 200]
+            node.mask = [False, True, True, True, True]
+        else:
+            node.token_ids = [index, index + 100]
+            node.mask = [False, True]
+
+
+def _selected_ipython_codes(trace: vf.Trace, masks: list[list[bool]]) -> list[str]:
+    selected = []
+    for branch, branch_mask in zip(trace.branches, masks, strict=True):
+        offset = 0
+        for node in branch.nodes:
+            node_mask = branch_mask[offset : offset + len(node.token_ids)]
+            offset += len(node.token_ids)
+            if not any(node_mask) or not isinstance(node.message, AssistantMessage):
+                continue
+            for call in node.message.tool_calls or []:
+                if call.name == "ipython":
+                    selected.append(json.loads(call.arguments)["code"])
+    return selected
+
+
 def test_resilience_splits_are_disjoint_balanced_and_answer_free() -> None:
     calibration = PrimeAgentResilienceTaskset(
         PrimeAgentResilienceConfig(split="calibration")
@@ -326,6 +355,72 @@ def test_message_type_repair_rejects_an_unchanged_retry() -> None:
     )
 
     assert _behavior(trace, data)["strict_success"] == 0.0
+
+
+def test_failed_ipython_filter_selects_only_the_traceback_call() -> None:
+    trace, _ = _trace("message_type_repair")
+    _tokenize_sampled_nodes(trace)
+
+    masks = keep_failed_ipython_tool_calls(trace)
+
+    assert sum(sum(mask) for mask in masks) == 3
+    assert _selected_ipython_codes(trace, masks) == [
+        "payload = {'checksum': checksum}\nawait agent_message.send(payload, receiver_role='parent')"
+    ]
+
+
+def test_failed_ipython_filter_recognizes_an_unawaited_coroutine() -> None:
+    trace, _ = _trace("message_type_repair")
+    failed_output = next(
+        node
+        for node in trace.nodes
+        if isinstance(node.message, ToolMessage)
+        and "TypeError" in content_text(node.message.content)
+    )
+    failed_output.message.content = "<coroutine object AgentMessage.send at 0x1234>"
+    _tokenize_sampled_nodes(trace)
+
+    masks = keep_failed_ipython_tool_calls(trace)
+
+    assert sum(sum(mask) for mask in masks) == 3
+    assert len(_selected_ipython_codes(trace, masks)) == 1
+
+
+def test_failed_ipython_filter_drops_successful_tool_calls() -> None:
+    trace, _ = _trace("message_type_repair")
+    failed_output = next(
+        node
+        for node in trace.nodes
+        if isinstance(node.message, ToolMessage)
+        and "TypeError" in content_text(node.message.content)
+    )
+    failed_output.message.content = "Agent message sent: agentmsg_unexpected"
+    _tokenize_sampled_nodes(trace)
+
+    masks = keep_failed_ipython_tool_calls(trace)
+
+    assert sum(sum(mask) for mask in masks) == 0
+    assert _selected_ipython_codes(trace, masks) == []
+
+
+def test_failed_ipython_filter_does_not_match_exception_names_in_source() -> None:
+    trace, _ = _trace("message_type_repair")
+    failed_output = next(
+        node
+        for node in trace.nodes
+        if isinstance(node.message, ToolMessage)
+        and "TypeError" in content_text(node.message.content)
+    )
+    failed_output.message.content = (
+        "def send(message):\n"
+        "    raise RuntimeError('daemon unavailable')\n"
+        "# TypeError is documented by the bridge\n"
+    )
+    _tokenize_sampled_nodes(trace)
+
+    masks = keep_failed_ipython_tool_calls(trace)
+
+    assert sum(sum(mask) for mask in masks) == 0
 
 
 class _Runtime:
