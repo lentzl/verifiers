@@ -184,6 +184,32 @@ def test_single_complete_trajectory_passes_and_parent_resource_read_fails() -> N
     assert behavior["harness_score"] == 0.0
 
 
+def test_environment_variable_counts_as_retained_coordinator_state() -> None:
+    task = _task("followup")
+    child = task.data.oracle["children"][0]
+    state_name, state_value = next(iter(task.data.oracle["coordinator_state"].items()))
+    spawn = _spawn_code(task, extra=())
+    spawn = spawn.replace(f"{state_name} = {state_value!r}", "")
+    actions = [
+        (
+            "cell",
+            f"import os\nos.environ[{state_name.upper()!r}] = {str(state_value)!r}\n{spawn}",
+            f"RLMSpawnHandle(name='{child['name']}')",
+        ),
+        ("incoming", child["name"], "need multiplier"),
+        (
+            "cell",
+            "await agent_message.send(str(os.environ['TICKET']), receiver_role='child')",
+            "Agent message sent: agentmsg_1",
+        ),
+        ("incoming", child["name"], json.dumps(task.data.oracle["final_answer"])),
+    ]
+
+    behavior = _contract_behavior(_trace(task, actions), task.data)
+
+    assert behavior["harness_score"] == 1.0, behavior
+
+
 @pytest.mark.parametrize("family", ["parallel", "mixed", "followup", "verify"])
 def test_composed_training_families_pass_complete_synthetic_traces(family: str) -> None:
     task = _task(family)

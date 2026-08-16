@@ -85,13 +85,24 @@ def _keyword(call: ast.Call, name: str) -> Any:
 def _assigned_state(statement: ast.stmt, name: str, value: Any) -> bool:
     if isinstance(statement, (ast.Assign, ast.AnnAssign)):
         targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-        assigned = _literal(statement.value) == value
+        assigned_value = _literal(statement.value)
+        assigned = assigned_value == value or str(assigned_value) == str(value)
         for target in targets:
             if isinstance(target, ast.Name) and target.id == name and assigned:
                 return True
             if (
                 isinstance(target, ast.Subscript)
                 and _literal(target.slice) == name
+                and assigned
+            ):
+                return True
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Attribute)
+                and isinstance(target.value.value, ast.Name)
+                and target.value.value.id == "os"
+                and target.value.attr == "environ"
+                and str(_literal(target.slice)).lower() == name.lower()
                 and assigned
             ):
                 return True
