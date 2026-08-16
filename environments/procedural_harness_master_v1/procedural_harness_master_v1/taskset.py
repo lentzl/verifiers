@@ -124,6 +124,23 @@ def _incoming_messages(trace: vf.Trace) -> list[tuple[int, str, str]]:
     return messages
 
 
+def _is_request_message(body: str) -> bool:
+    lowered = body.lower()
+    return lowered.startswith("need ") or bool(
+        re.search(
+            r"\b(?:please\s+provide|could\s+you\s+provide|send\s+me|share|supply|requesting)\b"
+            r".{0,80}\bmultiplier\b",
+            lowered,
+        )
+    )
+
+
+def _is_awaited(statement: ast.stmt, call: ast.Call) -> bool:
+    return any(
+        isinstance(node, ast.Await) and node.value is call for node in ast.walk(statement)
+    )
+
+
 def _final_node(trace: vf.Trace) -> int:
     return next(
         (
@@ -239,7 +256,10 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
                     poll_positions.append(position)
                     mark("poll", position)
                     mark("discover_child", position)
-                if call_name == "agent_message.send" and _message_sent(event.output):
+                send_succeeded = _message_sent(event.output) or (
+                    _is_awaited(statement, call) and not _failed(event.output)
+                )
+                if call_name == "agent_message.send" and send_succeeded:
                     receiver = _keyword(call, "receiver_name")
                     parent_sends.append((position, receiver if isinstance(receiver, str) else None))
                     counts["parent_to_child_message"] += 1
@@ -260,7 +280,11 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
 
     incoming = _incoming_messages(trace)
     failure_messages = [item for item in incoming if "RESOURCE_UNAVAILABLE" in item[2] or "RLM child failure" in item[2]]
-    request_messages = [item for item in incoming if item not in failure_messages and item[2].lower().startswith("need ")]
+    request_messages = [
+        item
+        for item in incoming
+        if item not in failure_messages and _is_request_message(item[2])
+    ]
     result_messages = [item for item in incoming if item not in failure_messages and item not in request_messages]
     counts["child_result_message"] = len(result_messages)
     counts["child_to_parent_message"] = len(request_messages) + len(result_messages)

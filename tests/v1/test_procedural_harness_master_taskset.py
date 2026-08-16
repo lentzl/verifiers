@@ -281,6 +281,36 @@ def test_environment_variable_counts_as_retained_coordinator_state() -> None:
     assert behavior["harness_score"] == 1.0, behavior
 
 
+def test_natural_followup_request_and_silent_awaited_send_pass() -> None:
+    task = _task("followup")
+    child = task.data.oracle["children"][0]
+    actions = [
+        ("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')"),
+        (
+            "incoming",
+            child["name"],
+            "ERROR-level log line count: 6. Please provide the multiplier.",
+        ),
+        (
+            "cell",
+            (
+                "await agent_message.send('The multiplier is 4.', "
+                f"receiver_role='child', receiver_name='{child['name']}')\n"
+                "print('Sent multiplier: 4')"
+            ),
+            "Sent multiplier: 4",
+        ),
+        ("incoming", child["name"], json.dumps(task.data.oracle["final_answer"])),
+    ]
+
+    behavior = _contract_behavior(_trace(task, actions), task.data)
+
+    assert behavior["harness_score"] == 1.0, behavior
+    assert behavior["all_required_atoms"] == 1.0
+    assert behavior["ordering_satisfied"] == 1.0
+    assert behavior["cardinality_exact"] == 1.0
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "poll_call",
