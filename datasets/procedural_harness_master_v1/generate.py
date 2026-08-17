@@ -22,7 +22,9 @@ GENERATOR_VERSION = "2026-08-16.v2"
 SEED_VERSION = "2026-08-16.v1"
 Split = Literal["train_gen", "valid_gen", "ood_gen"]
 CurriculumRung = Literal["atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"]
-CURRICULUM_VERSION = "2026-08-16.harness-actions-v1"
+CURRICULUM_VERSION = "2026-08-17.harness-actions-v2"
+# Keep episode assignments fixed when public contract wording is clarified.
+CURRICULUM_SEED_VERSION = "2026-08-16.harness-actions-v1"
 
 SYSTEM_PROMPT = (
     "Coordinate through Prime Agent's persistent IPython kernel. Solve directly when "
@@ -207,7 +209,7 @@ def _row(split: Split, index: int, seed: int, family: str, style: str, prompt: s
 
 
 def generate_curriculum_episode(rung: CurriculumRung, split: Split, index: int, master_seed: int = 20260816) -> dict[str, Any]:
-    raw_seed = f"{CURRICULUM_VERSION}|{master_seed}|{rung}|{split}|{index}".encode()
+    raw_seed = f"{CURRICULUM_SEED_VERSION}|{master_seed}|{rung}|{split}|{index}".encode()
     seed = int.from_bytes(hashlib.sha256(raw_seed).digest()[:8], "big")
     rng = random.Random(seed); style = rng.choice(STYLES[split]); names = rng.sample(list(CHILD_NAMES[split]), 2)
     children: list[dict[str, Any]] = []
@@ -217,7 +219,7 @@ def generate_curriculum_episode(rung: CurriculumRung, split: Split, index: int, 
         prompt = (
             f"Use persistent IPython state across exactly two calls. In the first call, assign {state_name}={state_value} and do nothing else. "
             f"In a later IPython call, read that retained variable, add {increment}, and print the result. Do not delegate, poll, or combine the two calls. "
-            f"Return {SCHEMAS[rung]}."
+            f"In the final JSON, marker must be the original retained value and result must be the printed sum. Return {SCHEMAS[rung]}."
         )
         oracle = {
             "expected_route": "direct", "final_answer": {"marker": state_value, "result": state_value + increment},

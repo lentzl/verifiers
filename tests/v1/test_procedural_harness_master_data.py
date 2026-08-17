@@ -39,6 +39,16 @@ def test_atomic_curriculum_generation_is_deterministic_and_oracle_hidden() -> No
             assert "final_answer" not in json.dumps(row["public"])
 
 
+def test_atomic_state_public_answer_contract_matches_oracle() -> None:
+    row = MODULE.generate_curriculum_episode("atomic_state", "train_gen", 17)
+    prompt = row["public"]["user_prompt"]
+    answer = row["oracle"]["final_answer"]
+
+    assert "marker must be the original retained value" in prompt
+    assert "result must be the printed sum" in prompt
+    assert answer["marker"] == next(iter(row["oracle"]["coordinator_state"].values()))
+
+
 def test_default_generation_does_not_select_curriculum() -> None:
     row = MODULE.generate_episode("train_gen", 17)
     assert "curriculum_rung" not in row["metadata"]
