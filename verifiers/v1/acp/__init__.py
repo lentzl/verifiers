@@ -21,6 +21,8 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+PROCESS_EXIT_POLL_TIMEOUT = 0.1
+PROCESS_SIGNAL_TIMEOUT = 5.0
 
 __all__ = ["ACPConfig", "ACPHarness"]
 
@@ -259,15 +261,16 @@ class ACPHarnessSession(HarnessSession):
                     await process.write(_packet({"operation": "shutdown"}))
                     await asyncio.wait_for(reader.read(), timeout=10)
             for timeout, stop in (
-                (10 if graceful else 0.1, None),
-                (5, process.terminate),
-                (5, process.kill),
+                (10 if graceful else PROCESS_EXIT_POLL_TIMEOUT, None),
+                (PROCESS_SIGNAL_TIMEOUT, process.terminate),
+                (PROCESS_SIGNAL_TIMEOUT, process.kill),
             ):
-                if stop is not None:
-                    with contextlib.suppress(BaseException):
-                        await stop()
                 try:
-                    await asyncio.wait_for(process.wait(), timeout)
+                    async with asyncio.timeout(timeout):
+                        if stop is not None:
+                            with contextlib.suppress(Exception):
+                                await stop()
+                        await process.wait()
                     break
                 except TimeoutError:
                     continue
@@ -275,8 +278,12 @@ class ACPHarnessSession(HarnessSession):
             if stderr_task is not None:
                 if not stderr_task.done():
                     stderr_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await stderr_task
+                done, _ = await asyncio.wait(
+                    {stderr_task}, timeout=PROCESS_SIGNAL_TIMEOUT
+                )
+                for task in done:
+                    with contextlib.suppress(BaseException):
+                        task.result()
 
     async def close(self) -> None:
         if self._closed:

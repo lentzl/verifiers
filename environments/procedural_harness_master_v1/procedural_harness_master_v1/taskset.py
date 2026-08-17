@@ -28,6 +28,12 @@ from subagent_communication_v1.taskset import (
 )
 
 import verifiers.v1 as vf
+from procedural_harness_master_v1.followup_feedback import (
+    FEEDBACK_SCHEMA_VERSION,
+    FollowupFailureDiagnostic,
+    feedback_contract_payload,
+    render_followup_feedback,
+)
 from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 
 Split = Literal["train_gen", "valid_gen", "ood_gen"]
@@ -478,6 +484,105 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
     }
 
 
+def _followup_feedback_diagnostic(
+    trace: vf.Trace,
+    data: ProceduralHarnessMasterData,
+) -> FollowupFailureDiagnostic | None:
+    """Locate the failed coordinator response immediately after a child request."""
+
+    if data.family != "atomic_followup":
+        return None
+    if _contract_behavior(trace, data)["harness_score"] == 1.0:
+        return None
+
+    request = next(
+        (
+            item
+            for item in _incoming_messages(trace)
+            if _is_request_message(item[2])
+        ),
+        None,
+    )
+    if request is None or not trace.nodes:
+        return None
+    request_node_index, child_name, _ = request
+    coordinator_root = _branch_root(trace, 0)
+    target_node_index = next(
+        (
+            index
+            for index in range(request_node_index + 1, len(trace.nodes))
+            if isinstance(trace.nodes[index].message, AssistantMessage)
+            and trace.nodes[index].sampled
+            and _branch_root(trace, index) == coordinator_root
+        ),
+        None,
+    )
+    if target_node_index is None:
+        return None
+    coordinator_turns = [
+        index
+        for index, node in enumerate(trace.nodes[: target_node_index + 1])
+        if isinstance(node.message, AssistantMessage)
+        and node.sampled
+        and _branch_root(trace, index) == coordinator_root
+    ]
+    return FollowupFailureDiagnostic(
+        child_name=child_name,
+        request_node_index=request_node_index,
+        target_node_index=target_node_index,
+        turn_index=len(coordinator_turns) - 1,
+    )
+
+
+def _record_followup_feedback(
+    trace: vf.Trace,
+    data: ProceduralHarnessMasterData,
+) -> bool:
+    diagnostic = _followup_feedback_diagnostic(trace, data)
+    if diagnostic is None:
+        return False
+    feedback = render_followup_feedback(diagnostic)
+    trace.info["feedback"] = feedback
+    trace.info["feedback_contract"] = feedback_contract_payload(diagnostic)
+    return True
+
+
+def keep_followup_feedback_response(trace: vf.Trace) -> list[list[bool]]:
+    """Select only the sampled response named by trusted follow-up feedback."""
+
+    contract = trace.info.get("feedback_contract")
+    target_index = contract.get("target_node_index") if isinstance(contract, dict) else None
+    trusted = (
+        isinstance(contract, dict)
+        and contract.get("schema_version") == FEEDBACK_SCHEMA_VERSION
+        and contract.get("answer_free") is True
+        and contract.get("retryable") is True
+        and contract.get("code") == "reply_to_child_request"
+        and isinstance(target_index, int)
+        and 0 <= target_index < len(trace.nodes)
+    )
+    target = trace.nodes[target_index] if trusted else None
+    masks: list[list[bool]] = []
+    trained_nodes: set[int] = set()
+    for branch in trace.branches:
+        branch_mask: list[bool] = []
+        has_trainable_tokens = False
+        for node in branch.nodes:
+            is_new_trainable = (
+                node.sampled and any(node.mask) and id(node) not in trained_nodes
+            )
+            if is_new_trainable:
+                trained_nodes.add(id(node))
+                has_trainable_tokens = True
+            keep = is_new_trainable and node is target
+            branch_mask.extend(
+                sampled and keep for sampled in node.mask
+            )
+        if has_trainable_tokens:
+            masks.append(branch_mask)
+    return masks
+
+
 class ProceduralHarnessMasterTaskConfig(vf.TaskConfig):
     reward_mode: Literal["hard", "bootstrap"] = "hard"
 
@@ -545,6 +650,7 @@ class ProceduralHarnessMasterConfig(vf.TasksetConfig):
     master_seed: int = 20260816
     families: tuple[str, ...] | None = None
     curriculum_rung: CurriculumRung | None = None
+    record_causal_feedback: bool = False
 
 
 class ProceduralHarnessMasterTaskset(
@@ -591,7 +697,10 @@ class ProceduralHarnessMasterEnv(vf.SingleAgentEnv):
 
     async def run(self, task, agents) -> None:
         if task.data.family != "reclaim":
-            await agents.agent.run(task)
+            async with agents.agent.interaction(task) as interaction:
+                await interaction.turn()
+                if self.taskset.config.record_causal_feedback:
+                    _record_followup_feedback(interaction.trace, task.data)
             return
         child = task.data.oracle["children"][0]
         path = child["resource_path"]

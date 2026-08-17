@@ -129,6 +129,7 @@ class Rollout:
         self._failure: Exception | None = None
         self._opened = False
         self._closed = False
+        self._abort_task: asyncio.Task[None] | None = None
         self._endpoint: str | None = None
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
@@ -326,6 +327,11 @@ class Rollout:
         except Exception as e:  # noqa: BLE001 - setup boundary records every rollout failure
             self.fail(e)
             return False
+        except asyncio.CancelledError:
+            # The episode deadline owns this cancellation. Teardown must outlive
+            # the cancelled driver task or the deadline cannot return promptly.
+            self.start_abort()
+            raise
         except BaseException:
             # A cancellation mid-setup kills the driver's await with it, so no
             # caller reaches close() — free the started runtime and entered
@@ -407,12 +413,21 @@ class Rollout:
         # never moved, forever.
         return self.ok and trace.num_turns > turns_before
 
+    def start_abort(self) -> asyncio.Task[None]:
+        """Mark the run closed and start teardown outside the caller's task."""
+        self._closed = True
+        if self._abort_task is None:
+            self._abort_task = asyncio.create_task(self._abort())
+        return self._abort_task
+
     async def abort(self) -> None:
         """Free everything this run holds — the entered servers and an owned
         runtime — without finalizing or scoring: the escape path when an exception
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
-        self._closed = True
+        await asyncio.shield(self.start_abort())
+
+    async def _abort(self) -> None:
         if self._harness_session is not None:
             with contextlib.suppress(Exception):
                 await self._harness_session.close()

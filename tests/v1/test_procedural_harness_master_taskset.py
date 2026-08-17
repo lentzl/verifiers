@@ -3,14 +3,19 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 from procedural_harness_master_v1.taskset import (
     COMPLETION_GATE_PATH,
     ProceduralHarnessMasterConfig,
+    ProceduralHarnessMasterEnv,
     ProceduralHarnessMasterTaskset,
     _contract_behavior,
+    _followup_feedback_diagnostic,
+    _record_followup_feedback,
+    keep_followup_feedback_response,
 )
 
 import verifiers.v1 as vf
@@ -302,6 +307,9 @@ def test_environment_variable_counts_as_retained_coordinator_state() -> None:
     behavior = _contract_behavior(_trace(task, actions), task.data)
 
     assert behavior["harness_score"] == 1.0, behavior
+    assert behavior["all_required_atoms"] == 1.0
+    assert behavior["ordering_satisfied"] == 1.0
+    assert behavior["cardinality_exact"] == 1.0
 
 
 def test_natural_followup_request_and_silent_awaited_send_pass() -> None:
@@ -332,6 +340,127 @@ def test_natural_followup_request_and_silent_awaited_send_pass() -> None:
     assert behavior["all_required_atoms"] == 1.0
     assert behavior["ordering_satisfied"] == 1.0
     assert behavior["cardinality_exact"] == 1.0
+
+
+def test_atomic_followup_feedback_targets_response_after_child_request() -> None:
+    task = _curriculum_task("atomic_followup")
+    child = task.data.oracle["children"][0]
+    state_name, state_value = next(iter(task.data.oracle["coordinator_state"].items()))
+    actions = [
+        ("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')"),
+        ("incoming", child["name"], "Please provide the multiplier."),
+        (
+            "cell",
+            (
+                f"await agent_message.send(message={state_name}, receiver_role='child', "
+                f"receiver_name={child['name']!r})"
+            ),
+            "TypeError: message must be str, got int",
+        ),
+    ]
+    trace = _trace(task, actions)
+    for index, node in enumerate(trace.nodes):
+        node.token_ids = [index * 10 + 1, index * 10 + 2]
+        node.mask = [node.sampled, node.sampled]
+
+    diagnostic = _followup_feedback_diagnostic(trace, task.data)
+
+    assert diagnostic is not None
+    assert diagnostic.child_name == child["name"]
+    assert diagnostic.turn_index == 1
+    assert isinstance(trace.nodes[diagnostic.target_node_index].message, AssistantMessage)
+    assert "agent_message.send" in trace.nodes[
+        diagnostic.target_node_index
+    ].message.tool_calls[0].arguments
+    assert _record_followup_feedback(trace, task.data)
+    contract = trace.info["feedback_contract"]
+    assert contract["answer_free"] is True
+    assert contract["turn_index"] == 1
+    assert contract["target_node_index"] == diagnostic.target_node_index
+    assert str(state_value) not in trace.info["feedback"]
+
+    masks = keep_followup_feedback_response(trace)
+    selected = [
+        id(node)
+        for branch, mask in zip(trace.branches, masks, strict=True)
+        for node, keep in _nodes_with_mask(branch.nodes, mask)
+        if any(keep)
+    ]
+    assert selected == [id(trace.nodes[diagnostic.target_node_index])]
+
+
+def _nodes_with_mask(nodes, mask):
+    offset = 0
+    for node in nodes:
+        end = offset + len(node.token_ids)
+        yield node, mask[offset:end]
+        offset = end
+    assert offset == len(mask)
+
+
+def test_atomic_followup_feedback_is_absent_without_request_or_on_success() -> None:
+    task = _curriculum_task("atomic_followup")
+    child = task.data.oracle["children"][0]
+    spawn = ("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')")
+    assert _followup_feedback_diagnostic(_trace(task, [spawn]), task.data) is None
+
+    state_name = next(iter(task.data.oracle["coordinator_state"]))
+    successful = _trace(
+        task,
+        [
+            spawn,
+            ("incoming", child["name"], "need multiplier"),
+            (
+                "cell",
+                (
+                    f"await agent_message.send(str({state_name}), receiver_role='child', "
+                    f"receiver_name={child['name']!r})"
+                ),
+                "Agent message sent: agentmsg_1",
+            ),
+            ("incoming", child["name"], str(task.data.oracle["final_answer"]["result"])),
+        ],
+    )
+    assert _contract_behavior(successful, task.data)["harness_score"] == 1.0
+    assert _followup_feedback_diagnostic(successful, task.data) is None
+
+
+def test_followup_feedback_recording_is_opt_in() -> None:
+    assert ProceduralHarnessMasterConfig().record_causal_feedback is False
+
+
+class _FeedbackAgent:
+    def __init__(self, trace: vf.Trace) -> None:
+        self.trace = trace
+
+    @asynccontextmanager
+    async def interaction(self, task):
+        async def turn():
+            return SimpleNamespace(terminated=False)
+
+        yield SimpleNamespace(trace=self.trace, turn=turn)
+
+
+def test_environment_records_followup_feedback_before_trace_close() -> None:
+    task = _curriculum_task("atomic_followup")
+    child = task.data.oracle["children"][0]
+    trace = _trace(
+        task,
+        [
+            ("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')"),
+            ("incoming", child["name"], "Please provide the multiplier."),
+            ("cell", "print('still waiting')", "still waiting"),
+        ],
+    )
+    env = object.__new__(ProceduralHarnessMasterEnv)
+    env.taskset = SimpleNamespace(
+        config=ProceduralHarnessMasterConfig(record_causal_feedback=True)
+    )
+
+    asyncio.run(env.run(task, SimpleNamespace(agent=_FeedbackAgent(trace))))
+
+    assert trace.info["feedback_contract"]["code"] == "reply_to_child_request"
+    assert trace.info["feedback"] == trace.info["feedback_contract"]["message"]
 
 
 def test_child_completion_notice_does_not_satisfy_explicit_message_contract() -> None:

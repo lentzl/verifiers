@@ -409,9 +409,14 @@ class Agent:
                 if run.ok:
                     run.trace.stop("agent_completed")
             trace = await run.close()
+        except asyncio.CancelledError:
+            # Let the episode deadline return while teardown continues in the
+            # rollout-owned task.
+            run.start_abort()
+            raise
         except BaseException:
-            # A cancellation mid-run (or a lifetime bug raised to the caller) means
-            # close() never runs — free the run's servers and owned runtime first.
+            # A lifetime bug raised to the caller means close() never runs — free
+            # the run's servers and owned runtime first.
             await run.abort()
             raise
         if trace.agent.runtime is not None:
@@ -474,6 +479,9 @@ class Agent:
             yield interaction
         except Exception as e:
             run.fail(e)
+            raise
+        except asyncio.CancelledError:
+            run.start_abort()
             raise
         except BaseException:
             await run.abort()
