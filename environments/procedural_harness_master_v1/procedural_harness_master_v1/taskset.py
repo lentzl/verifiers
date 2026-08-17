@@ -37,7 +37,9 @@ from procedural_harness_master_v1.followup_feedback import (
 from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 
 Split = Literal["train_gen", "valid_gen", "ood_gen"]
-CurriculumRung = Literal["atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"]
+CurriculumRung = Literal[
+    "atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"
+]
 COMPLETION_GATE_PATH = "/workspace/.procedural-harness-master/completion_gate.py"
 COMPLETION_GATE_FEEDBACK = (
     "completion gate: the end-to-end coordinator task is not complete. Preserve successful "
@@ -91,7 +93,11 @@ def _keyword(call: ast.Call, name: str) -> Any:
 
 def _assigned_state(statement: ast.stmt, name: str, value: Any) -> bool:
     if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        targets = (
+            statement.targets
+            if isinstance(statement, ast.Assign)
+            else [statement.target]
+        )
         assigned_value = _literal(statement.value)
         assigned = assigned_value == value or str(assigned_value) == str(value)
         for target in targets:
@@ -115,7 +121,9 @@ def _assigned_state(statement: ast.stmt, name: str, value: Any) -> bool:
                 return True
         if isinstance(statement.value, ast.Dict):
             pairs = zip(statement.value.keys, statement.value.values, strict=True)
-            return any(_literal(key) == name and _literal(item) == value for key, item in pairs)
+            return any(
+                _literal(key) == name and _literal(item) == value for key, item in pairs
+            )
     return False
 
 
@@ -131,7 +139,9 @@ def _incoming_messages(trace: vf.Trace) -> list[tuple[int, str, str]]:
         body = text.rsplit("\n\n", 1)[-1].strip()
         explicit_delivery = "Source: agent_message\n" in text
         injected_failure = "Source: benchmark fault injector\n" in text
-        visible_child_failure = body.startswith("RLM child failure") or "RESOURCE_UNAVAILABLE" in body
+        visible_child_failure = (
+            body.startswith("RLM child failure") or "RESOURCE_UNAVAILABLE" in body
+        )
         if explicit_delivery or injected_failure or visible_child_failure:
             messages.append((index, match.group(1), body))
     return messages
@@ -150,7 +160,8 @@ def _is_request_message(body: str) -> bool:
 
 def _is_awaited(statement: ast.stmt, call: ast.Call) -> bool:
     return any(
-        isinstance(node, ast.Await) and node.value is call for node in ast.walk(statement)
+        isinstance(node, ast.Await) and node.value is call
+        for node in ast.walk(statement)
     )
 
 
@@ -188,7 +199,9 @@ def _update_aliases(statement: ast.stmt, aliases: dict[str, str]) -> None:
         return
     if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
         return
-    targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+    targets = (
+        statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+    )
     source = _dotted_name(statement.value)
     resolved = _resolve_alias(source, aliases) if source else None
     for target in targets:
@@ -237,14 +250,18 @@ def _json_type(value: Any) -> str:
     raise TypeError(f"unsupported JSON answer type: {type(value).__name__}")
 
 
-def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> dict[str, float]:
+def _contract_behavior(
+    trace: vf.Trace, data: ProceduralHarnessMasterData
+) -> dict[str, float]:
     oracle = data.oracle
     contract = oracle["trajectory_contract"]
     ownership = oracle["resource_ownership"]
     children = oracle["children"]
     expected_names = [child["name"] for child in children]
     child_paths = {
-        path for path, item in ownership.items() if str(item["owner"]).startswith("child:")
+        path
+        for path, item in ownership.items()
+        if str(item["owner"]).startswith("child:")
     }
     local_paths = {
         path for path, item in ownership.items() if item["owner"] == "coordinator"
@@ -253,7 +270,9 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
 
     events = _ipython_events(trace)
     coordinator_root = _branch_root(trace, 0) if trace.nodes else -1
-    branch_aware = any(_branch_root(trace, event.node_index) != coordinator_root for event in events)
+    branch_aware = any(
+        _branch_root(trace, event.node_index) != coordinator_root for event in events
+    )
     coordinator_events = [
         event
         for event in events
@@ -288,12 +307,19 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
                     mark("retain_state", position)
                     retained_state_nodes[name].append(event.node_index)
                 reused_later = any(
-                    isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id == name
+                    isinstance(node, ast.Name)
+                    and isinstance(node.ctx, ast.Load)
+                    and node.id == name
                     for node in ast.walk(statement)
-                ) and any(node_index < event.node_index for node_index in retained_state_nodes[name])
+                ) and any(
+                    node_index < event.node_index
+                    for node_index in retained_state_nodes[name]
+                )
                 if reused_later:
                     mark(f"reuse_state:{name}", position)
-            for call in (node for node in ast.walk(statement) if isinstance(node, ast.Call)):
+            for call in (
+                node for node in ast.walk(statement) if isinstance(node, ast.Call)
+            ):
                 raw_call_name = _dotted_name(call.func) or _call_name(call) or ""
                 call_name = _resolve_alias(raw_call_name, aliases)
                 if call_name == "rlm":
@@ -315,7 +341,10 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
                     if any(name in prompt for name in state):
                         mark("delegate_coordinator_state", position)
                     continue
-                if call_name.startswith("agent_observe.") or call_name == "agent_observe":
+                if (
+                    call_name.startswith("agent_observe.")
+                    or call_name == "agent_observe"
+                ):
                     poll_positions.append(position)
                     mark("poll", position)
                 if call_name in {
@@ -335,7 +364,9 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
                 )
                 if call_name == "agent_message.send" and send_succeeded:
                     receiver = _keyword(call, "receiver_name")
-                    parent_sends.append((position, receiver if isinstance(receiver, str) else None))
+                    parent_sends.append(
+                        (position, receiver if isinstance(receiver, str) else None)
+                    )
                     counts["parent_to_child_message"] += 1
             for path in child_paths:
                 if _delegated_path_used_outside_spawn(statement_source, path):
@@ -353,13 +384,21 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
                 mark("coordinator_read_verification_manifest", position)
 
     incoming = _incoming_messages(trace)
-    failure_messages = [item for item in incoming if "RESOURCE_UNAVAILABLE" in item[2] or "RLM child failure" in item[2]]
+    failure_messages = [
+        item
+        for item in incoming
+        if "RESOURCE_UNAVAILABLE" in item[2] or "RLM child failure" in item[2]
+    ]
     request_messages = [
         item
         for item in incoming
         if item not in failure_messages and _is_request_message(item[2])
     ]
-    result_messages = [item for item in incoming if item not in failure_messages and item not in request_messages]
+    result_messages = [
+        item
+        for item in incoming
+        if item not in failure_messages and item not in request_messages
+    ]
     counts["child_result_message"] = len(result_messages)
     counts["child_to_parent_message"] = len(request_messages) + len(result_messages)
 
@@ -378,20 +417,30 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
     }
     if first_incoming is not None and successful_spawns and all_expected_spawned:
         last_spawn = max(item[2] for item in successful_spawns)
-        if last_spawn < first_incoming and not any(last_spawn < pos < first_incoming for pos in poll_positions):
+        if last_spawn < first_incoming and not any(
+            last_spawn < pos < first_incoming for pos in poll_positions
+        ):
             mark("yield", first_incoming - 0.1)
-    if first_incoming is not None and not all(position < first_incoming for _, _, position, ok in successful_spawns if ok):
+    if first_incoming is not None and not all(
+        position < first_incoming for _, _, position, ok in successful_spawns if ok
+    ):
         mark("serialized_fanout_wait", float(first_incoming))
 
     for send_position, receiver in parent_sends:
         prior_requests = [item for item in request_messages if item[0] < send_position]
-        target = receiver or (prior_requests[-1][1] if prior_requests else (expected_names[0] if len(expected_names) == 1 else None))
+        target = receiver or (
+            prior_requests[-1][1]
+            if prior_requests
+            else (expected_names[0] if len(expected_names) == 1 else None)
+        )
         if target:
             mark(f"send_followup:{target}", send_position)
         if not prior_requests:
             mark("guess_followup_value", send_position)
         later_results = [item for item in result_messages if item[0] > send_position]
-        if later_results and not any(send_position < pos < later_results[0][0] for pos in poll_positions):
+        if later_results and not any(
+            send_position < pos < later_results[0][0] for pos in poll_positions
+        ):
             mark("yield_after_followup", later_results[0][0] - 0.1)
 
     first_failure = min((item[0] for item in failure_messages), default=None)
@@ -405,8 +454,12 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
                 mark("explicit_reclaim", first_failure + 0.1)
                 mark("coordinator_read_after_reclaim", position)
                 counts["reclaim"] += 1
-    child_spawn_counts = Counter(name for name, _, _, ok in successful_spawns if ok and name)
-    if first_failure is not None and any(count > 1 for count in child_spawn_counts.values()):
+    child_spawn_counts = Counter(
+        name for name, _, _, ok in successful_spawns if ok and name
+    )
+    if first_failure is not None and any(
+        count > 1 for count in child_spawn_counts.values()
+    ):
         mark("respawn_same_failed_child", float(first_failure) + 0.2)
 
     if manifest_path is not None and result_messages:
@@ -414,7 +467,9 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
             digest = json.loads(data.workspace_files[manifest_path])["expected_digest"]
         except (KeyError, TypeError, json.JSONDecodeError):
             digest = None
-        matching = next((item for item in result_messages if digest and digest in item[2]), None)
+        matching = next(
+            (item for item in result_messages if digest and digest in item[2]), None
+        )
         if matching is not None:
             mark("verify_child_digest", matching[0] + 0.1)
 
@@ -422,7 +477,11 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
     if (trace.last_reply or "").strip():
         mark("final_answer", final_position)
     final_exact = _answer_exact(trace.last_reply, oracle["final_answer"])
-    if final_exact and "verify_child_digest" not in observed and oracle["expected_route"] == "single_verify":
+    if (
+        final_exact
+        and "verify_child_digest" not in observed
+        and oracle["expected_route"] == "single_verify"
+    ):
         mark("accept_unverified_child_result", final_position)
 
     required = contract["required_atoms"]
@@ -432,14 +491,20 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
     ordering_failures = []
     for edge in contract["ordering"]:
         before, after = edge["before"], edge["after"]
-        if before not in observed or after not in observed or min(observed[before]) >= max(observed[after]):
+        if (
+            before not in observed
+            or after not in observed
+            or min(observed[before]) >= max(observed[after])
+        ):
             ordering_failures.append(f"{before}->{after}")
     cardinality_failures = [
         key
         for key, expected in contract["cardinality"].items()
         if counts[key] != expected
     ]
-    required_fraction = (len(required) - len(missing)) / len(required) if required else 1.0
+    required_fraction = (
+        (len(required) - len(missing)) / len(required) if required else 1.0
+    )
     ordering_fraction = (
         (len(contract["ordering"]) - len(ordering_failures)) / len(contract["ordering"])
         if contract["ordering"]
@@ -454,6 +519,12 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
     bootstrap_progress = (
         float(final_exact)
         * float(not violations)
+        * required_fraction
+        * ordering_fraction
+        * cardinality_fraction
+    )
+    event_control_progress = (
+        float(not violations)
         * required_fraction
         * ordering_fraction
         * cardinality_fraction
@@ -476,6 +547,7 @@ def _contract_behavior(trace: vf.Trace, data: ProceduralHarnessMasterData) -> di
         "ordering_fraction": ordering_fraction,
         "cardinality_fraction": cardinality_fraction,
         "bootstrap_progress": bootstrap_progress,
+        "event_control_progress": event_control_progress,
         "missing_required_atoms": float(len(missing)),
         "forbidden_atom_violations": float(len(violations)),
         "ordering_failures": float(len(ordering_failures)),
@@ -496,11 +568,7 @@ def _followup_feedback_diagnostic(
         return None
 
     request = next(
-        (
-            item
-            for item in _incoming_messages(trace)
-            if _is_request_message(item[2])
-        ),
+        (item for item in _incoming_messages(trace) if _is_request_message(item[2])),
         None,
     )
     if request is None or not trace.nodes:
@@ -551,7 +619,9 @@ def keep_followup_feedback_response(trace: vf.Trace) -> list[list[bool]]:
     """Select only the sampled response named by trusted follow-up feedback."""
 
     contract = trace.info.get("feedback_contract")
-    target_index = contract.get("target_node_index") if isinstance(contract, dict) else None
+    target_index = (
+        contract.get("target_node_index") if isinstance(contract, dict) else None
+    )
     trusted = (
         isinstance(contract, dict)
         and contract.get("schema_version") == FEEDBACK_SCHEMA_VERSION
@@ -575,16 +645,14 @@ def keep_followup_feedback_response(trace: vf.Trace) -> list[list[bool]]:
                 trained_nodes.add(id(node))
                 has_trainable_tokens = True
             keep = is_new_trainable and node is target
-            branch_mask.extend(
-                sampled and keep for sampled in node.mask
-            )
+            branch_mask.extend(sampled and keep for sampled in node.mask)
         if has_trainable_tokens:
             masks.append(branch_mask)
     return masks
 
 
 class ProceduralHarnessMasterTaskConfig(vf.TaskConfig):
-    reward_mode: Literal["hard", "bootstrap"] = "hard"
+    reward_mode: Literal["hard", "bootstrap", "event_control"] = "hard"
 
 
 class ProceduralHarnessMasterTask(
@@ -599,7 +667,9 @@ class ProceduralHarnessMasterTask(
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         deferred = set()
         if self.data.family == "reclaim":
-            deferred = {child["resource_path"] for child in self.data.oracle["children"]}
+            deferred = {
+                child["resource_path"] for child in self.data.oracle["children"]
+            }
         directories = sorted(
             {
                 str(Path(COMPLETION_GATE_PATH).parent),
@@ -608,7 +678,9 @@ class ProceduralHarnessMasterTask(
         )
         result = await runtime.run(["mkdir", "-p", *directories], {})
         if result.exit_code != 0:
-            raise RuntimeError(f"procedural workspace setup failed: {result.stderr[-500:]}")
+            raise RuntimeError(
+                f"procedural workspace setup failed: {result.stderr[-500:]}"
+            )
         for path, contents in self.data.workspace_files.items():
             if path not in deferred:
                 await runtime.write(path, contents.encode())
@@ -617,14 +689,20 @@ class ProceduralHarnessMasterTask(
             contract = child.get("message_contract")
             count = len(contract) if isinstance(contract, list) else 1
             required_child_messages[child["name"]] = count
-        family = "followup" if self.data.family in {"followup", "atomic_followup"} else "direct"
+        family = (
+            "followup"
+            if self.data.family in {"followup", "atomic_followup"}
+            else "direct"
+        )
         final_answer = self.data.oracle["final_answer"]
         await runtime.write(
             COMPLETION_GATE_PATH,
             _completion_gate_source(
                 tuple(final_answer),
                 family,
-                expected_types={key: _json_type(value) for key, value in final_answer.items()},
+                expected_types={
+                    key: _json_type(value) for key, value in final_answer.items()
+                },
                 required_child_messages=required_child_messages,
                 feedback=COMPLETION_GATE_FEEDBACK,
             ).encode(),
@@ -635,6 +713,8 @@ class ProceduralHarnessMasterTask(
         behavior = _contract_behavior(trace, self.data)
         if self.config.reward_mode == "bootstrap":
             return behavior["harness_score"] + 0.1 * behavior["bootstrap_progress"]
+        if self.config.reward_mode == "event_control":
+            return behavior["harness_score"] + behavior["event_control_progress"]
         return behavior["harness_score"]
 
     @vf.metric
@@ -664,9 +744,16 @@ class ProceduralHarnessMasterTaskset(
         index = self.config.start_index
         while len(tasks) < self.config.count:
             if self.config.curriculum_rung is None:
-                row = generator.generate_episode(self.config.split, index, self.config.master_seed)
+                row = generator.generate_episode(
+                    self.config.split, index, self.config.master_seed
+                )
             else:
-                row = generator.generate_curriculum_episode(self.config.curriculum_rung, self.config.split, index, self.config.master_seed)
+                row = generator.generate_curriculum_episode(
+                    self.config.curriculum_rung,
+                    self.config.split,
+                    index,
+                    self.config.master_seed,
+                )
             index += 1
             family = row["metadata"]["episode_family"]
             if self.config.families is not None and family not in self.config.families:
@@ -709,25 +796,25 @@ class ProceduralHarnessMasterEnv(vf.SingleAgentEnv):
             agents.agent.provision(task) as runtime,
             agents.agent.interaction(task, runtime=runtime) as interaction,
         ):
-                first = await interaction.turn()
-                if first.terminated:
-                    return
-                await runtime.write(path, task.data.workspace_files[path].encode())
-                existing_failure = any(
-                    "RESOURCE_UNAVAILABLE" in body
-                    for _, _, body in _incoming_messages(interaction.trace)
+            first = await interaction.turn()
+            if first.terminated:
+                return
+            await runtime.write(path, task.data.workspace_files[path].encode())
+            existing_failure = any(
+                "RESOURCE_UNAVAILABLE" in body
+                for _, _, body in _incoming_messages(interaction.trace)
+            )
+            if existing_failure:
+                message = (
+                    f"[benchmark runtime]\nThe explicit failure transferred ownership of {path} "
+                    "to the coordinator. Continue from retained state."
                 )
-                if existing_failure:
-                    message = (
-                        f"[benchmark runtime]\nThe explicit failure transferred ownership of {path} "
-                        "to the coordinator. Continue from retained state."
-                    )
-                else:
-                    message = (
-                        f"[from child:{child['name']}]\n"
-                        "Agent-to-agent message received.\n"
-                        "Source: benchmark fault injector\n"
-                        f"Message id: fault-{task.data.episode_id}\n\n"
-                        f"{fault['message']}"
-                    )
-                await interaction.turn(message)
+            else:
+                message = (
+                    f"[from child:{child['name']}]\n"
+                    "Agent-to-agent message received.\n"
+                    "Source: benchmark fault injector\n"
+                    f"Message id: fault-{task.data.episode_id}\n\n"
+                    f"{fault['message']}"
+                )
+            await interaction.turn(message)

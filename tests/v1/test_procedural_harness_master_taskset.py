@@ -99,11 +99,15 @@ def _child_completion_notice(nodes, parent: int, child: str, body: str) -> int:
 
 
 def _trace(task, actions, reply=None):
-    nodes = [MessageNode(parent=None, message=UserMessage(content="task"), sampled=False)]
+    nodes = [
+        MessageNode(parent=None, message=UserMessage(content="task"), sampled=False)
+    ]
     parent = 0
     for action in actions:
         if action[0] == "cell":
-            parent = _cell(nodes, parent, action[1], action[2] if len(action) > 2 else "")
+            parent = _cell(
+                nodes, parent, action[1], action[2] if len(action) > 2 else ""
+            )
         else:
             parent = _incoming(nodes, parent, action[1], action[2])
     answer = json.dumps(task.data.oracle["final_answer"]) if reply is None else reply
@@ -124,10 +128,15 @@ def _trace(task, actions, reply=None):
 
 def _spawn_code(task, children=None, extra=()):
     children = task.data.oracle["children"] if children is None else children
-    lines = [f"{name} = {value!r}" for name, value in task.data.oracle.get("coordinator_state", {}).items()]
+    lines = [
+        f"{name} = {value!r}"
+        for name, value in task.data.oracle.get("coordinator_state", {}).items()
+    ]
     for index, child in enumerate(children):
         instruction = f"Read {child['resource_path']} and {child['operation']}; send the result to parent."
-        lines.append(f"handle_{index} = await rlm({instruction!r}, name={child['name']!r})")
+        lines.append(
+            f"handle_{index} = await rlm({instruction!r}, name={child['name']!r})"
+        )
     lines.extend(extra)
     return "\n".join(lines)
 
@@ -243,7 +252,9 @@ async def test_verify_completion_gate_accepts_oracle_types_without_oracle_values
 def test_direct_complete_trajectory_passes_conjunctive_gate() -> None:
     task = _task("direct")
     path = next(iter(task.data.workspace_files))
-    trace = _trace(task, [("cell", f"from pathlib import Path\ntext = Path({path!r}).read_text()")])
+    trace = _trace(
+        task, [("cell", f"from pathlib import Path\ntext = Path({path!r}).read_text()")]
+    )
 
     behavior = _contract_behavior(trace, task.data)
 
@@ -368,10 +379,13 @@ def test_atomic_followup_feedback_targets_response_after_child_request() -> None
     assert diagnostic is not None
     assert diagnostic.child_name == child["name"]
     assert diagnostic.turn_index == 1
-    assert isinstance(trace.nodes[diagnostic.target_node_index].message, AssistantMessage)
-    assert "agent_message.send" in trace.nodes[
-        diagnostic.target_node_index
-    ].message.tool_calls[0].arguments
+    assert isinstance(
+        trace.nodes[diagnostic.target_node_index].message, AssistantMessage
+    )
+    assert (
+        "agent_message.send"
+        in trace.nodes[diagnostic.target_node_index].message.tool_calls[0].arguments
+    )
     assert _record_followup_feedback(trace, task.data)
     contract = trace.info["feedback_contract"]
     assert contract["answer_free"] is True
@@ -418,7 +432,11 @@ def test_atomic_followup_feedback_is_absent_without_request_or_on_success() -> N
                 ),
                 "Agent message sent: agentmsg_1",
             ),
-            ("incoming", child["name"], str(task.data.oracle["final_answer"]["result"])),
+            (
+                "incoming",
+                child["name"],
+                str(task.data.oracle["final_answer"]["result"]),
+            ),
         ],
     )
     assert _contract_behavior(successful, task.data)["harness_score"] == 1.0
@@ -466,10 +484,24 @@ def test_environment_records_followup_feedback_before_trace_close() -> None:
 def test_child_completion_notice_does_not_satisfy_explicit_message_contract() -> None:
     task = _task("single")
     child = task.data.oracle["children"][0]
-    nodes = [MessageNode(parent=None, message=UserMessage(content="task"), sampled=False)]
-    parent = _cell(nodes, 0, _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')")
-    parent = _child_completion_notice(nodes, parent, child["name"], f"The result is {child['expected_result']}")
-    nodes.append(MessageNode(parent=parent, message=AssistantMessage(content=json.dumps(task.data.oracle["final_answer"])), sampled=True))
+    nodes = [
+        MessageNode(parent=None, message=UserMessage(content="task"), sampled=False)
+    ]
+    parent = _cell(
+        nodes, 0, _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')"
+    )
+    parent = _child_completion_notice(
+        nodes, parent, child["name"], f"The result is {child['expected_result']}"
+    )
+    nodes.append(
+        MessageNode(
+            parent=parent,
+            message=AssistantMessage(
+                content=json.dumps(task.data.oracle["final_answer"])
+            ),
+            sampled=True,
+        )
+    )
     trace = vf.Trace(
         id="procedural-completion-notice-test",
         agent=vf.AgentInfo(config=vf.AgentConfig()),
@@ -483,16 +515,25 @@ def test_child_completion_notice_does_not_satisfy_explicit_message_contract() ->
     assert behavior["harness_score"] == 0.0
 
 
-@pytest.mark.parametrize("rung", ["atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"])
-def test_atomic_curriculum_rungs_require_complete_real_message_trajectories(rung: str) -> None:
+@pytest.mark.parametrize(
+    "rung", ["atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"]
+)
+def test_atomic_curriculum_rungs_require_complete_real_message_trajectories(
+    rung: str,
+) -> None:
     task = _curriculum_task(rung)
     children = task.data.oracle["children"]
     if rung == "atomic_state":
-        state_name, state_value = next(iter(task.data.oracle["coordinator_state"].items()))
+        state_name, state_value = next(
+            iter(task.data.oracle["coordinator_state"].items())
+        )
         expected_result = task.data.oracle["final_answer"]["result"]
         actions = [
             ("cell", f"{state_name} = {state_value}"),
-            ("cell", f"result = {state_name} + {expected_result - state_value}\nprint(result)"),
+            (
+                "cell",
+                f"result = {state_name} + {expected_result - state_value}\nprint(result)",
+            ),
         ]
         behavior = _contract_behavior(_trace(task, actions), task.data)
         assert behavior["harness_score"] == 1.0, behavior
@@ -500,23 +541,34 @@ def test_atomic_curriculum_rungs_require_complete_real_message_trajectories(rung
         assert task.data.generation_metadata["curriculum_rung"] == rung
         return
 
-    state_lines = [f"{name} = {value!r}" for name, value in task.data.oracle.get("coordinator_state", {}).items()]
+    state_lines = [
+        f"{name} = {value!r}"
+        for name, value in task.data.oracle.get("coordinator_state", {}).items()
+    ]
     spawn_lines = [
         f"handle_{index} = await rlm('execute the assigned task and send to parent', name={child['name']!r})"
         for index, child in enumerate(children)
     ]
-    actions = [("cell", "\n".join(state_lines + spawn_lines), "\n".join(f"RLMSpawnHandle(name='{child['name']}')" for child in children))]
+    actions = [
+        (
+            "cell",
+            "\n".join(state_lines + spawn_lines),
+            "\n".join(f"RLMSpawnHandle(name='{child['name']}')" for child in children),
+        )
+    ]
     if rung == "atomic_followup":
         child = children[0]
-        actions.extend([
-            ("incoming", child["name"], "need multiplier"),
-            (
-                "cell",
-                f"await agent_message.send(str(multiplier), receiver_role='child', receiver_name={child['name']!r})",
-                "Agent message sent: agentmsg-followup",
-            ),
-            ("incoming", child["name"], str(child["expected_result"])),
-        ])
+        actions.extend(
+            [
+                ("incoming", child["name"], "need multiplier"),
+                (
+                    "cell",
+                    f"await agent_message.send(str(multiplier), receiver_role='child', receiver_name={child['name']!r})",
+                    "Agent message sent: agentmsg-followup",
+                ),
+                ("incoming", child["name"], str(child["expected_result"])),
+            ]
+        )
     else:
         for child in reversed(children):
             actions.append(("incoming", child["name"], str(child["expected_result"])))
@@ -530,7 +582,12 @@ def test_atomic_state_rejects_assignment_and_reuse_in_one_ipython_call() -> None
     task = _curriculum_task("atomic_state")
     state_name, state_value = next(iter(task.data.oracle["coordinator_state"].items()))
     expected_result = task.data.oracle["final_answer"]["result"]
-    actions = [("cell", f"{state_name} = {state_value}\nresult = {state_name} + {expected_result - state_value}\nprint(result)")]
+    actions = [
+        (
+            "cell",
+            f"{state_name} = {state_value}\nresult = {state_name} + {expected_result - state_value}\nprint(result)",
+        )
+    ]
     behavior = _contract_behavior(_trace(task, actions), task.data)
     assert behavior["all_required_atoms"] == 0.0
     assert behavior["harness_score"] == 0.0
@@ -593,6 +650,54 @@ async def test_bootstrap_reward_is_bounded_and_forbidden_actions_get_no_shaping(
     behavior = _contract_behavior(violating_trace, task.data)
     assert behavior["no_forbidden_atoms"] == 0.0
     assert behavior["bootstrap_progress"] == 0.0
+    assert await task.harness_score(violating_trace) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_event_control_reward_trains_clean_partial_followup_progress() -> None:
+    task = _curriculum_task("atomic_followup")
+    task.config.reward_mode = "event_control"
+    child = task.data.oracle["children"][0]
+    state_name = next(iter(task.data.oracle["coordinator_state"]))
+    prefix = [
+        ("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')"),
+        ("incoming", child["name"], "need multiplier"),
+        (
+            "cell",
+            (
+                f"await agent_message.send(str({state_name}), receiver_role='child', "
+                f"receiver_name={child['name']!r})"
+            ),
+            "Agent message sent: agentmsg_1",
+        ),
+    ]
+
+    partial_trace = _trace(task, prefix, reply="{}")
+    partial = _contract_behavior(partial_trace, task.data)
+    assert partial["harness_score"] == 0.0
+    assert 0.0 < partial["event_control_progress"] < 1.0
+    assert await task.harness_score(partial_trace) == pytest.approx(
+        partial["event_control_progress"]
+    )
+
+    successful_trace = _trace(
+        task,
+        [*prefix, ("incoming", child["name"], str(child["expected_result"]))],
+    )
+    successful = _contract_behavior(successful_trace, task.data)
+    assert successful["event_control_progress"] == 1.0
+    assert await task.harness_score(successful_trace) == pytest.approx(2.0)
+
+    violating_trace = _trace(
+        task,
+        [
+            *prefix,
+            ("cell", "import asyncio\nawait asyncio.sleep(1)"),
+            ("incoming", child["name"], str(child["expected_result"])),
+        ],
+    )
+    violating = _contract_behavior(violating_trace, task.data)
+    assert violating["event_control_progress"] == 0.0
     assert await task.harness_score(violating_trace) == 0.0
 
 
@@ -687,16 +792,26 @@ def test_composed_training_families_pass_complete_synthetic_traces(family: str) 
                     "await agent_message.send(str(multiplier), receiver_role='child')",
                     "Agent message sent: agentmsg_1",
                 ),
-                ("incoming", child["name"], json.dumps(task.data.oracle["final_answer"])),
+                (
+                    "incoming",
+                    child["name"],
+                    json.dumps(task.data.oracle["final_answer"]),
+                ),
             ]
         )
     else:
         for child in reversed(children):
             body = str(child["expected_result"])
             if family == "verify":
-                manifest = next(path for path in task.data.workspace_files if "verification" in path)
-                digest = json.loads(task.data.workspace_files[manifest])["expected_digest"]
-                body = json.dumps({"result": child["expected_result"], "digest": digest})
+                manifest = next(
+                    path for path in task.data.workspace_files if "verification" in path
+                )
+                digest = json.loads(task.data.workspace_files[manifest])[
+                    "expected_digest"
+                ]
+                body = json.dumps(
+                    {"result": child["expected_result"], "digest": digest}
+                )
             actions.append(("incoming", child["name"], body))
 
     behavior = _contract_behavior(_trace(task, actions), task.data)
