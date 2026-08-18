@@ -415,6 +415,18 @@ def _nodes_with_mask(nodes, mask):
 
 def test_atomic_child_request_action_filter_excludes_reasoning_child_and_retries() -> None:
     task = _curriculum_task("atomic_child_request")
+    child = task.data.oracle["children"][0]
+    state_name, state_value = next(
+        iter(task.data.oracle["coordinator_state"].items())
+    )
+    spawn_code = (
+        f"{state_name} = {state_value}\n"
+        "handle = await rlm("
+        "\"Execute exactly once: await agent_message.send('need multiplier', "
+        "receiver_role='parent'), then stop.\", "
+        f"name={child['name']!r})\n"
+        "handle"
+    )
     tool_start = 248058
     tool_end = 248059
     thinking_end = 248069
@@ -432,7 +444,11 @@ def test_atomic_child_request_action_filter_excludes_reasoning_child_and_retries
             message=AssistantMessage(
                 content="",
                 tool_calls=[
-                    ToolCall(id="spawn", name="ipython", arguments='{"code":"spawn"}')
+                    ToolCall(
+                        id="spawn",
+                        name="ipython",
+                        arguments=json.dumps({"code": spawn_code}),
+                    )
                 ],
             ),
             sampled=True,
@@ -441,7 +457,10 @@ def test_atomic_child_request_action_filter_excludes_reasoning_child_and_retries
         ),
         MessageNode(
             parent=1,
-            message=ToolMessage(tool_call_id="spawn", content="spawned"),
+            message=ToolMessage(
+                tool_call_id="spawn",
+                content=f"RLMSpawnHandle(name='{child['name']}')",
+            ),
             sampled=False,
             token_ids=[2],
             mask=[False],
@@ -523,6 +542,41 @@ def test_atomic_child_request_action_filter_excludes_reasoning_child_and_retries
         id(nodes[3]): [202, 203, message_end],
         id(nodes[7]): [402, 403, message_end],
     }
+
+    noisy = trace.model_copy(deep=True)
+    noisy.nodes[1].message.tool_calls[0].arguments = json.dumps(
+        {"code": f"{spawn_code}\nprint('spawned')"}
+    )
+    assert not any(
+        keep
+        for mask in keep_atomic_child_request_coordinator_actions(noisy)
+        for keep in mask
+    )
+
+    failed = trace.model_copy(deep=True)
+    failed.nodes[2].message.content = "TypeError: invalid rlm arguments"
+    assert not any(
+        keep
+        for mask in keep_atomic_child_request_coordinator_actions(failed)
+        for keep in mask
+    )
+
+    polling = trace.model_copy(deep=True)
+    polling.nodes[3].message = AssistantMessage(
+        content=None,
+        tool_calls=[
+            ToolCall(
+                id="poll",
+                name="ipython",
+                arguments=json.dumps({"code": "await agent_message.list()"}),
+            )
+        ],
+    )
+    assert not any(
+        keep
+        for mask in keep_atomic_child_request_coordinator_actions(polling)
+        for keep in mask
+    )
 
 
 def test_atomic_followup_feedback_is_absent_without_request_or_on_success() -> None:
@@ -777,6 +831,8 @@ def test_atomic_parallel_requires_retaining_both_child_handles() -> None:
         "await agent_observe.run()",
         "await rlm.list_subagents()",
         "await agent_message.list_agents()",
+        "await agent_message.list()",
+        "await agent_message.listen_for_messages()",
         "await agent_message.recv()",
         "await agent_message.list_messages()",
         "import asyncio\nawait asyncio.sleep(1)",
@@ -784,6 +840,7 @@ def test_atomic_parallel_requires_retaining_both_child_handles() -> None:
         "from asyncio import sleep\nawait sleep(1)",
         "from agent_message import list_agents\nawait list_agents()",
         "from agent_message import list_agents as roster\nawait roster()",
+        "from agent_message import listen_for_messages\nawait listen_for_messages()",
         "import agent_message as messaging\nawait messaging.list_agents()",
         "roster = agent_message.list_agents\nawait roster()",
     ],

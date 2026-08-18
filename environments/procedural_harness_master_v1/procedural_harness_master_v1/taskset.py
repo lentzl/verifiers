@@ -352,8 +352,10 @@ def _contract_behavior(
                     poll_positions.append(position)
                     mark("poll", position)
                 if call_name in {
+                    "agent_message.list",
                     "rlm.list_subagents",
                     "agent_message.list_agents",
+                    "agent_message.listen_for_messages",
                     "agent_message.recv",
                     "agent_message.list_messages",
                 }:
@@ -636,6 +638,13 @@ def keep_atomic_child_request_coordinator_actions(
     """
     if not trace.nodes:
         return []
+    data = trace.task.data
+    if not isinstance(data, ProceduralHarnessMasterData):
+        raise TypeError(
+            "atomic child-request action filtering requires procedural task data"
+        )
+    if data.family != "atomic_child_request":
+        return []
     primary_root = next(
         (index for index, node in enumerate(trace.nodes) if node.parent is None),
         None,
@@ -674,6 +683,82 @@ def keep_atomic_child_request_coordinator_actions(
         None,
     )
 
+    expected_children = data.oracle["children"]
+    state = data.oracle.get("coordinator_state", {})
+
+    def successful_spawn_node() -> int | None:
+        if child_request_index is None or len(expected_children) != 1 or not state:
+            return None
+        expected_name = expected_children[0]["name"]
+        eligible: list[int] = []
+        for event in _ipython_events(trace):
+            if event.node_index not in coordinator_nodes or event.node_index >= child_request_index:
+                continue
+            try:
+                tree = ast.parse(event.code)
+            except SyntaxError:
+                continue
+            rlm_calls = [
+                call
+                for call in ast.walk(tree)
+                if isinstance(call, ast.Call) and (_dotted_name(call.func) or _call_name(call)) == "rlm"
+            ]
+            if len(rlm_calls) != 1:
+                continue
+            call = rlm_calls[0]
+            prompt = _spawn_prompt(call) or ""
+            request_protocol = (
+                "agent_message.send" in prompt
+                and "need multiplier" in prompt.lower()
+                and bool(
+                    re.search(
+                        r"receiver_role\s*=\s*['\"]parent['\"]",
+                        prompt,
+                    )
+                )
+            )
+            retains_state = all(
+                any(_assigned_state(statement, name, value) for statement in tree.body)
+                for name, value in state.items()
+            )
+            assigned_calls = _assigned_call_names(tree)
+            successful_spawn = (
+                not _failed(event.output)
+                and "RLMSpawnHandle" in event.output
+                and _spawn_name(call, event.output) == expected_name
+                and id(call) in assigned_calls
+            )
+            if not (request_protocol and retains_state and successful_spawn):
+                continue
+
+            allowed_statements: set[int] = {
+                id(statement)
+                for statement in tree.body
+                if any(_assigned_state(statement, name, value) for name, value in state.items())
+                or call in ast.walk(statement)
+            }
+            handle_names = {
+                target.id
+                for statement in tree.body
+                if call in ast.walk(statement)
+                and isinstance(statement, (ast.Assign, ast.AnnAssign))
+                for target in (
+                    statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                )
+                if isinstance(target, ast.Name)
+            }
+            for statement in tree.body:
+                if (
+                    isinstance(statement, ast.Expr)
+                    and isinstance(statement.value, ast.Name)
+                    and statement.value.id in handle_names
+                ):
+                    allowed_statements.add(id(statement))
+            if len(allowed_statements) != len(tree.body):
+                continue
+            eligible.append(event.node_index)
+        return eligible[0] if len(eligible) == 1 else None
+
     def tool_mask(node: Any) -> list[bool]:
         selected = [False] * len(node.token_ids)
         cursor = 0
@@ -703,7 +788,8 @@ def keep_atomic_child_request_coordinator_actions(
         ]
 
     selected_by_node: dict[int, list[bool]] = {}
-    if child_request_index is not None:
+    spawn_node_index = successful_spawn_node()
+    if child_request_index is not None and spawn_node_index is not None:
         visible_pre_request = next(
             (
                 index
@@ -724,12 +810,28 @@ def keep_atomic_child_request_coordinator_actions(
             ),
             None,
         )
+        intervening_tool_call = any(
+            index in coordinator_nodes
+            and isinstance(trace.nodes[index].message, AssistantMessage)
+            and trace.nodes[index].message.tool_calls
+            for index in range(spawn_node_index + 1, child_request_index)
+        )
+        if (
+            visible_pre_request is None
+            or visible_pre_request <= spawn_node_index
+            or visible_post_request is None
+            or intervening_tool_call
+        ):
+            spawn_node_index = None
         for node_index in coordinator_nodes:
             node = trace.nodes[node_index]
             selected = [False] * len(node.token_ids)
-            if node_index < child_request_index:
+            if node_index == spawn_node_index:
                 selected = tool_mask(node)
-            if node_index in {visible_pre_request, visible_post_request}:
+            if spawn_node_index is not None and node_index in {
+                visible_pre_request,
+                visible_post_request,
+            }:
                 visible = visible_mask(node)
                 selected = [
                     executable or text
