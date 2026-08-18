@@ -536,6 +536,77 @@ def test_natural_yield_feedback_rejects_unretained_spawn_and_passive_wait() -> N
     assert _natural_yield_feedback_diagnostic(passive, task.data) is None
 
 
+def test_natural_yield_feedback_allows_only_harmless_pre_spawn_setup() -> None:
+    task = _curriculum_task("natural_n1")
+    child = task.data.oracle["children"][0]
+    prompt = f"Review {child['resource_path']} and report the finding to your parent"
+    clean = _trace(
+        task,
+        [
+            ("cell", "local_total = sum([1, 2, 3])", "6"),
+            (
+                "cell",
+                f"handle = await rlm({prompt!r}, name={child['name']!r})",
+                f"RLMSpawnHandle(name='{child['name']}')",
+            ),
+            ("cell", "await agent_message.list_agents()", "family roster"),
+        ],
+    )
+
+    assert _natural_yield_feedback_diagnostic(clean, task.data) is not None
+
+
+@pytest.mark.parametrize(
+    "detour",
+    [
+        "await rlm('wrong child', name='wrong-worker')",
+        "await agent_message.list_agents()",
+        "await agent_observe.recent()",
+        "await asyncio.sleep(1)",
+    ],
+)
+def test_natural_yield_feedback_rejects_pre_spawn_control_detours(
+    detour: str,
+) -> None:
+    task = _curriculum_task("natural_n1")
+    child = task.data.oracle["children"][0]
+    prompt = f"Review {child['resource_path']} and report the finding to your parent"
+    trace = _trace(
+        task,
+        [
+            ("cell", detour, "failed or irrelevant harness action"),
+            (
+                "cell",
+                f"handle = await rlm({prompt!r}, name={child['name']!r})",
+                f"RLMSpawnHandle(name='{child['name']}')",
+            ),
+            ("cell", "await agent_message.list_agents()", "family roster"),
+        ],
+    )
+
+    assert _natural_yield_feedback_diagnostic(trace, task.data) is None
+
+
+def test_natural_yield_feedback_rejects_pre_spawn_child_owned_access() -> None:
+    task = _curriculum_task("natural_n1")
+    child = task.data.oracle["children"][0]
+    prompt = f"Review {child['resource_path']} and report the finding to your parent"
+    trace = _trace(
+        task,
+        [
+            ("cell", f"open({child['resource_path']!r}).read()", "private evidence"),
+            (
+                "cell",
+                f"handle = await rlm({prompt!r}, name={child['name']!r})",
+                f"RLMSpawnHandle(name='{child['name']}')",
+            ),
+            ("cell", "await agent_message.list_agents()", "family roster"),
+        ],
+    )
+
+    assert _natural_yield_feedback_diagnostic(trace, task.data) is None
+
+
 def _nodes_with_mask(nodes, mask):
     offset = 0
     for node in nodes:

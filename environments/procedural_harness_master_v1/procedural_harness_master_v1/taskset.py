@@ -598,6 +598,15 @@ def _contract_behavior(
         * ordering_fraction
         * cardinality_fraction
     )
+    local_work_required = "coordinator_read_local" in required
+    local_work_before_yield = float(
+        not local_work_required
+        or (
+            "coordinator_read_local" in observed
+            and "yield" in observed
+            and min(observed["coordinator_read_local"]) < max(observed["yield"])
+        )
+    )
     hard_gate = bool(
         final_exact
         and not missing
@@ -617,6 +626,7 @@ def _contract_behavior(
         "cardinality_fraction": cardinality_fraction,
         "bootstrap_progress": bootstrap_progress,
         "event_control_progress": event_control_progress,
+        "local_work_before_yield": local_work_before_yield,
         "missing_required_atoms": float(len(missing)),
         "forbidden_atom_violations": float(len(violations)),
         "ordering_failures": float(len(ordering_failures)),
@@ -726,6 +736,13 @@ def _natural_yield_feedback_diagnostic(
             break
     if spawn_node_index is None:
         return None
+    if _has_pre_spawn_control_detour(
+        trace,
+        coordinator_root=coordinator_root,
+        spawn_node_index=spawn_node_index,
+        child_path=child_path,
+    ):
+        return None
 
     first_incoming = min(
         (
@@ -766,6 +783,53 @@ def _natural_yield_feedback_diagnostic(
         target_node_index=target_node_index,
         turn_index=len(coordinator_turns) - 1,
     )
+
+
+def _has_pre_spawn_control_detour(
+    trace: vf.Trace,
+    *,
+    coordinator_root: int,
+    spawn_node_index: int,
+    child_path: str,
+) -> bool:
+    """Reject harness detours before the first admitted delegation event."""
+
+    aliases: dict[str, str] = {}
+    spawn_calls = 0
+    for event in _ipython_events(trace):
+        if (
+            event.node_index > spawn_node_index
+            or _branch_root(trace, event.node_index) != coordinator_root
+        ):
+            continue
+        try:
+            tree = ast.parse(event.code)
+        except SyntaxError:
+            continue
+        for statement in tree.body:
+            source = ast.unparse(statement)
+            _update_aliases(statement, aliases)
+            if _delegated_path_used_outside_spawn(source, child_path):
+                return True
+            for call in (
+                node for node in ast.walk(statement) if isinstance(node, ast.Call)
+            ):
+                raw_name = _dotted_name(call.func) or _call_name(call) or ""
+                call_name = _resolve_alias(raw_name, aliases)
+                if call_name == "rlm":
+                    if event.node_index != spawn_node_index:
+                        return True
+                    spawn_calls += 1
+                    continue
+                if (
+                    call_name.startswith(("rlm.", "agent_message.", "agent_observe."))
+                    or call_name == "agent_message"
+                    or call_name == "agent_observe"
+                    or call_name == "sleep"
+                    or call_name.endswith(".sleep")
+                ):
+                    return True
+    return spawn_calls != 1
 
 
 def _record_natural_yield_feedback(
