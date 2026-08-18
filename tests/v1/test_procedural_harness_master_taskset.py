@@ -543,6 +543,9 @@ def test_atomic_child_request_action_filter_excludes_reasoning_child_and_retries
         id(nodes[7]): [402, 403, message_end],
     }
 
+    wire_trace = vf.WireTrace.model_validate(trace.model_dump())
+    assert keep_atomic_child_request_coordinator_actions(wire_trace) == masks
+
     noisy = trace.model_copy(deep=True)
     noisy.nodes[1].message.tool_calls[0].arguments = json.dumps(
         {"code": f"{spawn_code}\nprint('spawned')"}

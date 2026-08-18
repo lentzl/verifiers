@@ -640,8 +640,8 @@ def keep_atomic_child_request_coordinator_actions(
         return []
     data = trace.task.data
     if not isinstance(data, ProceduralHarnessMasterData):
-        raise TypeError(
-            "atomic child-request action filtering requires procedural task data"
+        data = ProceduralHarnessMasterData.model_validate(
+            data.model_dump()
         )
     if data.family != "atomic_child_request":
         return []
