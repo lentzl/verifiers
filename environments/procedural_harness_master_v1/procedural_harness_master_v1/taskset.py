@@ -619,6 +619,151 @@ def _record_followup_feedback(
     return True
 
 
+def keep_atomic_child_request_coordinator_actions(
+    trace: vf.Trace,
+    *,
+    tool_start_token_id: int = 248058,
+    tool_end_token_id: int = 248059,
+    thinking_end_token_id: int = 248069,
+    message_end_token_id: int = 248046,
+) -> list[list[bool]]:
+    """Select executable coordinator actions from a successful request trace.
+
+    Before the explicit child request, serialized tool calls retain state and
+    spawn the child; the last visible no-tool response yields control. After
+    the request, only the final visible no-tool response is retained. Qwen's
+    free-form reasoning and every child-branch token remain context-only.
+    """
+    if not trace.nodes:
+        return []
+    primary_root = next(
+        (index for index, node in enumerate(trace.nodes) if node.parent is None),
+        None,
+    )
+    if primary_root is None:
+        return []
+    lineage_by_node: dict[int, set[str | None]] = {}
+    for call in trace.calls:
+        if call.node is not None:
+            lineage_by_node.setdefault(call.node, set()).add(call.client_session_id)
+    primary_sessions = {
+        session_id
+        for node_index, sessions in lineage_by_node.items()
+        if _branch_root(trace, node_index) == primary_root
+        for session_id in sessions
+        if session_id is not None
+    }
+    if len(primary_sessions) != 1:
+        raise ValueError(
+            "atomic child-request action filtering requires exactly one primary client session"
+        )
+    primary_session = next(iter(primary_sessions))
+    coordinator_nodes = {
+        node_index
+        for node_index, sessions in lineage_by_node.items()
+        if sessions == {primary_session}
+    }
+    child_request_index = next(
+        (
+            index
+            for index, node in enumerate(trace.nodes)
+            if not node.sampled
+            and isinstance(node.message, UserMessage)
+            and content_text(node.message.content).lstrip().startswith("[from child:")
+        ),
+        None,
+    )
+
+    def tool_mask(node: Any) -> list[bool]:
+        selected = [False] * len(node.token_ids)
+        cursor = 0
+        while True:
+            try:
+                start = node.token_ids.index(tool_start_token_id, cursor)
+                end = node.token_ids.index(tool_end_token_id, start + 1)
+            except ValueError:
+                break
+            for index in range(start, end + 1):
+                selected[index] = bool(node.mask[index])
+            if end + 1 < len(node.token_ids) and node.token_ids[end + 1] == message_end_token_id:
+                selected[end + 1] = bool(node.mask[end + 1])
+            cursor = end + 1
+        return selected
+
+    def visible_mask(node: Any) -> list[bool]:
+        if isinstance(node.message, AssistantMessage) and node.message.tool_calls:
+            return [False] * len(node.token_ids)
+        try:
+            start = len(node.token_ids) - 1 - node.token_ids[::-1].index(thinking_end_token_id)
+        except ValueError:
+            start = -1
+        return [
+            bool(sampled and index > start)
+            for index, sampled in enumerate(node.mask)
+        ]
+
+    selected_by_node: dict[int, list[bool]] = {}
+    if child_request_index is not None:
+        visible_pre_request = next(
+            (
+                index
+                for index in range(child_request_index - 1, -1, -1)
+                if index in coordinator_nodes
+                and isinstance(trace.nodes[index].message, AssistantMessage)
+                and not trace.nodes[index].message.tool_calls
+            ),
+            None,
+        )
+        visible_post_request = next(
+            (
+                index
+                for index in range(len(trace.nodes) - 1, child_request_index, -1)
+                if index in coordinator_nodes
+                and isinstance(trace.nodes[index].message, AssistantMessage)
+                and not trace.nodes[index].message.tool_calls
+            ),
+            None,
+        )
+        for node_index in coordinator_nodes:
+            node = trace.nodes[node_index]
+            selected = [False] * len(node.token_ids)
+            if node_index < child_request_index:
+                selected = tool_mask(node)
+            if node_index in {visible_pre_request, visible_post_request}:
+                visible = visible_mask(node)
+                selected = [
+                    executable or text
+                    for executable, text in zip(selected, visible, strict=True)
+                ]
+            selected_by_node[id(node)] = selected
+
+    masks: list[list[bool]] = []
+    trained_nodes: set[int] = set()
+    for branch in trace.branches:
+        has_trainable_tokens = any(
+            node.sampled and any(node.mask) and id(node) not in trained_nodes
+            for node in branch.nodes
+        )
+        if not has_trainable_tokens:
+            continue
+        branch_mask: list[bool] = []
+        for node in branch.nodes:
+            span = len(node.token_ids)
+            is_new_trainable = (
+                node.sampled and any(node.mask) and id(node) not in trained_nodes
+            )
+            if is_new_trainable:
+                trained_nodes.add(id(node))
+            node_mask = (
+                selected_by_node.get(id(node), [False] * span)
+                if is_new_trainable
+                else [False] * span
+            )
+            branch_mask.extend(node_mask)
+        masks.append(branch_mask)
+    return masks
+
+
 def keep_followup_feedback_response(trace: vf.Trace) -> list[list[bool]]:
     """Select only the sampled response named by trusted follow-up feedback."""
 

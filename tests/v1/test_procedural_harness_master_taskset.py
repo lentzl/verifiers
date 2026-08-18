@@ -15,6 +15,7 @@ from procedural_harness_master_v1.taskset import (
     _contract_behavior,
     _followup_feedback_diagnostic,
     _record_followup_feedback,
+    keep_atomic_child_request_coordinator_actions,
     keep_followup_feedback_response,
 )
 
@@ -410,6 +411,118 @@ def _nodes_with_mask(nodes, mask):
         yield node, mask[offset:end]
         offset = end
     assert offset == len(mask)
+
+
+def test_atomic_child_request_action_filter_excludes_reasoning_child_and_retries() -> None:
+    task = _curriculum_task("atomic_child_request")
+    tool_start = 248058
+    tool_end = 248059
+    thinking_end = 248069
+    message_end = 248046
+    nodes = [
+        MessageNode(
+            parent=None,
+            message=UserMessage(content="task"),
+            sampled=False,
+            token_ids=[1],
+            mask=[False],
+        ),
+        MessageNode(
+            parent=0,
+            message=AssistantMessage(
+                content="",
+                tool_calls=[
+                    ToolCall(id="spawn", name="ipython", arguments='{"code":"spawn"}')
+                ],
+            ),
+            sampled=True,
+            token_ids=[101, thinking_end, 102, tool_start, 103, tool_end, message_end],
+            mask=[True] * 7,
+        ),
+        MessageNode(
+            parent=1,
+            message=ToolMessage(tool_call_id="spawn", content="spawned"),
+            sampled=False,
+            token_ids=[2],
+            mask=[False],
+        ),
+        MessageNode(
+            parent=2,
+            message=AssistantMessage(content="Waiting."),
+            sampled=True,
+            token_ids=[201, thinking_end, 202, 203, message_end],
+            mask=[True] * 5,
+        ),
+        MessageNode(
+            parent=3,
+            message=UserMessage(content="[from child:worker]\nneed multiplier"),
+            sampled=False,
+            token_ids=[3],
+            mask=[False],
+        ),
+        MessageNode(
+            parent=4,
+            message=AssistantMessage(content="Almost JSON"),
+            sampled=True,
+            token_ids=[301, thinking_end, 302, message_end],
+            mask=[True] * 4,
+        ),
+        MessageNode(
+            parent=5,
+            message=UserMessage(content="completion gate: strict JSON"),
+            sampled=False,
+            token_ids=[4],
+            mask=[False],
+        ),
+        MessageNode(
+            parent=6,
+            message=AssistantMessage(content='{"multiplier": 6, "request_received": true}'),
+            sampled=True,
+            token_ids=[401, thinking_end, 402, 403, message_end],
+            mask=[True] * 5,
+        ),
+        MessageNode(
+            parent=None,
+            message=UserMessage(content="[task from parent] send request"),
+            sampled=False,
+            token_ids=[5],
+            mask=[False],
+        ),
+        MessageNode(
+            parent=8,
+            message=AssistantMessage(content="child sent"),
+            sampled=True,
+            token_ids=[501, thinking_end, 502, message_end],
+            mask=[True] * 4,
+        ),
+    ]
+    trace = vf.Trace(
+        id="action-filter-test",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type=type(task).__name__, data=task.data),
+        nodes=nodes,
+        calls=[
+            vf.ModelCall(node=1, client_session_id="parent"),
+            vf.ModelCall(node=3, client_session_id="parent"),
+            vf.ModelCall(node=5, client_session_id="parent"),
+            vf.ModelCall(node=7, client_session_id="parent"),
+            vf.ModelCall(node=9, client_session_id="child"),
+        ],
+    )
+
+    masks = keep_atomic_child_request_coordinator_actions(trace)
+    selected = {
+        id(node): [token for token, keep in zip(node.token_ids, keep_mask, strict=True) if keep]
+        for branch, mask in zip(trace.branches, masks, strict=True)
+        for node, keep_mask in _nodes_with_mask(branch.nodes, mask)
+        if any(keep_mask)
+    }
+
+    assert selected == {
+        id(nodes[1]): [tool_start, 103, tool_end, message_end],
+        id(nodes[3]): [202, 203, message_end],
+        id(nodes[7]): [402, 403, message_end],
+    }
 
 
 def test_atomic_followup_feedback_is_absent_without_request_or_on_success() -> None:
