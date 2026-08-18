@@ -1,5 +1,9 @@
 """Project curricula stay on the official Prime Agent harness contract."""
 
+import os
+import subprocess
+import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -10,6 +14,7 @@ from verifiers.v1.harnesses.prime_agent import (
     PrimeAgentHarness,
     PrimeAgentHarnessConfig,
 )
+from verifiers.v1.harnesses.prime_agent.harness import ENV_AGENT_DIR
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs"
 CONFIGS = sorted(
@@ -41,17 +46,61 @@ def test_prime_agent_exposes_native_autonomous_completion_gates() -> None:
 def test_prime_agent_process_timeout_is_opt_in_and_killable() -> None:
     command = ["prime-agent", "--mode", "acp"]
 
-    assert PrimeAgentHarness(PrimeAgentHarnessConfig())._process_command(command) is command
+    default_harness = PrimeAgentHarness(PrimeAgentHarnessConfig())
+    assert default_harness._process_command(command) is command
+    assert "cleanup_descendants" not in default_harness._wrapper_script(command)
+    assert "exec prime-agent --mode acp" in default_harness._wrapper_script(command)
+
     harness = PrimeAgentHarness(PrimeAgentHarnessConfig(process_timeout_ms=840_000))
-    assert harness._process_command(command) == [
+    timed_command = harness._process_command(command)
+    assert timed_command == [
         "timeout",
         "--signal=TERM",
         "--kill-after=10s",
         "840s",
         *command,
     ]
+    wrapper = harness._wrapper_script(timed_command)
+    assert "cleanup_descendants" in wrapper
+    assert 'marker = os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")' in wrapper
+    assert 'with open(f"/proc/{pid}/environ", "rb")' in wrapper
+    assert "signal.SIGTERM" in wrapper
+    assert "signal.SIGKILL" in wrapper
+    assert "exec timeout" not in wrapper
     with pytest.raises(ValueError):
         PrimeAgentHarnessConfig(process_timeout_ms=0)
+
+
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="requires Linux /proc")
+def test_prime_agent_process_timeout_kills_detached_descendants(tmp_path: Path) -> None:
+    child_pid_path = tmp_path / "child.pid"
+    child_code = "import time; time.sleep(60)"
+    parent_code = (
+        "import subprocess,sys,time; "
+        f"child=subprocess.Popen([sys.executable,'-c',{child_code!r}],start_new_session=True); "
+        f"open({str(child_pid_path)!r},'w').write(str(child.pid)); "
+        "time.sleep(60)"
+    )
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(process_timeout_ms=250))
+    command = harness._process_command([sys.executable, "-c", parent_code])
+    wrapper = tmp_path / "prime-agent"
+    wrapper.write_text(harness._wrapper_script(command))
+    wrapper.chmod(0o700)
+
+    result = subprocess.run(
+        [wrapper],
+        env={**os.environ, ENV_AGENT_DIR: str(tmp_path / "agent")},
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 124
+    child_pid = int(child_pid_path.read_text())
+    for _ in range(20):
+        if not Path(f"/proc/{child_pid}").exists():
+            break
+        time.sleep(0.1)
+    assert not Path(f"/proc/{child_pid}").exists()
 
 
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda path: path.name)

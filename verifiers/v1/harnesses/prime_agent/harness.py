@@ -202,12 +202,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         wrapper = f"{root}/prime-agent"
         await runtime.write(
             wrapper,
-            (
-                "#!/bin/sh\n"
-                "set -eu\n"
-                f'export PATH="{NODE_BIN_DIR}:$HOME/.local/bin:$PATH"\n'
-                f'exec {shlex.join(command)} "$@"\n'
-            ).encode(),
+            self._wrapper_script(command).encode(),
         )
         executable = await runtime.run(["chmod", "700", wrapper], {})
         if executable.exit_code != 0:
@@ -248,6 +243,62 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             duration,
             *args,
         ]
+
+    def _wrapper_script(self, command: list[str]) -> str:
+        lines = [
+            "#!/bin/sh",
+            "set -eu",
+            f'export PATH="{NODE_BIN_DIR}:$HOME/.local/bin:$PATH"',
+        ]
+        invocation = f'{shlex.join(command)} "$@"'
+        if self.config.process_timeout_ms is None:
+            return "\n".join([*lines, f"exec {invocation}", ""])
+
+        # Prime Agent's daemon can detach from the process group managed by GNU
+        # timeout. The per-episode agent directory remains in every descendant's
+        # environment, including detached supervisors and kernel fork servers.
+        cleanup = f'''cleanup_descendants() {{
+python3 - "$$" <<'PY'
+import os
+import signal
+import sys
+import time
+
+marker = os.environ.get("{ENV_AGENT_DIR}")
+if marker:
+    expected = b"{ENV_AGENT_DIR}=" + os.fsencode(marker)
+    excluded = {{os.getpid(), int(sys.argv[1])}}
+
+    def matching_pids():
+        for entry in os.scandir("/proc"):
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            if pid in excluded:
+                continue
+            try:
+                with open(f"/proc/{{pid}}/environ", "rb") as handle:
+                    environment = handle.read().split(b"\\0")
+            except (FileNotFoundError, PermissionError, ProcessLookupError):
+                continue
+            if expected in environment:
+                yield pid
+
+    for sig, delay in ((signal.SIGTERM, 1.0), (signal.SIGKILL, 0.0)):
+        for pid in matching_pids():
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        if delay:
+            time.sleep(delay)
+PY
+}}
+trap cleanup_descendants EXIT
+{invocation}
+trap - EXIT
+cleanup_descendants'''
+        return "\n".join([*lines, cleanup, ""])
 
     @staticmethod
     def _root(trace: Trace) -> str:
