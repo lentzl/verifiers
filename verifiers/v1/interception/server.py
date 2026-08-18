@@ -320,6 +320,7 @@ class InterceptionServer(Interception):
         started: float,
         *,
         node: int | None = None,
+        client_session_id: str | None = None,
         finish_reason: "FinishReason" = None,
         usage: "Usage | None" = None,
         error: BaseException | None = None,
@@ -346,6 +347,7 @@ class InterceptionServer(Interception):
         session.trace.calls.append(
             ModelCall(
                 node=node,
+                client_session_id=client_session_id,
                 model=request.get("model") if request is not None else None,
                 sampling=sampling,
                 endpoint=dialect.upstream_path,
@@ -382,6 +384,7 @@ class InterceptionServer(Interception):
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         session.adopt(asyncio.current_task())
+        client_session_id = request.headers.get("session_id")
         raw = await request.read()
         try:
             body = from_json(raw)
@@ -522,6 +525,7 @@ class InterceptionServer(Interception):
                 turn=turn,
                 inspect_response=inspect_response,
                 policy_paths=policy_paths,
+                client_session_id=client_session_id,
             )
 
         def serve(response: Response) -> web.Response:
@@ -644,6 +648,7 @@ class InterceptionServer(Interception):
                     body,
                     started,
                     node=node,
+                    client_session_id=client_session_id,
                     finish_reason=call_response.finish_reason
                     if call_response
                     else None,
@@ -668,6 +673,7 @@ class InterceptionServer(Interception):
         turn: graph.PendingTurn,
         inspect_response: bool,
         policy_paths: list[str] | None = None,
+        client_session_id: str | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay or synthesize a stream for the program,
         incrementally assembling the response to record on the trace."""
@@ -1058,6 +1064,7 @@ class InterceptionServer(Interception):
                 body,
                 started,
                 node=node,
+                client_session_id=client_session_id,
                 finish_reason=response.finish_reason if response is not None else None,
                 usage=response.usage if response is not None else None,
                 error=error,

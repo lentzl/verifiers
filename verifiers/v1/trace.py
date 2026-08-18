@@ -177,6 +177,8 @@ class ModelCall(BaseModel):
 
     node: int | None = None
     """Index into `Trace.nodes` of the assistant node this call committed."""
+    client_session_id: str | None = None
+    """Opaque session identifier supplied by the intercepted client."""
     model: str | None = None
     """The model requested from the provider."""
     sampling: Sampling | None = None

@@ -9,12 +9,14 @@ from pathlib import Path
 
 import pytest
 
+from verifiers.v1.clients import EvalClientConfig, ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.harnesses.prime_agent import (
     PrimeAgentHarness,
     PrimeAgentHarnessConfig,
 )
 from verifiers.v1.harnesses.prime_agent.harness import ENV_AGENT_DIR
+from verifiers.v1.types import SamplingConfig
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs"
 CONFIGS = sorted(
@@ -28,6 +30,22 @@ def test_prime_agent_supports_required_native_capabilities() -> None:
     assert PrimeAgentHarness.SUPPORTS_MCP
     assert PrimeAgentHarness.SUPPORTS_RESUME
     assert PrimeAgentHarness.SUPPORTS_SKILLS
+
+
+def test_prime_agent_exposes_client_session_lineage_to_interception() -> None:
+    ctx = ModelContext(
+        model="Qwen/Qwen3.5-27B",
+        client=EvalClientConfig(base_url="http://127.0.0.1:8000/v1"),
+        sampling=SamplingConfig(reasoning_effort="high"),
+    )
+
+    models = PrimeAgentHarness._models(ctx, "http://interception.test/v1")
+    provider = models["providers"]["intercept"]
+
+    assert provider["baseUrl"] == "http://interception.test/v1"
+    assert provider["models"][0]["compat"] == {
+        "sendSessionAffinityHeaders": True
+    }
 
 
 def test_prime_agent_exposes_native_autonomous_completion_gates() -> None:

@@ -137,26 +137,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             raise RuntimeError(
                 f"prime-agent state directory failed: {created.stderr.strip()[-500:]}"
             )
-        reasoning = ctx.sampling.reasoning_effort not in (
-            None,
-            "none",
-        ) or ctx.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
-        models = {
-            "providers": {
-                PROVIDER: {
-                    "baseUrl": endpoint,
-                    "api": "openai-completions",
-                    "apiKey": KEY_VAR,
-                    "models": [
-                        {
-                            "id": ctx.model,
-                            "reasoning": reasoning,
-                            "input": ["text", "image"],
-                        }
-                    ],
-                }
-            }
-        }
+        models = self._models(ctx, endpoint)
         models_path = f"{agent_dir}/models.json"
         await runtime.write(models_path, json.dumps(models).encode())
         secured = await runtime.run(["chmod", "600", models_path], {})
@@ -216,6 +197,30 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             prompt=prompt,
             allow_empty_tool_reply=True,
         )
+
+    @staticmethod
+    def _models(ctx: ModelContext, endpoint: str) -> dict:
+        reasoning = ctx.sampling.reasoning_effort not in (
+            None,
+            "none",
+        ) or ctx.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
+        return {
+            "providers": {
+                PROVIDER: {
+                    "baseUrl": endpoint,
+                    "api": "openai-completions",
+                    "apiKey": KEY_VAR,
+                    "models": [
+                        {
+                            "id": ctx.model,
+                            "reasoning": reasoning,
+                            "input": ["text", "image"],
+                            "compat": {"sendSessionAffinityHeaders": True},
+                        }
+                    ],
+                }
+            }
+        }
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         root = self._root(trace)
