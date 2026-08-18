@@ -34,3 +34,27 @@ event contract without changing the default generated benchmark:
 Payloads are deliberately trivial, while every required action remains a hard
 conjunction over real runtime events. Child completion notices without an
 explicit `agent_message.send` delivery do not count as result messages.
+
+## Natural complete-policy curriculum
+
+The `natural_n1` and `natural_n2` rungs broaden semantic context without
+weakening the same executable event contract:
+
+- `natural_n1`: complete asynchronous delegation with child-owned evidence,
+  coordinator-private state, optional independent coordinator work, one visible
+  child result, and final synthesis.
+- `natural_n2`: a staged separation-of-duties dependency in which the child
+  first completes an independent milestone, requests a coordinator-private
+  parameter, receives it, and then reports the completed result.
+
+User prompts describe the job, ownership boundary, semantic dependency, and
+requested output only. They are validated to exclude Prime API names and
+prescriptive action words such as spawn, yield, polling, or handle retention.
+The unchanged Prime Agent system/runtime still documents the available harness.
+Train, validation, and OOD splits use disjoint semantic scenario families;
+resource schemas, names, path styles, wording, private values, and N1 graph
+variants remain procedural. OOD also holds out an N2 composition graph that
+adds independent coordinator-local work to the staged child dependency. Hidden
+oracles preserve strict hard scoring for
+state, ownership, child identity, handle retention, message provenance,
+ordering, cardinality, private-value withholding, and exact final output.

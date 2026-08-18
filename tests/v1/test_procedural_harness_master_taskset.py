@@ -413,12 +413,12 @@ def _nodes_with_mask(nodes, mask):
     assert offset == len(mask)
 
 
-def test_atomic_child_request_action_filter_excludes_reasoning_child_and_retries() -> None:
+def test_atomic_child_request_action_filter_excludes_reasoning_child_and_retries() -> (
+    None
+):
     task = _curriculum_task("atomic_child_request")
     child = task.data.oracle["children"][0]
-    state_name, state_value = next(
-        iter(task.data.oracle["coordinator_state"].items())
-    )
+    state_name, state_value = next(iter(task.data.oracle["coordinator_state"].items()))
     spawn_code = (
         f"{state_name} = {state_value}\n"
         "handle = await rlm("
@@ -495,7 +495,9 @@ def test_atomic_child_request_action_filter_excludes_reasoning_child_and_retries
         ),
         MessageNode(
             parent=6,
-            message=AssistantMessage(content='{"multiplier": 6, "request_received": true}'),
+            message=AssistantMessage(
+                content='{"multiplier": 6, "request_received": true}'
+            ),
             sampled=True,
             token_ids=[401, thinking_end, 402, 403, message_end],
             mask=[True] * 5,
@@ -531,7 +533,9 @@ def test_atomic_child_request_action_filter_excludes_reasoning_child_and_retries
 
     masks = keep_atomic_child_request_coordinator_actions(trace)
     selected = {
-        id(node): [token for token, keep in zip(node.token_ids, keep_mask, strict=True) if keep]
+        id(node): [
+            token for token, keep in zip(node.token_ids, keep_mask, strict=True) if keep
+        ]
         for branch, mask in zip(trace.branches, masks, strict=True)
         for node, keep_mask in _nodes_with_mask(branch.nodes, mask)
         if any(keep_mask)
@@ -756,6 +760,121 @@ def test_atomic_curriculum_rungs_require_complete_real_message_trajectories(
     assert behavior["harness_score"] == 1.0, behavior
     assert task.data.workspace_files == {}
     assert task.data.generation_metadata["curriculum_rung"] == rung
+
+
+@pytest.mark.parametrize("rung", ["natural_n1", "natural_n2"])
+def test_natural_curriculum_requires_complete_semantic_message_trajectory(
+    rung: str,
+) -> None:
+    task = _curriculum_task(rung)
+    child = task.data.oracle["children"][0]
+    state_name, _ = next(iter(task.data.oracle["coordinator_state"].items()))
+    actions = [
+        (
+            "cell",
+            _spawn_code(task),
+            f"RLMSpawnHandle(name='{child['name']}')",
+        )
+    ]
+    local_paths = [
+        path
+        for path, item in task.data.oracle["resource_ownership"].items()
+        if item["owner"] == "coordinator"
+    ]
+    for path in local_paths:
+        actions.append(
+            ("cell", f"from pathlib import Path\nPath({path!r}).read_text()")
+        )
+
+    if rung == "natural_n2":
+        request_term = task.data.oracle["request_terms"][0]
+        actions.extend(
+            [
+                ("incoming", child["name"], f"Please provide the {request_term}."),
+                (
+                    "cell",
+                    (
+                        f"await agent_message.send(str({state_name}), "
+                        "receiver_role='child', "
+                        f"receiver_name={child['name']!r})"
+                    ),
+                    "Agent message sent: agentmsg-natural-followup",
+                ),
+                ("incoming", child["name"], "The completed review result is ready."),
+            ]
+        )
+    else:
+        actions.append(("incoming", child["name"], str(child["expected_result"])))
+
+    behavior = _contract_behavior(_trace(task, actions), task.data)
+
+    assert behavior["harness_score"] == 1.0, behavior
+    assert task.data.generation_metadata["natural_stage"] == (
+        "N1" if rung == "natural_n1" else "N2"
+    )
+
+
+def test_natural_dependency_rejects_private_value_disclosed_at_spawn() -> None:
+    task = _curriculum_task("natural_n2")
+    child = task.data.oracle["children"][0]
+    state_name, state_value = next(iter(task.data.oracle["coordinator_state"].items()))
+    path = child["resource_path"]
+    actions = [
+        (
+            "cell",
+            (
+                f"{state_name} = {state_value!r}\n"
+                f"handle = await rlm('Read {path}; use private value {state_value}', "
+                f"name={child['name']!r})"
+            ),
+            f"RLMSpawnHandle(name='{child['name']}')",
+        ),
+        ("incoming", child["name"], "Please provide the calibration factor."),
+        (
+            "cell",
+            (
+                f"await agent_message.send(str({state_name}), receiver_role='child', "
+                f"receiver_name={child['name']!r})"
+            ),
+            "Agent message sent: agentmsg-natural-followup",
+        ),
+        ("incoming", child["name"], "The completed review result is ready."),
+    ]
+
+    behavior = _contract_behavior(_trace(task, actions), task.data)
+
+    assert behavior["no_forbidden_atoms"] == 0.0
+    assert behavior["harness_score"] == 0.0
+
+
+def test_natural_dependency_rejects_wrong_parent_value() -> None:
+    task = _curriculum_task("natural_n2")
+    child = task.data.oracle["children"][0]
+    state_name, state_value = next(iter(task.data.oracle["coordinator_state"].items()))
+    actions = [
+        (
+            "cell",
+            _spawn_code(task),
+            f"RLMSpawnHandle(name='{child['name']}')",
+        ),
+        ("incoming", child["name"], f"Please provide the {state_name}."),
+        (
+            "cell",
+            (
+                f"await agent_message.send(str({state_value + 1}), "
+                "receiver_role='child', "
+                f"receiver_name={child['name']!r})"
+            ),
+            "Agent message sent: agentmsg-wrong-followup",
+        ),
+        ("incoming", child["name"], "The completed review result is ready."),
+    ]
+
+    behavior = _contract_behavior(_trace(task, actions), task.data)
+
+    assert behavior["all_required_atoms"] == 0.0
+    assert behavior["no_forbidden_atoms"] == 0.0
+    assert behavior["harness_score"] == 0.0
 
 
 def test_atomic_state_rejects_assignment_and_reuse_in_one_ipython_call() -> None:

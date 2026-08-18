@@ -43,6 +43,8 @@ CurriculumRung = Literal[
     "atomic_child_request",
     "atomic_followup",
     "atomic_parallel",
+    "natural_n1",
+    "natural_n2",
 ]
 COMPLETION_GATE_PATH = "/workspace/.procedural-harness-master/completion_gate.py"
 COMPLETION_GATE_FEEDBACK = (
@@ -151,15 +153,54 @@ def _incoming_messages(trace: vf.Trace) -> list[tuple[int, str, str]]:
     return messages
 
 
-def _is_request_message(body: str) -> bool:
+def _is_request_message(
+    body: str, request_terms: tuple[str, ...] = ("multiplier",)
+) -> bool:
     lowered = body.lower()
-    return lowered.startswith("need ") or bool(
-        re.search(
-            r"\b(?:please\s+provide|could\s+you\s+provide|send\s+me|share|supply|requesting)\b"
-            r".{0,80}\bmultiplier\b",
-            lowered,
-        )
+    normalized = lowered.replace("_", " ")
+    terms = tuple(term.lower().replace("_", " ") for term in request_terms)
+    request_cue = re.search(
+        r"\b(?:need|please\s+provide|could\s+you\s+(?:provide|send)|send\s+me|"
+        r"share|supply|request(?:ing)?|may\s+i\s+have|what\s+is)\b",
+        normalized,
     )
+    return lowered.startswith("need ") or bool(
+        request_cue and any(term in normalized for term in terms)
+    )
+
+
+def _contains_state_value(prompt: str, value: Any) -> bool:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return bool(re.search(rf"(?<!\d){re.escape(str(value))}(?!\d)", prompt))
+    if isinstance(value, str):
+        return value in prompt
+    return False
+
+
+def _message_argument(call: ast.Call) -> ast.AST | None:
+    keyword = next(
+        (item.value for item in call.keywords if item.arg == "message"), None
+    )
+    return keyword if keyword is not None else (call.args[0] if call.args else None)
+
+
+def _references_coordinator_state(node: ast.AST | None, state: dict[str, Any]) -> bool:
+    if node is None:
+        return False
+    for item in ast.walk(node):
+        if isinstance(item, ast.Name) and item.id in state:
+            return True
+        if isinstance(item, ast.Subscript) and _literal(item.slice) in state:
+            return True
+        value = _literal(item)
+        if value is not None and any(
+            value == expected
+            or str(value) == str(expected)
+            or (isinstance(value, str) and _contains_state_value(value, expected))
+            for expected in state.values()
+        ):
+            return True
+    return False
 
 
 def _is_awaited(statement: ast.stmt, call: ast.Call) -> bool:
@@ -292,7 +333,7 @@ def _contract_behavior(
     poll_positions: list[float] = []
     child_access_positions: list[float] = []
     local_access_positions: list[tuple[str, float]] = []
-    parent_sends: list[tuple[float, str | None]] = []
+    parent_sends: list[tuple[float, str | None, bool]] = []
     aliases: dict[str, str] = {}
     retained_state_nodes: dict[str, list[int]] = {name: [] for name in state}
 
@@ -344,6 +385,10 @@ def _contract_behavior(
                         mark("delegate_coordinator_owned", position)
                     if any(name in prompt for name in state):
                         mark("delegate_coordinator_state", position)
+                    if any(
+                        _contains_state_value(prompt, value) for value in state.values()
+                    ):
+                        mark("delegate_private_value", position)
                     continue
                 if (
                     call_name.startswith("agent_observe.")
@@ -371,7 +416,13 @@ def _contract_behavior(
                 if call_name == "agent_message.send" and send_succeeded:
                     receiver = _keyword(call, "receiver_name")
                     parent_sends.append(
-                        (position, receiver if isinstance(receiver, str) else None)
+                        (
+                            position,
+                            receiver if isinstance(receiver, str) else None,
+                            _references_coordinator_state(
+                                _message_argument(call), state
+                            ),
+                        )
                     )
                     counts["parent_to_child_message"] += 1
             for path in child_paths:
@@ -395,10 +446,11 @@ def _contract_behavior(
         for item in incoming
         if "RESOURCE_UNAVAILABLE" in item[2] or "RLM child failure" in item[2]
     ]
+    request_terms = tuple(oracle.get("request_terms", ("multiplier",)))
     request_messages = [
         item
         for item in incoming
-        if item not in failure_messages and _is_request_message(item[2])
+        if item not in failure_messages and _is_request_message(item[2], request_terms)
     ]
     result_messages = [
         item
@@ -432,7 +484,7 @@ def _contract_behavior(
     ):
         mark("serialized_fanout_wait", float(first_incoming))
 
-    for send_position, receiver in parent_sends:
+    for send_position, receiver, correct_value in parent_sends:
         prior_requests = [item for item in request_messages if item[0] < send_position]
         target = receiver or (
             prior_requests[-1][1]
@@ -441,6 +493,10 @@ def _contract_behavior(
         )
         if target:
             mark(f"send_followup:{target}", send_position)
+            if correct_value:
+                mark(f"send_followup_value:{target}", send_position)
+            else:
+                mark("wrong_followup_value", send_position)
         if not prior_requests:
             mark("guess_followup_value", send_position)
         later_results = [item for item in result_messages if item[0] > send_position]
@@ -640,9 +696,7 @@ def keep_atomic_child_request_coordinator_actions(
         return []
     data = trace.task.data
     if not isinstance(data, ProceduralHarnessMasterData):
-        data = ProceduralHarnessMasterData.model_validate(
-            data.model_dump()
-        )
+        data = ProceduralHarnessMasterData.model_validate(data.model_dump())
     if data.family != "atomic_child_request":
         return []
     primary_root = next(
@@ -692,7 +746,10 @@ def keep_atomic_child_request_coordinator_actions(
         expected_name = expected_children[0]["name"]
         eligible: list[int] = []
         for event in _ipython_events(trace):
-            if event.node_index not in coordinator_nodes or event.node_index >= child_request_index:
+            if (
+                event.node_index not in coordinator_nodes
+                or event.node_index >= child_request_index
+            ):
                 continue
             try:
                 tree = ast.parse(event.code)
@@ -701,7 +758,8 @@ def keep_atomic_child_request_coordinator_actions(
             rlm_calls = [
                 call
                 for call in ast.walk(tree)
-                if isinstance(call, ast.Call) and (_dotted_name(call.func) or _call_name(call)) == "rlm"
+                if isinstance(call, ast.Call)
+                and (_dotted_name(call.func) or _call_name(call)) == "rlm"
             ]
             if len(rlm_calls) != 1:
                 continue
@@ -734,7 +792,10 @@ def keep_atomic_child_request_coordinator_actions(
             allowed_statements: set[int] = {
                 id(statement)
                 for statement in tree.body
-                if any(_assigned_state(statement, name, value) for name, value in state.items())
+                if any(
+                    _assigned_state(statement, name, value)
+                    for name, value in state.items()
+                )
                 or call in ast.walk(statement)
             }
             handle_names = {
@@ -743,7 +804,9 @@ def keep_atomic_child_request_coordinator_actions(
                 if call in ast.walk(statement)
                 and isinstance(statement, (ast.Assign, ast.AnnAssign))
                 for target in (
-                    statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                    statement.targets
+                    if isinstance(statement, ast.Assign)
+                    else [statement.target]
                 )
                 if isinstance(target, ast.Name)
             }
@@ -770,7 +833,10 @@ def keep_atomic_child_request_coordinator_actions(
                 break
             for index in range(start, end + 1):
                 selected[index] = bool(node.mask[index])
-            if end + 1 < len(node.token_ids) and node.token_ids[end + 1] == message_end_token_id:
+            if (
+                end + 1 < len(node.token_ids)
+                and node.token_ids[end + 1] == message_end_token_id
+            ):
                 selected[end + 1] = bool(node.mask[end + 1])
             cursor = end + 1
         return selected
@@ -779,12 +845,15 @@ def keep_atomic_child_request_coordinator_actions(
         if isinstance(node.message, AssistantMessage) and node.message.tool_calls:
             return [False] * len(node.token_ids)
         try:
-            start = len(node.token_ids) - 1 - node.token_ids[::-1].index(thinking_end_token_id)
+            start = (
+                len(node.token_ids)
+                - 1
+                - node.token_ids[::-1].index(thinking_end_token_id)
+            )
         except ValueError:
             start = -1
         return [
-            bool(sampled and index > start)
-            for index, sampled in enumerate(node.mask)
+            bool(sampled and index > start) for index, sampled in enumerate(node.mask)
         ]
 
     selected_by_node: dict[int, list[bool]] = {}
@@ -942,7 +1011,9 @@ class ProceduralHarnessMasterTask(
             required_child_messages[child["name"]] = count
         family = (
             "followup"
-            if self.data.family in {"followup", "atomic_followup"}
+            if self.data.family in {"followup", "atomic_followup", "natural_n2"}
+            else "single"
+            if self.data.family == "natural_n1"
             else "direct"
         )
         final_answer = self.data.oracle["final_answer"]

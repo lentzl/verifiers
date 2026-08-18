@@ -9,7 +9,9 @@ SCRIPT = (
     / "procedural_harness_master_v1"
     / "generate.py"
 )
-SPEC = importlib.util.spec_from_file_location("procedural_harness_master_v1_generator", SCRIPT)
+SPEC = importlib.util.spec_from_file_location(
+    "procedural_harness_master_v1_generator", SCRIPT
+)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
@@ -39,7 +41,9 @@ def test_atomic_curriculum_generation_is_deterministic_and_oracle_hidden() -> No
             assert row["metadata"]["episode_family"] == rung
             assert row["public"]["workspace_files"] == {}
             assert row["oracle"]["resource_ownership"] == {}
-            assert all(child["resource_path"] is None for child in row["oracle"]["children"])
+            assert all(
+                child["resource_path"] is None for child in row["oracle"]["children"]
+            )
             assert "reasoning_content" not in json.dumps(row)
             assert "trajectory_contract" not in json.dumps(row["public"])
             assert "final_answer" not in json.dumps(row["public"])
@@ -56,9 +60,7 @@ def test_atomic_state_public_answer_contract_matches_oracle() -> None:
 
 
 def test_atomic_child_request_exposes_only_the_observable_prefix_contract() -> None:
-    row = MODULE.generate_curriculum_episode(
-        "atomic_child_request", "train_gen", 17
-    )
+    row = MODULE.generate_curriculum_episode("atomic_child_request", "train_gen", 17)
     prompt = row["public"]["user_prompt"]
     contract = row["oracle"]["trajectory_contract"]
 
@@ -67,6 +69,101 @@ def test_atomic_child_request_exposes_only_the_observable_prefix_contract() -> N
     assert "send_followup" not in " ".join(contract["required_atoms"])
     assert contract["cardinality"]["parent_to_child_message"] == 0
     assert contract["cardinality"]["child_to_parent_message"] == 1
+
+
+def test_natural_curriculum_is_deterministic_hidden_and_non_prescriptive() -> None:
+    forbidden = set(MODULE.NATURAL_USER_PROMPT_FORBIDDEN)
+    for rung in ("natural_n1", "natural_n2"):
+        for split in ("train_gen", "valid_gen", "ood_gen"):
+            for index in range(24):
+                row = MODULE.generate_curriculum_episode(rung, split, index)
+                assert row == MODULE.generate_curriculum_episode(rung, split, index)
+                MODULE.validate_row(row)
+                prompt = row["public"]["user_prompt"].lower()
+                assert not {term for term in forbidden if term in prompt}
+                assert row["public"]["workspace_files"]
+                assert row["oracle"]["resource_ownership"]
+                assert row["metadata"]["natural_stage"] == (
+                    "N1" if rung == "natural_n1" else "N2"
+                )
+                assert row["metadata"]["semantic_family"]
+                assert row["metadata"]["graph_variant"]
+                assert "trajectory_contract" not in json.dumps(row["public"])
+                assert "reasoning_content" not in json.dumps(row)
+
+
+def test_natural_curriculum_holds_out_semantic_families() -> None:
+    by_split = {
+        split: {
+            MODULE.generate_curriculum_episode("natural_n2", split, index)["metadata"][
+                "semantic_family"
+            ]
+            for index in range(96)
+        }
+        for split in ("train_gen", "valid_gen", "ood_gen")
+    }
+
+    assert len(by_split["train_gen"]) == len(MODULE.NATURAL_SCENARIOS["train_gen"])
+    assert len(by_split["valid_gen"]) == len(MODULE.NATURAL_SCENARIOS["valid_gen"])
+    assert len(by_split["ood_gen"]) == len(MODULE.NATURAL_SCENARIOS["ood_gen"])
+    assert by_split["train_gen"].isdisjoint(by_split["valid_gen"])
+    assert by_split["train_gen"].isdisjoint(by_split["ood_gen"])
+    assert by_split["valid_gen"].isdisjoint(by_split["ood_gen"])
+
+
+def test_natural_train_window_covers_every_semantic_family_and_wording_axis() -> None:
+    for rung in ("natural_n1", "natural_n2"):
+        rows = [
+            MODULE.generate_curriculum_episode(rung, "train_gen", index)
+            for index in range(len(MODULE.NATURAL_SCENARIOS["train_gen"]))
+        ]
+
+        assert {row["metadata"]["semantic_family"] for row in rows} == {
+            scenario.key for scenario in MODULE.NATURAL_SCENARIOS["train_gen"]
+        }
+        assert len({row["metadata"]["instruction_style"] for row in rows}) >= 2
+
+
+def test_natural_n1_varies_the_composition_graph() -> None:
+    variants = {
+        MODULE.generate_curriculum_episode("natural_n1", "train_gen", index)[
+            "metadata"
+        ]["graph_variant"]
+        for index in range(16)
+    }
+
+    assert variants == {
+        "child_plus_private_state",
+        "child_plus_local_work_and_private_state",
+    }
+
+
+def test_natural_n2_holds_out_a_composition_graph_for_ood() -> None:
+    train_variants = {
+        MODULE.generate_curriculum_episode("natural_n2", "train_gen", index)[
+            "metadata"
+        ]["graph_variant"]
+        for index in range(24)
+    }
+    valid_variants = {
+        MODULE.generate_curriculum_episode("natural_n2", "valid_gen", index)[
+            "metadata"
+        ]["graph_variant"]
+        for index in range(24)
+    }
+    ood_variants = {
+        MODULE.generate_curriculum_episode("natural_n2", "ood_gen", index)["metadata"][
+            "graph_variant"
+        ]
+        for index in range(24)
+    }
+
+    assert train_variants == valid_variants == {"staged_private_parameter_cycle"}
+    assert ood_variants == {
+        "staged_private_parameter_cycle",
+        "staged_private_parameter_cycle_with_local_work",
+    }
+    assert "staged_private_parameter_cycle_with_local_work" not in train_variants
 
 
 def test_default_generation_does_not_select_curriculum() -> None:
@@ -94,12 +191,12 @@ def test_split_surfaces_are_separated() -> None:
     assert train_resources <= set(MODULE.TRAIN_RESOURCES)
     assert ood_resources <= set(MODULE.OOD_RESOURCES)
     assert train_resources.isdisjoint(ood_resources)
-    assert {
-        row["metadata"]["instruction_style"] for row in train
-    }.isdisjoint({row["metadata"]["instruction_style"] for row in valid})
-    assert {
-        row["metadata"]["instruction_style"] for row in train + valid
-    }.isdisjoint({row["metadata"]["instruction_style"] for row in ood})
+    assert {row["metadata"]["instruction_style"] for row in train}.isdisjoint(
+        {row["metadata"]["instruction_style"] for row in valid}
+    )
+    assert {row["metadata"]["instruction_style"] for row in train + valid}.isdisjoint(
+        {row["metadata"]["instruction_style"] for row in ood}
+    )
 
 
 def test_every_row_has_hidden_conjunctive_contract() -> None:
@@ -124,9 +221,7 @@ def test_reclaim_forbids_parent_access_before_failure() -> None:
     row = next(
         row
         for i in range(80)
-        if (row := MODULE.generate_episode("ood_gen", i))["metadata"][
-            "episode_family"
-        ]
+        if (row := MODULE.generate_episode("ood_gen", i))["metadata"]["episode_family"]
         == "reclaim"
     )
     contract = row["oracle"]["trajectory_contract"]
@@ -144,7 +239,10 @@ def test_verify_prompt_distinguishes_digest_evidence_from_final_result() -> None
     assert row["metadata"]["episode_family"] == "verify"
     assert "digest is verification evidence only" in row["public"]["user_prompt"]
     assert "do not put the digest in the final JSON" in row["public"]["user_prompt"]
-    assert row["oracle"]["final_answer"]["child"] == row["oracle"]["final_answer"]["result"]
+    assert (
+        row["oracle"]["final_answer"]["child"]
+        == row["oracle"]["final_answer"]["result"]
+    )
     assert row["oracle"]["final_answer"]["verified"] is True
 
 
