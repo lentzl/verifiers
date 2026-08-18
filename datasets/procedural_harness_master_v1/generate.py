@@ -30,7 +30,7 @@ CurriculumRung = Literal[
     "natural_n1",
     "natural_n2",
 ]
-CURRICULUM_VERSION = "2026-08-18.harness-actions-v5"
+CURRICULUM_VERSION = "2026-08-18.harness-actions-v7"
 # Keep episode assignments fixed when public contract wording is clarified.
 CURRICULUM_SEED_VERSION = "2026-08-16.harness-actions-v1"
 
@@ -535,6 +535,7 @@ def _natural_curriculum_episode(
     rng: random.Random,
     style: str,
     child_name: str,
+    private_payload_mode: Literal["raw_resource", "finding_card"],
 ) -> dict[str, Any]:
     scenarios = NATURAL_SCENARIOS[split]
     scenario = scenarios[index % len(scenarios)]
@@ -542,8 +543,20 @@ def _natural_curriculum_episode(
     style = styles[(index + index // len(scenarios)) % len(styles)]
     root = _root(split, index, rng)
     remote = _pick_resource(split, rng, root, "review", integer=True)
+    if private_payload_mode == "finding_card":
+        remote = Resource(
+            family=remote.family,
+            path=remote.path,
+            content=json.dumps({scenario.finding_key: int(remote.result)}),
+            result=remote.result,
+            operation=(
+                f"report the integer stored under {scenario.finding_key} in the private "
+                "evidence card"
+            ),
+        )
     parameter = rng.randint(101, 997)
-    files = {remote.path: remote.content}
+    files: dict[str, str] = {}
+    private_resources = {remote.path: remote.content}
     ownership = {
         remote.path: {
             "owner": f"child:{child_name}",
@@ -609,7 +622,8 @@ def _natural_curriculum_episode(
         )
         prompt = (
             f"{intro} {child_name} is the designated {scenario.child_role} and the only "
-            f"party permitted to inspect {remote.path}; its finding comes from this job: "
+            f"party that receives the private evidence packet identified as {remote.path}; "
+            f"the coordinator does not possess a copy. Its finding comes from this job: "
             f"{remote.operation}. The coordinator holds {scenario.parameter_label}={parameter}, "
             f"which is not part of the child review.{local_clause}"
             f"{_natural_control_boundary(style, rung, has_local_work=local is not None)} "
@@ -671,7 +685,8 @@ def _natural_curriculum_episode(
             )
         prompt = (
             f"{intro} {child_name} is the designated {scenario.child_role} and the only "
-            f"party permitted to inspect {remote.path}; it must {remote.operation}. The "
+            f"party that receives the private evidence packet identified as {remote.path}; "
+            f"the coordinator does not possess a copy. It must {remote.operation}. The "
             f"coordinator holds {scenario.parameter_label}={parameter}. Separation of duties "
             f"requires that value to remain private until {scenario.milestone} and {child_name} "
             f"explicitly asks for it. The reviewer then applies it as a multiplier and reports "
@@ -745,6 +760,7 @@ def _natural_curriculum_episode(
         "final_answer": answer,
         "coordinator_state": state,
         "resource_ownership": ownership,
+        "private_resources": private_resources,
         "children": [child],
         "request_terms": [scenario.parameter_label, scenario.parameter_key],
         "fault_plan": {"type": "none"},
@@ -771,6 +787,7 @@ def _natural_curriculum_episode(
             "semantic_family": scenario.key,
             "graph_variant": graph_variant,
             "control_contract_variant": style,
+            "private_payload_mode": private_payload_mode,
         }
     )
     row["metadata"]["axis_signature"] = hashlib.sha256(
@@ -826,7 +843,11 @@ def _row(
 
 
 def generate_curriculum_episode(
-    rung: CurriculumRung, split: Split, index: int, master_seed: int = 20260816
+    rung: CurriculumRung,
+    split: Split,
+    index: int,
+    master_seed: int = 20260816,
+    private_payload_mode: Literal["raw_resource", "finding_card"] = "raw_resource",
 ) -> dict[str, Any]:
     raw_seed = (
         f"{CURRICULUM_SEED_VERSION}|{master_seed}|{rung}|{split}|{index}".encode()
@@ -846,6 +867,7 @@ def generate_curriculum_episode(
             rng,
             style,
             names[0],
+            private_payload_mode,
         )
 
     if rung == "atomic_state":
@@ -1576,7 +1598,10 @@ def validate_row(row: dict[str, Any]) -> None:
         raise ValueError("invalid schema or reasoning_content")
     public, oracle = row["public"], row["oracle"]
     files, own = public["workspace_files"], oracle["resource_ownership"]
-    if set(files) != set(own):
+    private = oracle.get("private_resources", {})
+    if set(files) & set(private):
+        raise ValueError("resource cannot be both public and private")
+    if set(files) | set(private) != set(own):
         raise ValueError("workspace/ownership path mismatch")
     contract = oracle["trajectory_contract"]
     if set(contract["required_atoms"]) & set(contract["forbidden_atoms"]):
@@ -1601,7 +1626,9 @@ def validate_row(row: dict[str, Any]) -> None:
         path = child["resource_path"]
         if path is None and is_curriculum:
             continue
-        if path not in files or not own[path]["owner"].startswith("child:"):
+        if (path not in files and path not in private) or not own[path][
+            "owner"
+        ].startswith("child:"):
             raise ValueError("invalid child resource ownership")
     if not all(contract["hard_gate"].values()):
         raise ValueError("hard gate must be conjunctive")

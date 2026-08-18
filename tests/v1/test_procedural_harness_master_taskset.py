@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from procedural_harness_master_v1.taskset import (
     COMPLETION_GATE_PATH,
+    PRIVATE_EVIDENCE_HEADER,
     ProceduralHarnessMasterConfig,
     ProceduralHarnessMasterEnv,
     ProceduralHarnessMasterTaskset,
@@ -156,6 +157,48 @@ def test_taskset_keeps_oracle_out_of_model_visible_fields() -> None:
     assert "trajectory_contract" not in visible
     assert "final_answer" not in visible
     assert task.data.oracle["trajectory_contract"]
+
+
+def test_natural_private_evidence_is_injected_only_into_child_context() -> None:
+    task = _curriculum_task("natural_n1")
+    private = task.data.oracle["private_resources"]
+    child_request = vf.Request(
+        messages=[UserMessage(content="Review your assigned private evidence.")]
+    )
+
+    rewritten = task.inject_natural_private_evidence(child_request)
+
+    assert rewritten is not None
+    child_prompt = rewritten.messages[-1]
+    assert isinstance(child_prompt, UserMessage)
+    text = str(child_prompt.content)
+    assert PRIVATE_EVIDENCE_HEADER in text
+    for label, contents in private.items():
+        assert label in text
+        assert contents in text
+
+    root_request = vf.Request(messages=[UserMessage(content=task.data.prompt)])
+    assert task.inject_natural_private_evidence(root_request) is None
+    assert task.inject_natural_private_evidence(rewritten) is None
+
+
+def test_natural_finding_card_mode_reaches_task_and_child_context() -> None:
+    task = ProceduralHarnessMasterTaskset(
+        ProceduralHarnessMasterConfig(
+            count=1,
+            curriculum_rung="natural_n1",
+            private_payload_mode="finding_card",
+        )
+    ).load()[0]
+    request = vf.Request(messages=[UserMessage(content="Review the private evidence.")])
+
+    rewritten = task.inject_natural_private_evidence(request)
+
+    assert task.data.generation_metadata["private_payload_mode"] == "finding_card"
+    assert rewritten is not None
+    text = str(rewritten.messages[-1].content)
+    assert "not a runtime file path" in text
+    assert next(iter(task.data.oracle["private_resources"].values())) in text
 
 
 @pytest.mark.asyncio
@@ -956,6 +999,8 @@ def test_atomic_parallel_requires_retaining_both_child_handles() -> None:
         "await agent_message.list()",
         "await agent_message.listen_for_messages()",
         "await agent_message.recv()",
+        "await agent_message.receive(timeout=30)",
+        "await agent_message.wait_for_reply(name='worker')",
         "await agent_message.list_messages()",
         "import asyncio\nawait asyncio.sleep(1)",
         "import time\ntime.sleep(1)",

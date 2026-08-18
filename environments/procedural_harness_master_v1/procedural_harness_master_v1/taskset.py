@@ -55,6 +55,7 @@ COMPLETION_GATE_FEEDBACK = (
     "briefly so this active autonomous run can accept the child reply. Return bare strict JSON "
     "only after all required child evidence has arrived."
 )
+PRIVATE_EVIDENCE_HEADER = "[private evidence supplied to this reviewer]"
 
 
 @lru_cache(maxsize=1)
@@ -396,14 +397,10 @@ def _contract_behavior(
                 ):
                     poll_positions.append(position)
                     mark("poll", position)
-                if call_name in {
-                    "agent_message.list",
-                    "rlm.list_subagents",
-                    "agent_message.list_agents",
-                    "agent_message.listen_for_messages",
-                    "agent_message.recv",
-                    "agent_message.list_messages",
-                }:
+                if call_name == "rlm.list_subagents" or (
+                    call_name.startswith("agent_message.")
+                    and call_name != "agent_message.send"
+                ):
                     poll_positions.append(position)
                     mark("poll", position)
                     mark("discover_child", position)
@@ -984,6 +981,67 @@ class ProceduralHarnessMasterTask(
     def key(self) -> str:
         return self.data.episode_id
 
+    @vf.intercept
+    def inject_natural_private_evidence(self, request: vf.Request) -> vf.Request | None:
+        """Attach hidden evidence only to the natural rung's child context."""
+        private = self.data.oracle.get("private_resources", {})
+        if not private:
+            return None
+        user_messages = [
+            message for message in request.messages if isinstance(message, UserMessage)
+        ]
+        if any(
+            content_text(message.content).strip() == self.data.prompt.strip()
+            for message in user_messages
+        ):
+            return None
+        if any(
+            PRIVATE_EVIDENCE_HEADER in content_text(message.content)
+            for message in user_messages
+        ):
+            return None
+        target_index = next(
+            (
+                index
+                for index in range(len(request.messages) - 1, -1, -1)
+                if isinstance(request.messages[index], UserMessage)
+                and isinstance(request.messages[index].content, str)
+            ),
+            None,
+        )
+        if target_index is None:
+            return None
+
+        ownership = self.data.oracle["resource_ownership"]
+        sections = []
+        for label, contents in private.items():
+            sections.append(
+                "\n".join(
+                    (
+                        f"Evidence label: {label}",
+                        f"Required review: {ownership[label]['operation']}",
+                        "Evidence contents:",
+                        contents,
+                    )
+                )
+            )
+        target = request.messages[target_index]
+        assert isinstance(target, UserMessage) and isinstance(target.content, str)
+        replacement = target.model_copy(
+            update={
+                "content": (
+                    f"{target.content.rstrip()}\n\n{PRIVATE_EVIDENCE_HEADER}\n"
+                    "This evidence is available in this child context only; the coordinator "
+                    "does not have a workspace copy. The evidence label is an identifier, "
+                    "not a runtime file path; process the inline contents below directly.\n"
+                    + "\n\n".join(sections)
+                )
+            }
+        )
+        messages = list(request.messages)
+        messages[target_index] = replacement
+        return request.model_copy(update={"messages": messages})
+
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         deferred = set()
         if self.data.family == "reclaim":
@@ -1052,6 +1110,7 @@ class ProceduralHarnessMasterConfig(vf.TasksetConfig):
     master_seed: int = 20260816
     families: tuple[str, ...] | None = None
     curriculum_rung: CurriculumRung | None = None
+    private_payload_mode: Literal["raw_resource", "finding_card"] = "raw_resource"
     record_causal_feedback: bool = False
 
 
@@ -1075,6 +1134,7 @@ class ProceduralHarnessMasterTaskset(
                     self.config.split,
                     index,
                     self.config.master_seed,
+                    self.config.private_payload_mode,
                 )
             index += 1
             family = row["metadata"]["episode_family"]

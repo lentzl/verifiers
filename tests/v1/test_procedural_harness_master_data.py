@@ -81,8 +81,14 @@ def test_natural_curriculum_is_deterministic_hidden_and_non_prescriptive() -> No
                 MODULE.validate_row(row)
                 prompt = row["public"]["user_prompt"].lower()
                 assert not {term for term in forbidden if term in prompt}
-                assert row["public"]["workspace_files"]
                 assert row["oracle"]["resource_ownership"]
+                private = row["oracle"]["private_resources"]
+                assert private
+                assert set(private).isdisjoint(row["public"]["workspace_files"])
+                assert set(private) == {
+                    child["resource_path"] for child in row["oracle"]["children"]
+                }
+                assert "does not possess a copy" in prompt
                 assert row["metadata"]["natural_stage"] == (
                     "N1" if rung == "natural_n1" else "N2"
                 )
@@ -93,6 +99,10 @@ def test_natural_curriculum_is_deterministic_hidden_and_non_prescriptive() -> No
                     == row["metadata"]["instruction_style"]
                 )
                 assert "trajectory_contract" not in json.dumps(row["public"])
+                assert not any(
+                    contents in json.dumps(row["public"])
+                    for contents in private.values()
+                )
                 assert "reasoning_content" not in json.dumps(row)
 
 
@@ -113,6 +123,24 @@ def test_natural_curriculum_holds_out_semantic_families() -> None:
     assert by_split["train_gen"].isdisjoint(by_split["valid_gen"])
     assert by_split["train_gen"].isdisjoint(by_split["ood_gen"])
     assert by_split["valid_gen"].isdisjoint(by_split["ood_gen"])
+
+
+def test_natural_finding_card_preserves_hidden_ownership_and_answer() -> None:
+    row = MODULE.generate_curriculum_episode(
+        "natural_n1",
+        "train_gen",
+        17,
+        private_payload_mode="finding_card",
+    )
+    child = row["oracle"]["children"][0]
+    private = row["oracle"]["private_resources"]
+    contents = json.loads(private[child["resource_path"]])
+
+    assert row["metadata"]["private_payload_mode"] == "finding_card"
+    assert contents == {next(iter(contents)): child["expected_result"]}
+    assert private[child["resource_path"]] not in json.dumps(row["public"])
+    assert child["expected_result"] in row["oracle"]["final_answer"].values()
+    MODULE.validate_row(row)
 
 
 def test_natural_train_window_covers_every_semantic_family_and_wording_axis() -> None:
