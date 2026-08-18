@@ -51,6 +51,8 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     autonomous_max_turns: int | None = Field(default=None, strict=True, gt=0)
     autonomous_max_tokens: int | None = Field(default=None, strict=True, gt=0)
     autonomous_timeout_ms: int | None = Field(default=None, strict=True, gt=0)
+    process_timeout_ms: int | None = Field(default=None, strict=True, gt=0)
+    """Optional hard wall-clock limit for the Prime Agent process."""
 
     @model_validator(mode="after")
     def validate_autonomous_options(self) -> PrimeAgentHarnessConfig:
@@ -196,6 +198,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 if value is not None:
                     args += [flag, str(value)]
 
+        command = self._process_command(args)
         wrapper = f"{root}/prime-agent"
         await runtime.write(
             wrapper,
@@ -203,7 +206,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "#!/bin/sh\n"
                 "set -eu\n"
                 f'export PATH="{NODE_BIN_DIR}:$HOME/.local/bin:$PATH"\n'
-                f'exec {shlex.join(args)} "$@"\n'
+                f'exec {shlex.join(command)} "$@"\n'
             ).encode(),
         )
         executable = await runtime.run(["chmod", "700", wrapper], {})
@@ -232,6 +235,19 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
     def _bin(self) -> str:
         return f"{PRIME_AGENT_DIR}/{self.config.version}/bin/prime-agent"
+
+    def _process_command(self, args: list[str]) -> list[str]:
+        timeout_ms = self.config.process_timeout_ms
+        if timeout_ms is None:
+            return args
+        duration = f"{timeout_ms / 1000:g}s"
+        return [
+            "timeout",
+            "--signal=TERM",
+            "--kill-after=10s",
+            duration,
+            *args,
+        ]
 
     @staticmethod
     def _root(trace: Trace) -> str:

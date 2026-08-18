@@ -38,6 +38,22 @@ def test_prime_agent_exposes_native_autonomous_completion_gates() -> None:
         PrimeAgentHarnessConfig(gates=["python /workspace/completion_gate.py"])
 
 
+def test_prime_agent_process_timeout_is_opt_in_and_killable() -> None:
+    command = ["prime-agent", "--mode", "acp"]
+
+    assert PrimeAgentHarness(PrimeAgentHarnessConfig())._process_command(command) is command
+    harness = PrimeAgentHarness(PrimeAgentHarnessConfig(process_timeout_ms=840_000))
+    assert harness._process_command(command) == [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=10s",
+        "840s",
+        *command,
+    ]
+    with pytest.raises(ValueError):
+        PrimeAgentHarnessConfig(process_timeout_ms=0)
+
+
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda path: path.name)
 def test_curriculum_uses_official_prime_agent_contract(path: Path) -> None:
     raw = tomllib.load(path.open("rb"))
