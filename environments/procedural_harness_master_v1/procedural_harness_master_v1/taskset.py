@@ -34,6 +34,16 @@ from procedural_harness_master_v1.followup_feedback import (
     feedback_contract_payload,
     render_followup_feedback,
 )
+from procedural_harness_master_v1.natural_yield_feedback import (
+    FEEDBACK_SCHEMA_VERSION as NATURAL_YIELD_FEEDBACK_SCHEMA_VERSION,
+)
+from procedural_harness_master_v1.natural_yield_feedback import (
+    NaturalYieldFailureDiagnostic,
+    render_natural_yield_feedback,
+)
+from procedural_harness_master_v1.natural_yield_feedback import (
+    feedback_contract_payload as natural_yield_feedback_contract_payload,
+)
 from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 
 Split = Literal["train_gen", "valid_gen", "ood_gen"]
@@ -674,6 +684,142 @@ def _record_followup_feedback(
     return True
 
 
+def _natural_yield_feedback_diagnostic(
+    trace: vf.Trace,
+    data: ProceduralHarnessMasterData,
+) -> NaturalYieldFailureDiagnostic | None:
+    """Locate the first coordinator tool call after a valid natural N1 spawn."""
+
+    if data.family != "natural_n1":
+        return None
+    if _contract_behavior(trace, data)["harness_score"] == 1.0 or not trace.nodes:
+        return None
+    children = data.oracle.get("children", [])
+    if len(children) != 1:
+        return None
+    child = children[0]
+    child_name = child.get("name")
+    child_path = child.get("resource_path")
+    if not isinstance(child_name, str) or not isinstance(child_path, str):
+        return None
+
+    coordinator_root = _branch_root(trace, 0)
+    spawn_node_index: int | None = None
+    for event in _ipython_events(trace):
+        if _branch_root(trace, event.node_index) != coordinator_root or _failed(event.output):
+            continue
+        try:
+            tree = ast.parse(event.code)
+        except SyntaxError:
+            continue
+        assigned_calls = _assigned_call_names(tree)
+        valid_spawn = any(
+            _call_name(call) == "rlm"
+            and id(call) in assigned_calls
+            and _spawn_name(call, event.output) == child_name
+            and child_path in (_spawn_prompt(call) or "")
+            for call in ast.walk(tree)
+            if isinstance(call, ast.Call)
+        )
+        if valid_spawn:
+            spawn_node_index = event.node_index
+            break
+    if spawn_node_index is None:
+        return None
+
+    first_incoming = min(
+        (
+            node_index
+            for node_index, _, _ in _incoming_messages(trace)
+            if node_index > spawn_node_index
+        ),
+        default=None,
+    )
+    target_node_index = next(
+        (
+            index
+            for index in range(spawn_node_index + 1, len(trace.nodes))
+            if isinstance(trace.nodes[index].message, AssistantMessage)
+            and trace.nodes[index].sampled
+            and _branch_root(trace, index) == coordinator_root
+        ),
+        None,
+    )
+    if target_node_index is None or (
+        first_incoming is not None and target_node_index >= first_incoming
+    ):
+        return None
+    target = trace.nodes[target_node_index].message
+    if not target.tool_calls:
+        return None
+
+    coordinator_turns = [
+        index
+        for index, node in enumerate(trace.nodes[: target_node_index + 1])
+        if isinstance(node.message, AssistantMessage)
+        and node.sampled
+        and _branch_root(trace, index) == coordinator_root
+    ]
+    return NaturalYieldFailureDiagnostic(
+        child_name=child_name,
+        spawn_node_index=spawn_node_index,
+        target_node_index=target_node_index,
+        turn_index=len(coordinator_turns) - 1,
+    )
+
+
+def _record_natural_yield_feedback(
+    trace: vf.Trace,
+    data: ProceduralHarnessMasterData,
+) -> bool:
+    diagnostic = _natural_yield_feedback_diagnostic(trace, data)
+    if diagnostic is None:
+        return False
+    feedback = render_natural_yield_feedback(diagnostic)
+    trace.info["feedback"] = feedback
+    trace.info["feedback_contract"] = natural_yield_feedback_contract_payload(
+        diagnostic
+    )
+    return True
+
+
+def keep_natural_yield_feedback_response(trace: vf.Trace) -> list[list[bool]]:
+    """Select only the sampled response named by trusted natural-yield feedback."""
+
+    contract = trace.info.get("feedback_contract")
+    target_index = (
+        contract.get("target_node_index") if isinstance(contract, dict) else None
+    )
+    trusted = (
+        isinstance(contract, dict)
+        and contract.get("schema_version")
+        == NATURAL_YIELD_FEEDBACK_SCHEMA_VERSION
+        and contract.get("answer_free") is True
+        and contract.get("retryable") is True
+        and contract.get("code") == "tool_call_after_delegation"
+        and isinstance(target_index, int)
+        and 0 <= target_index < len(trace.nodes)
+    )
+    target = trace.nodes[target_index] if trusted else None
+    masks: list[list[bool]] = []
+    trained_nodes: set[int] = set()
+    for branch in trace.branches:
+        branch_mask: list[bool] = []
+        has_trainable_tokens = False
+        for node in branch.nodes:
+            is_new_trainable = (
+                node.sampled and any(node.mask) and id(node) not in trained_nodes
+            )
+            if is_new_trainable:
+                trained_nodes.add(id(node))
+                has_trainable_tokens = True
+            keep = is_new_trainable and node is target
+            branch_mask.extend(sampled and keep for sampled in node.mask)
+        if has_trainable_tokens:
+            masks.append(branch_mask)
+    return masks
+
+
 def keep_atomic_child_request_coordinator_actions(
     trace: vf.Trace,
     *,
@@ -1169,7 +1315,9 @@ class ProceduralHarnessMasterEnv(vf.SingleAgentEnv):
             async with agents.agent.interaction(task) as interaction:
                 await interaction.turn()
                 if self.taskset.config.record_causal_feedback:
-                    _record_followup_feedback(interaction.trace, task.data)
+                    _record_natural_yield_feedback(
+                        interaction.trace, task.data
+                    ) or _record_followup_feedback(interaction.trace, task.data)
             return
         child = task.data.oracle["children"][0]
         path = child["resource_path"]

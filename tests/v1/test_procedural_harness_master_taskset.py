@@ -15,9 +15,12 @@ from procedural_harness_master_v1.taskset import (
     ProceduralHarnessMasterTaskset,
     _contract_behavior,
     _followup_feedback_diagnostic,
+    _natural_yield_feedback_diagnostic,
     _record_followup_feedback,
+    _record_natural_yield_feedback,
     keep_atomic_child_request_coordinator_actions,
     keep_followup_feedback_response,
+    keep_natural_yield_feedback_response,
 )
 
 import verifiers.v1 as vf
@@ -110,6 +113,15 @@ def _trace(task, actions, reply=None):
             parent = _cell(
                 nodes, parent, action[1], action[2] if len(action) > 2 else ""
             )
+        elif action[0] == "assistant":
+            nodes.append(
+                MessageNode(
+                    parent=parent,
+                    message=AssistantMessage(content=action[1]),
+                    sampled=True,
+                )
+            )
+            parent = len(nodes) - 1
         else:
             parent = _incoming(nodes, parent, action[1], action[2])
     answer = json.dumps(task.data.oracle["final_answer"]) if reply is None else reply
@@ -445,6 +457,83 @@ def test_atomic_followup_feedback_targets_response_after_child_request() -> None
         if any(keep)
     ]
     assert selected == [id(trace.nodes[diagnostic.target_node_index])]
+
+
+def test_natural_yield_feedback_targets_first_tool_call_after_valid_spawn() -> None:
+    task = _curriculum_task("natural_n1")
+    child = task.data.oracle["children"][0]
+    spawn_code = (
+        "child_handle = await rlm("
+        f"'Review {child['resource_path']} and report the finding to your parent', "
+        f"name={child['name']!r})"
+    )
+    trace = _trace(
+        task,
+        [
+            ("cell", spawn_code, f"RLMSpawnHandle(name='{child['name']}')"),
+            ("cell", "await agent_message.list_agents()", "family roster"),
+            ("incoming", child["name"], str(child["expected_result"])),
+        ],
+    )
+    for index, node in enumerate(trace.nodes):
+        node.token_ids = [index * 10 + 1, index * 10 + 2]
+        node.mask = [node.sampled, node.sampled]
+
+    diagnostic = _natural_yield_feedback_diagnostic(trace, task.data)
+
+    assert diagnostic is not None
+    assert diagnostic.child_name == child["name"]
+    assert diagnostic.turn_index == 1
+    target = trace.nodes[diagnostic.target_node_index]
+    assert isinstance(target.message, AssistantMessage)
+    assert "agent_message.list_agents" in target.message.tool_calls[0].arguments
+    assert _record_natural_yield_feedback(trace, task.data)
+    contract = trace.info["feedback_contract"]
+    assert contract["schema_version"] == "prime-agent/natural-yield-feedback/v1"
+    assert contract["answer_free"] is True
+    assert contract["target_node_index"] == diagnostic.target_node_index
+    assert str(child["expected_result"]) not in trace.info["feedback"]
+
+    masks = keep_natural_yield_feedback_response(trace)
+    selected = [
+        id(node)
+        for branch, mask in zip(trace.branches, masks, strict=True)
+        for node, keep in _nodes_with_mask(branch.nodes, mask)
+        if any(keep)
+    ]
+    assert selected == [id(target)]
+
+
+def test_natural_yield_feedback_rejects_unretained_spawn_and_passive_wait() -> None:
+    task = _curriculum_task("natural_n1")
+    child = task.data.oracle["children"][0]
+    prompt = f"Review {child['resource_path']} and report the finding to your parent"
+    unretained = _trace(
+        task,
+        [
+            (
+                "cell",
+                f"await rlm({prompt!r}, name={child['name']!r})",
+                f"RLMSpawnHandle(name='{child['name']}')",
+            ),
+            ("cell", "await agent_message.list_agents()", "family roster"),
+        ],
+    )
+    passive = _trace(
+        task,
+        [
+            (
+                "cell",
+                f"handle = await rlm({prompt!r}, name={child['name']!r})",
+                f"RLMSpawnHandle(name='{child['name']}')",
+            ),
+            ("assistant", "Waiting for the reviewer report."),
+            ("incoming", child["name"], str(child["expected_result"])),
+        ],
+    )
+
+    assert _natural_yield_feedback_diagnostic(unretained, task.data) is None
+    assert _natural_yield_feedback_diagnostic(passive, task.data) is None
 
 
 def _nodes_with_mask(nodes, mask):
