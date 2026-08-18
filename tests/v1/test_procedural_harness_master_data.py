@@ -23,7 +23,13 @@ def test_generation_is_deterministic() -> None:
 
 
 def test_atomic_curriculum_generation_is_deterministic_and_oracle_hidden() -> None:
-    for rung in ("atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"):
+    for rung in (
+        "atomic_state",
+        "atomic_send",
+        "atomic_child_request",
+        "atomic_followup",
+        "atomic_parallel",
+    ):
         for split in ("train_gen", "valid_gen", "ood_gen"):
             row = MODULE.generate_curriculum_episode(rung, split, 17)
             assert row == MODULE.generate_curriculum_episode(rung, split, 17)
@@ -47,6 +53,20 @@ def test_atomic_state_public_answer_contract_matches_oracle() -> None:
     assert "marker must be the original retained value" in prompt
     assert "result must be the printed sum" in prompt
     assert answer["marker"] == next(iter(row["oracle"]["coordinator_state"].values()))
+
+
+def test_atomic_child_request_exposes_only_the_observable_prefix_contract() -> None:
+    row = MODULE.generate_curriculum_episode(
+        "atomic_child_request", "train_gen", 17
+    )
+    prompt = row["public"]["user_prompt"]
+    contract = row["oracle"]["trajectory_contract"]
+
+    assert "initial rlm prompt" in prompt
+    assert "need multiplier" in prompt
+    assert "send_followup" not in " ".join(contract["required_atoms"])
+    assert contract["cardinality"]["parent_to_child_message"] == 0
+    assert contract["cardinality"]["child_to_parent_message"] == 1
 
 
 def test_default_generation_does_not_select_curriculum() -> None:

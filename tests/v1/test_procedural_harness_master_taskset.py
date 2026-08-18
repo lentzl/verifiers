@@ -516,7 +516,14 @@ def test_child_completion_notice_does_not_satisfy_explicit_message_contract() ->
 
 
 @pytest.mark.parametrize(
-    "rung", ["atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"]
+    "rung",
+    [
+        "atomic_state",
+        "atomic_send",
+        "atomic_child_request",
+        "atomic_followup",
+        "atomic_parallel",
+    ],
 )
 def test_atomic_curriculum_rungs_require_complete_real_message_trajectories(
     rung: str,
@@ -556,7 +563,10 @@ def test_atomic_curriculum_rungs_require_complete_real_message_trajectories(
             "\n".join(f"RLMSpawnHandle(name='{child['name']}')" for child in children),
         )
     ]
-    if rung == "atomic_followup":
+    if rung == "atomic_child_request":
+        child = children[0]
+        actions.append(("incoming", child["name"], "need multiplier"))
+    elif rung == "atomic_followup":
         child = children[0]
         actions.extend(
             [
@@ -590,6 +600,43 @@ def test_atomic_state_rejects_assignment_and_reuse_in_one_ipython_call() -> None
     ]
     behavior = _contract_behavior(_trace(task, actions), task.data)
     assert behavior["all_required_atoms"] == 0.0
+    assert behavior["harness_score"] == 0.0
+
+
+def test_atomic_child_request_requires_a_request_without_parent_reply() -> None:
+    task = _curriculum_task("atomic_child_request")
+    child = task.data.oracle["children"][0]
+    state_name, state_value = next(iter(task.data.oracle["coordinator_state"].items()))
+    spawn = (
+        f"handle = await rlm('send need multiplier to parent', name={child['name']!r})"
+    )
+
+    result_message = _trace(
+        task,
+        [
+            ("cell", f"{state_name} = {state_value}\n{spawn}"),
+            ("incoming", child["name"], str(state_value)),
+        ],
+    )
+    assert _contract_behavior(result_message, task.data)["harness_score"] == 0.0
+
+    parent_reply = _trace(
+        task,
+        [
+            ("cell", f"{state_name} = {state_value}\n{spawn}"),
+            ("incoming", child["name"], "need multiplier"),
+            (
+                "cell",
+                (
+                    f"await agent_message.send(str({state_name}), receiver_role='child', "
+                    f"receiver_name={child['name']!r})"
+                ),
+                "Agent message sent: agentmsg-unwanted",
+            ),
+        ],
+    )
+    behavior = _contract_behavior(parent_reply, task.data)
+    assert behavior["no_forbidden_atoms"] == 0.0
     assert behavior["harness_score"] == 0.0
 
 

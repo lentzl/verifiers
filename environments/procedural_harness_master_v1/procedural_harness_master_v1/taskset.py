@@ -38,7 +38,11 @@ from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 
 Split = Literal["train_gen", "valid_gen", "ood_gen"]
 CurriculumRung = Literal[
-    "atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"
+    "atomic_state",
+    "atomic_send",
+    "atomic_child_request",
+    "atomic_followup",
+    "atomic_parallel",
 ]
 COMPLETION_GATE_PATH = "/workspace/.procedural-harness-master/completion_gate.py"
 COMPLETION_GATE_FEEDBACK = (

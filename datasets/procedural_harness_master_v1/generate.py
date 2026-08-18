@@ -21,8 +21,14 @@ GENERATOR_VERSION = "2026-08-16.v2"
 # Preserve the frozen task assignments while repairing public contract wording.
 SEED_VERSION = "2026-08-16.v1"
 Split = Literal["train_gen", "valid_gen", "ood_gen"]
-CurriculumRung = Literal["atomic_state", "atomic_send", "atomic_followup", "atomic_parallel"]
-CURRICULUM_VERSION = "2026-08-17.harness-actions-v2"
+CurriculumRung = Literal[
+    "atomic_state",
+    "atomic_send",
+    "atomic_child_request",
+    "atomic_followup",
+    "atomic_parallel",
+]
+CURRICULUM_VERSION = "2026-08-18.harness-actions-v3"
 # Keep episode assignments fixed when public contract wording is clarified.
 CURRICULUM_SEED_VERSION = "2026-08-16.harness-actions-v1"
 
@@ -73,6 +79,7 @@ SCHEMAS = {
     "reclaim": '{"reclaimed": true, "result": <value>}',
     "atomic_state": '{"marker": <integer>, "result": <integer>}',
     "atomic_send": '{"value": <integer>}',
+    "atomic_child_request": '{"multiplier": <integer>, "request_received": true}',
     "atomic_followup": '{"multiplier": <integer>, "result": <integer>}',
     "atomic_parallel": '{"alpha": <integer>, "beta": <integer>, "result": <integer>}',
 }
@@ -249,6 +256,68 @@ def generate_curriculum_episode(rung: CurriculumRung, split: Split, index: int, 
             ),
         }
         atoms = ["spawn", "retain_handle", "yield", "child_to_parent"]; timing = "one_resume_cycle"
+    elif rung == "atomic_child_request":
+        multiplier = rng.randint(2, 19)
+        children.append(
+            {
+                "name": names[0],
+                "resource_path": None,
+                "operation": "request the retained multiplier",
+                "expected_result": multiplier,
+                "message_contract": "send 'need multiplier' once to parent",
+            }
+        )
+        prompt = (
+            f"Retain multiplier={multiplier} in coordinator state. Spawn exactly one "
+            f"named child, {names[0]}, with a self-contained instruction to execute "
+            "`await agent_message.send('need multiplier', receiver_role='parent')` "
+            "exactly once and then stop. Put that instruction directly in the initial "
+            "rlm prompt, retain the returned child handle, and end the waiting turn "
+            "immediately. Never poll, sleep, observe, discover children, or send a "
+            "message to the child. After the explicit request arrives, return "
+            f"{SCHEMAS[rung]}."
+        )
+        required = [
+            "retain_state",
+            f"spawn:{names[0]}",
+            f"retain_handle:{names[0]}",
+            "yield",
+            f"receive_request:{names[0]}",
+            "final_answer",
+        ]
+        ordering = [
+            ("retain_state", f"spawn:{names[0]}"),
+            (f"spawn:{names[0]}", "yield"),
+            (f"retain_handle:{names[0]}", "yield"),
+            ("yield", f"receive_request:{names[0]}"),
+            (f"receive_request:{names[0]}", "final_answer"),
+        ]
+        oracle = {
+            "expected_route": "atomic_child_request",
+            "final_answer": {"multiplier": multiplier, "request_received": True},
+            "coordinator_state": {"multiplier": multiplier},
+            "resource_ownership": {},
+            "children": children,
+            "fault_plan": {"type": "none"},
+            "trajectory_contract": _contract(
+                required,
+                ["poll", "discover_child", f"send_followup:{names[0]}"],
+                ordering,
+                {
+                    "spawn_child": 1,
+                    "parent_to_child_message": 0,
+                    "child_to_parent_message": 1,
+                },
+            ),
+        }
+        atoms = [
+            "state",
+            "spawn_prompt",
+            "retain_handle",
+            "yield",
+            "child_request",
+        ]
+        timing = "request_prefix"
     elif rung == "atomic_followup":
         multiplier = rng.randint(2, 19)
         children.append({

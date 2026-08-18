@@ -26,6 +26,8 @@ event contract without changing the default generated benchmark:
 
 - `atomic_state`: persist coordinator state and reuse it in a later IPython call.
 - `atomic_send`: retain one child handle, yield, and accept one explicit message.
+- `atomic_child_request`: encode a request protocol in the initial child prompt,
+  retain its handle, yield, and accept one explicit request without replying.
 - `atomic_followup`: preserve state across two causal resume/message cycles.
 - `atomic_parallel`: retain two handles, spawn both before yielding, then fan in.
 
