@@ -607,6 +607,11 @@ def _contract_behavior(
             and min(observed["coordinator_read_local"]) < max(observed["yield"])
         )
     )
+    premature_yield_before_local_work = float(
+        local_work_required
+        and "yield" in observed
+        and not local_work_before_yield
+    )
     hard_gate = bool(
         final_exact
         and not missing
@@ -627,6 +632,7 @@ def _contract_behavior(
         "bootstrap_progress": bootstrap_progress,
         "event_control_progress": event_control_progress,
         "local_work_before_yield": local_work_before_yield,
+        "premature_yield_before_local_work": premature_yield_before_local_work,
         "missing_required_atoms": float(len(missing)),
         "forbidden_atom_violations": float(len(violations)),
         "ordering_failures": float(len(ordering_failures)),
