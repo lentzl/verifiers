@@ -50,6 +50,10 @@ weakening the same executable event contract:
 User prompts describe the job, ownership boundary, semantic dependency, and
 requested output only. They are validated to exclude Prime API names and
 prescriptive action words such as spawn, yield, polling, or handle retention.
+They state when duplicate inspection or status queries invalidate the semantic
+record and identify the next valid process event without naming a harness
+action. This tunes native reward connectivity through the task contract; it
+does not soften the hidden gate or provide a policy trace.
 The unchanged Prime Agent system/runtime still documents the available harness.
 Train, validation, and OOD splits use disjoint semantic scenario families;
 resource schemas, names, path styles, wording, private values, and N1 graph

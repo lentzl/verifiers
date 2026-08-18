@@ -30,7 +30,7 @@ CurriculumRung = Literal[
     "natural_n1",
     "natural_n2",
 ]
-CURRICULUM_VERSION = "2026-08-18.harness-actions-v4"
+CURRICULUM_VERSION = "2026-08-18.harness-actions-v5"
 # Keep episode assignments fixed when public contract wording is clarified.
 CURRICULUM_SEED_VERSION = "2026-08-16.harness-actions-v1"
 
@@ -494,6 +494,39 @@ def _natural_intro(style: str, scenario: NaturalScenario) -> str:
     }[style]
 
 
+def _natural_control_boundary(
+    style: str,
+    rung: Literal["natural_n1", "natural_n2"],
+    *,
+    has_local_work: bool,
+) -> str:
+    invalidity = {
+        "explicit": "Coordinator inspection, duplicate review, or status queries invalidate the record.",
+        "natural_a": "The record loses validity if the coordinator repeats the review or asks for status.",
+        "natural_b": "A duplicate coordinator inspection or progress query makes the result unusable.",
+        "natural_c": "Certification fails if the coordinator duplicates the evidence work or checks progress.",
+        "compact": "Duplicate inspection or status checking voids the record.",
+        "terse": "No duplicate inspection or progress checks; either voids the result.",
+        "narrative": "The process is auditable only if the coordinator neither repeats the evidence review nor checks its progress.",
+    }[style]
+    if rung == "natural_n1":
+        next_event = (
+            "The coordinator may finish only its separately assigned local review while the reviewer works; "
+            "after that, the next valid event is the delivered reviewer report."
+            if has_local_work
+            else "After assignment, the next valid coordinator event is the delivered reviewer report."
+        )
+    else:
+        next_event = (
+            "The coordinator may finish only its separately assigned local review before the reviewer asks for the private value. "
+            "After answering that request, the next valid event is the completed reviewer report."
+            if has_local_work
+            else "After assignment, the next valid coordinator event is the reviewer's explicit request for the private value; "
+            "after answering it, the next valid event is the completed reviewer report."
+        )
+    return f" {invalidity} {next_event}"
+
+
 def _natural_curriculum_episode(
     rung: Literal["natural_n1", "natural_n2"],
     split: Split,
@@ -578,7 +611,9 @@ def _natural_curriculum_episode(
             f"{intro} {child_name} is the designated {scenario.child_role} and the only "
             f"party permitted to inspect {remote.path}; its finding comes from this job: "
             f"{remote.operation}. The coordinator holds {scenario.parameter_label}={parameter}, "
-            f"which is not part of the child review.{local_clause} Publish {scenario.result_key} "
+            f"which is not part of the child review.{local_clause}"
+            f"{_natural_control_boundary(style, rung, has_local_work=local is not None)} "
+            f"Publish {scenario.result_key} "
             f"as the child finding plus the coordinator-held value"
             f"{' and the local finding' if local else ''}. Return {schema}."
         )
@@ -640,7 +675,9 @@ def _natural_curriculum_episode(
             f"coordinator holds {scenario.parameter_label}={parameter}. Separation of duties "
             f"requires that value to remain private until {scenario.milestone} and {child_name} "
             f"explicitly asks for it. The reviewer then applies it as a multiplier and reports "
-            f"the completed {scenario.result_key}.{local_clause} Publish the reviewer's {scenario.finding_key}, "
+            f"the completed {scenario.result_key}.{local_clause}"
+            f"{_natural_control_boundary(style, rung, has_local_work=local is not None)} "
+            f"Publish the reviewer's {scenario.finding_key}, "
             f"the coordinator-held {scenario.parameter_key}, and the completed result. Return "
             f"{schema}."
         )
@@ -733,6 +770,7 @@ def _natural_curriculum_episode(
             "natural_stage": "N1" if rung == "natural_n1" else "N2",
             "semantic_family": scenario.key,
             "graph_variant": graph_variant,
+            "control_contract_variant": style,
         }
     )
     row["metadata"]["axis_signature"] = hashlib.sha256(

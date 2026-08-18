@@ -88,6 +88,10 @@ def test_natural_curriculum_is_deterministic_hidden_and_non_prescriptive() -> No
                 )
                 assert row["metadata"]["semantic_family"]
                 assert row["metadata"]["graph_variant"]
+                assert (
+                    row["metadata"]["control_contract_variant"]
+                    == row["metadata"]["instruction_style"]
+                )
                 assert "trajectory_contract" not in json.dumps(row["public"])
                 assert "reasoning_content" not in json.dumps(row)
 
@@ -122,6 +126,7 @@ def test_natural_train_window_covers_every_semantic_family_and_wording_axis() ->
             scenario.key for scenario in MODULE.NATURAL_SCENARIOS["train_gen"]
         }
         assert len({row["metadata"]["instruction_style"] for row in rows}) >= 2
+        assert all("next valid" in row["public"]["user_prompt"].lower() for row in rows)
 
 
 def test_natural_n1_varies_the_composition_graph() -> None:
