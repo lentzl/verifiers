@@ -1065,6 +1065,47 @@ def test_natural_local_work_reports_premature_yield_directly() -> None:
     assert ordered["premature_yield_before_local_work"] == 0.0
 
 
+def test_natural_immediate_yield_reports_post_spawn_tool_directly() -> None:
+    task = ProceduralHarnessMasterTaskset(
+        ProceduralHarnessMasterConfig(
+            split="train_gen",
+            count=1,
+            start_index=0,
+            curriculum_rung="natural_n1",
+        )
+    ).load()[0]
+    child = task.data.oracle["children"][0]
+    spawn = (
+        "handle = await rlm("
+        f"'Review {child['resource_path']} and report to parent', "
+        f"name={child['name']!r})"
+    )
+    yielded = _contract_behavior(
+        _trace(
+            task,
+            [
+                ("cell", spawn, f"RLMSpawnHandle(name='{child['name']}')"),
+                ("incoming", child["name"], str(child["expected_result"])),
+            ],
+        ),
+        task.data,
+    )
+    acted = _contract_behavior(
+        _trace(
+            task,
+            [
+                ("cell", spawn, f"RLMSpawnHandle(name='{child['name']}')"),
+                ("cell", "print('still waiting')", "still waiting"),
+                ("incoming", child["name"], str(child["expected_result"])),
+            ],
+        ),
+        task.data,
+    )
+
+    assert yielded["forbidden_post_spawn_tool_before_child"] == 0.0
+    assert acted["forbidden_post_spawn_tool_before_child"] == 1.0
+
+
 def test_natural_dependency_rejects_private_value_disclosed_at_spawn() -> None:
     task = _curriculum_task("natural_n2")
     child = task.data.oracle["children"][0]
