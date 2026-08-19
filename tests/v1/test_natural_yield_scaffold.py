@@ -15,6 +15,7 @@ from procedural_harness_master_v1.taskset import (
 )
 
 import verifiers.v1 as vf
+from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.types import (
@@ -101,6 +102,28 @@ async def test_no_local_work_scaffolds_exactly_one_post_spawn_request() -> None:
     assert records[-1].handler == "natural_yield_training_scaffold"
     assert trace.info[SCAFFOLD_INFO_KEY]["fired"] is True
     assert trace.info[SCAFFOLD_INFO_KEY]["original_tool_count"] == 1
+
+    body = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "continue"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "ipython",
+                    "description": "run code",
+                    "parameters": {},
+                },
+            }
+        ],
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
+    }
+    ChatDialect().rewrite_request(body, _request(), rewritten)
+    assert "tools" not in body
+    assert "tool_choice" not in body
+    assert "parallel_tool_calls" not in body
+    assert ChatDialect().parse_request(body).tools is None
 
     second, second_records, _ = await session.rewrite_request(_request())
     assert second.tools is not None

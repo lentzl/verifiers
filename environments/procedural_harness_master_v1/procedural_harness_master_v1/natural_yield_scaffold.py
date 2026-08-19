@@ -29,14 +29,22 @@ from procedural_harness_master_v1.taskset import (
     _spawn_name,
     _spawn_prompt,
 )
+from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.trace import InterceptRecord
-from verifiers.v1.types import AssistantMessage, Request, UserMessage, content_text
+from verifiers.v1.types import (
+    AssistantMessage,
+    Request,
+    Tool,
+    UserMessage,
+    content_text,
+)
 
 SCAFFOLD_SCHEMA_VERSION = "prime-agent/natural-yield-scaffold/v1"
 SCAFFOLD_INFO_KEY = "natural_yield_scaffold"
 _HANDLER_NAME = "natural_yield_training_scaffold"
-_PATCH_MARKER = "_natural_yield_scaffold_v1"
+_SESSION_PATCH_MARKER = "_natural_yield_scaffold_v1"
+_CHAT_PATCH_MARKER = "_natural_yield_scaffold_chat_v1"
 
 
 def _data(trace: Any) -> Any | None:
@@ -157,6 +165,45 @@ def _record_fire(trace: Any, request: Request, spawn_node_index: int) -> None:
     }
 
 
+def _chat_tool(tool: Tool) -> dict[str, Any]:
+    function: dict[str, Any] = {
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters,
+    }
+    if tool.strict is not None:
+        function["strict"] = tool.strict
+    return {"type": "function", "function": function}
+
+
+def _install_chat_tool_rewrite() -> bool:
+    """Carry the scaffold's typed tool removal into Prime Agent's native request."""
+
+    current = ChatDialect.rewrite_request
+    if getattr(current, _CHAT_PATCH_MARKER, False):
+        return False
+
+    def rewrite_request_with_natural_yield_tools(
+        self: ChatDialect,
+        body: dict,
+        before: Request,
+        after: Request,
+    ) -> None:
+        current(self, body, before, after)
+        if after.tools == before.tools:
+            return
+        if after.tools:
+            body["tools"] = [_chat_tool(tool) for tool in after.tools]
+            return
+        body.pop("tools", None)
+        body.pop("tool_choice", None)
+        body.pop("parallel_tool_calls", None)
+
+    setattr(rewrite_request_with_natural_yield_tools, _CHAT_PATCH_MARKER, True)
+    ChatDialect.rewrite_request = rewrite_request_with_natural_yield_tools
+    return True
+
+
 def install_natural_yield_scaffold() -> bool:
     """Install the request-boundary scaffold once in this evaluator process.
 
@@ -166,9 +213,10 @@ def install_natural_yield_scaffold() -> bool:
     rewrites the native wire body.
     """
 
+    installed = _install_chat_tool_rewrite()
     current = RolloutSession.rewrite_request
-    if getattr(current, _PATCH_MARKER, False):
-        return False
+    if getattr(current, _SESSION_PATCH_MARKER, False):
+        return installed
     original = current
 
     async def rewrite_request_with_natural_yield_scaffold(
@@ -194,7 +242,11 @@ def install_natural_yield_scaffold() -> bool:
             constrained = rewritten.model_copy(update={"tools": None})
             return constrained, [*records, InterceptRecord(handler=_HANDLER_NAME)], None
 
-    setattr(rewrite_request_with_natural_yield_scaffold, _PATCH_MARKER, True)
+    setattr(
+        rewrite_request_with_natural_yield_scaffold,
+        _SESSION_PATCH_MARKER,
+        True,
+    )
     RolloutSession.rewrite_request = rewrite_request_with_natural_yield_scaffold
     return True
 
