@@ -180,7 +180,7 @@ def install_natural_yield_scaffold() -> bool:
         lock = getattr(self, "_natural_yield_scaffold_lock", None)
         if lock is None:
             lock = asyncio.Lock()
-            setattr(self, "_natural_yield_scaffold_lock", lock)
+            self._natural_yield_scaffold_lock = lock
         async with lock:
             rewritten, records, stopped = await original(
                 self, request, run_stops=run_stops

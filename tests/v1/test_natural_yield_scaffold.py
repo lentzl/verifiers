@@ -17,7 +17,14 @@ from procedural_harness_master_v1.taskset import (
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.session import RolloutSession
-from verifiers.v1.types import AssistantMessage, Request, Tool, ToolCall, ToolMessage, UserMessage
+from verifiers.v1.types import (
+    AssistantMessage,
+    Request,
+    Tool,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
 
 
 def _task(index: int):
