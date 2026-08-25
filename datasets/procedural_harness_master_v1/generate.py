@@ -28,9 +28,14 @@ CurriculumRung = Literal[
     "atomic_followup",
     "atomic_parallel",
     "natural_n1",
+    "natural_n1a",
+    "natural_n1a_local",
+    "natural_n1b",
+    "natural_direct_control",
     "natural_n2",
 ]
 CURRICULUM_VERSION = "2026-08-18.harness-actions-v7"
+CAUSAL_N1_CURRICULUM_VERSION = "2026-08-21.causal-v3"
 # Keep episode assignments fixed when public contract wording is clarified.
 CURRICULUM_SEED_VERSION = "2026-08-16.harness-actions-v1"
 
@@ -104,6 +109,10 @@ SCHEMAS = {
     "atomic_followup": '{"multiplier": <integer>, "result": <integer>}',
     "atomic_parallel": '{"alpha": <integer>, "beta": <integer>, "result": <integer>}',
     "natural_n1": '{"finding": <integer>, "parameter": <integer>, "result": <integer>}',
+    "natural_n1a": '{"finding": <integer>, "result": <integer>}',
+    "natural_n1a_local": '{"finding": <integer>, "local": <integer>, "result": <integer>}',
+    "natural_n1b": '{"finding": <integer>, "parameter": <integer>, "result": <integer>}',
+    "natural_direct_control": '{"finding": <integer>, "parameter": <integer>, "result": <integer>}',
     "natural_n2": '{"finding": <integer>, "parameter": <integer>, "result": <integer>}',
 }
 
@@ -527,6 +536,320 @@ def _natural_control_boundary(
     return f" {invalidity} {next_event}"
 
 
+def _causal_n1_curriculum_episode(
+    rung: Literal[
+        "natural_n1a",
+        "natural_n1a_local",
+        "natural_n1b",
+        "natural_direct_control",
+    ],
+    split: Split,
+    index: int,
+    seed: int,
+    rng: random.Random,
+    style: str,
+    child_name: str,
+    private_payload_mode: Literal["raw_resource", "finding_card"],
+) -> dict[str, Any]:
+    scenarios = NATURAL_SCENARIOS[split]
+    scenario = scenarios[index % len(scenarios)]
+    styles = STYLES[split]
+    style = styles[(index + index // len(scenarios)) % len(styles)]
+    root = _root(split, index, rng)
+    remote = _pick_resource(split, rng, root, "review", integer=True)
+    if private_payload_mode == "finding_card":
+        remote = Resource(
+            family=remote.family,
+            path=remote.path,
+            content=json.dumps({scenario.finding_key: int(remote.result)}),
+            result=remote.result,
+            operation=(
+                f"report the integer stored under {scenario.finding_key} in the private "
+                "evidence card"
+            ),
+        )
+
+    if rung == "natural_direct_control":
+        finding = int(remote.result)
+        parameter = rng.randint(2, 19)
+        answer = {
+            scenario.finding_key: finding,
+            scenario.parameter_key: parameter,
+            scenario.result_key: finding + parameter,
+        }
+        prompt = (
+            f"{_natural_intro(style, scenario)} The complete coordinator-owned record is "
+            f"already present in this request: {scenario.finding_key}={finding} and "
+            f"{scenario.parameter_key}={parameter}. No external evidence, separate reviewer, "
+            f"or later interaction is needed. Publish {scenario.result_key} as their sum. "
+            f"Return {_natural_schema(scenario.finding_key, scenario.parameter_key, scenario.result_key)}."
+        )
+        oracle = {
+            "expected_route": "direct",
+            "final_answer": answer,
+            "coordinator_state": {},
+            "resource_ownership": {},
+            "private_resources": {},
+            "children": [],
+            "fault_plan": {"type": "none"},
+            "trajectory_contract": _contract(
+                ["final_answer"],
+                ["spawn_child", "poll", "discover_child"],
+                [],
+                {"spawn_child": 0, "parent_to_child_message": 0},
+            ),
+        }
+        row = _row(
+            split,
+            index,
+            seed,
+            rung,
+            style,
+            prompt,
+            {},
+            oracle,
+            ["coordinator_local_compute", "nondelegation"],
+            1,
+            "single_turn_no_child_delegation",
+        )
+        row["generator_version"] = CAUSAL_N1_CURRICULUM_VERSION
+        row["metadata"].update(
+            {
+                "curriculum_rung": rung,
+                "natural_stage": "paired_control",
+                "semantic_family": scenario.key,
+                "graph_variant": "direct_coordinator_compute_control",
+                "control_contract_variant": style,
+                "private_payload_mode": "none",
+            }
+        )
+        row["metadata"]["axis_signature"] = hashlib.sha256(
+            json.dumps(row["metadata"], sort_keys=True).encode()
+        ).hexdigest()[:16]
+        return row
+
+    files: dict[str, str] = {}
+    private_resources = {remote.path: remote.content}
+    ownership = {
+        remote.path: {
+            "owner": f"child:{child_name}",
+            "family": remote.family,
+            "operation": remote.operation,
+        }
+    }
+    child = _child(child_name, remote)
+    intro = _natural_intro(style, scenario)
+    local = None
+
+    if rung in {"natural_n1a", "natural_n1a_local"}:
+        if rung == "natural_n1a_local":
+            local = _pick_resource(split, rng, root, "coordinator", integer=True)
+            files[local.path] = local.content
+            ownership[local.path] = {
+                "owner": "coordinator",
+                "family": local.family,
+                "operation": local.operation,
+            }
+        completed = int(remote.result) * 2 + (int(local.result) if local else 0)
+        answer = {
+            scenario.finding_key: int(remote.result),
+            **({"local": int(local.result)} if local else {}),
+            scenario.result_key: completed,
+        }
+        local_clause = ""
+        required = [
+            f"spawn:{child_name}",
+            f"retain_handle:{child_name}",
+            "yield",
+            f"receive:{child_name}",
+            "final_answer",
+        ]
+        ordering = [
+            (f"spawn:{child_name}", "yield"),
+            (f"retain_handle:{child_name}", "yield"),
+            ("yield", f"receive:{child_name}"),
+            (f"receive:{child_name}", "final_answer"),
+        ]
+        if local is not None:
+            local_clause = (
+                f" The coordinator separately owns {local.path} and must {local.operation} "
+                f"while the reviewer works. Add that local finding to {scenario.result_key}."
+            )
+            required.insert(2, "coordinator_read_local")
+            ordering.extend(
+                [
+                    (f"spawn:{child_name}", "coordinator_read_local"),
+                    ("coordinator_read_local", "yield"),
+                ]
+            )
+        prompt = (
+            f"{intro} {child_name} is the designated {scenario.child_role} and the only "
+            f"party that receives the private evidence packet identified as {remote.path}; "
+            f"the coordinator does not possess a copy. The reviewer must {remote.operation}."
+            f"{local_clause}"
+            f"{_natural_control_boundary(style, 'natural_n1', has_local_work=local is not None)} "
+            f"Publish {scenario.result_key} as twice the delivered {scenario.finding_key}"
+            f"{' plus the local finding' if local else ''}. Return "
+            f"{_natural_schema(scenario.finding_key, *(['local'] if local else []), scenario.result_key)}."
+        )
+        forbidden = [
+            "coordinator_read_child_owned",
+            "poll",
+            "discover_child",
+            "delegate_coordinator_owned",
+        ]
+        if local is None:
+            forbidden.append("post_spawn_tool_before_child")
+        contract = _contract(
+            required,
+            forbidden,
+            ordering,
+            {
+                "spawn_child": 1,
+                "child_result_message": 1,
+                "parent_to_child_message": 0,
+            },
+        )
+        natural_stage = "N1a"
+        graph_variant = (
+            "pure_async_child_with_local_work"
+            if local is not None
+            else "pure_async_child"
+        )
+        atoms = ["semantic_ownership", "asynchronous_delegation"]
+        if local is not None:
+            atoms.append("independent_local_work")
+        timing = "one_causal_resume_cycle"
+        difficulty = 2 if local is None else 3
+        persistence_lease = None
+        state = {}
+    else:
+        parameter = rng.randint(101, 997)
+        lease_path = f"{root}/coordinator-intake.json"
+        files[lease_path] = json.dumps({scenario.parameter_key: parameter})
+        ownership[lease_path] = {
+            "owner": "coordinator",
+            "family": "expiring_intake_register",
+            "operation": (
+                f"capture {scenario.parameter_key} into durable coordinator state before "
+                "reviewer assignment"
+            ),
+        }
+        answer = {
+            scenario.finding_key: int(remote.result),
+            scenario.parameter_key: parameter,
+            scenario.result_key: int(remote.result) + parameter,
+        }
+        prompt = (
+            f"{intro} {child_name} is the designated {scenario.child_role} and the only "
+            f"party that receives the private evidence packet identified as {remote.path}; "
+            f"the coordinator does not possess a copy. The reviewer must {remote.operation}. "
+            f"A one-use coordinator intake register at {lease_path} contains the required "
+            f"{scenario.parameter_label} under key {scenario.parameter_key}. Its access lease "
+            "closes permanently as soon as reviewer assignment begins, and the earlier "
+            "conversation transcript is discarded when the reviewer returns. Capture the "
+            "intake value in durable coordinator state before making that assignment. After the "
+            f"delivered report, recover and use the captured value to publish "
+            f"{scenario.result_key} as the reviewer finding plus the intake value."
+            f"{_natural_control_boundary(style, 'natural_n1', has_local_work=False)} "
+            f"Return {_natural_schema(scenario.finding_key, scenario.parameter_key, scenario.result_key)}."
+        )
+        contract = _contract(
+            [
+                "capture_state",
+                "persistence_lease_closed",
+                f"spawn:{child_name}",
+                f"retain_handle:{child_name}",
+                "yield",
+                f"receive:{child_name}",
+                "context_boundary",
+                "reuse_captured_state",
+                "final_answer",
+            ],
+            [
+                "coordinator_read_child_owned",
+                "poll",
+                "discover_child",
+                "delegate_coordinator_owned",
+                "delegate_private_value",
+                "post_spawn_tool_before_child",
+            ],
+            [
+                ("capture_state", f"spawn:{child_name}"),
+                (f"spawn:{child_name}", "persistence_lease_closed"),
+                ("persistence_lease_closed", "yield"),
+                (f"spawn:{child_name}", "yield"),
+                (f"retain_handle:{child_name}", "yield"),
+                ("yield", f"receive:{child_name}"),
+                (f"spawn:{child_name}", "context_boundary"),
+                ("context_boundary", "reuse_captured_state"),
+                (f"receive:{child_name}", "reuse_captured_state"),
+                ("reuse_captured_state", "final_answer"),
+            ],
+            {
+                "spawn_child": 1,
+                "child_result_message": 1,
+                "parent_to_child_message": 0,
+            },
+        )
+        natural_stage = "N1b"
+        graph_variant = "context_boundary_persistence_then_async_child"
+        atoms = [
+            "semantic_ownership",
+            "causal_persistence",
+            "asynchronous_delegation",
+        ]
+        timing = "capture_then_context_loss_then_one_causal_resume_cycle"
+        difficulty = 3
+        persistence_lease = {
+            "path": lease_path,
+            "key": scenario.parameter_key,
+            "expected_value": parameter,
+        }
+        state = {scenario.parameter_key: parameter}
+
+    oracle = {
+        "expected_route": rung,
+        "final_answer": answer,
+        "coordinator_state": state,
+        "resource_ownership": ownership,
+        "private_resources": private_resources,
+        "children": [child],
+        "fault_plan": {"type": "none"},
+        "trajectory_contract": contract,
+    }
+    if persistence_lease is not None:
+        oracle["persistence_lease"] = persistence_lease
+    row = _row(
+        split,
+        index,
+        seed,
+        rung,
+        style,
+        prompt,
+        files,
+        oracle,
+        atoms,
+        difficulty,
+        timing,
+    )
+    row["generator_version"] = CAUSAL_N1_CURRICULUM_VERSION
+    row["metadata"].update(
+        {
+            "curriculum_rung": rung,
+            "natural_stage": natural_stage,
+            "semantic_family": scenario.key,
+            "graph_variant": graph_variant,
+            "control_contract_variant": style,
+            "private_payload_mode": private_payload_mode,
+        }
+    )
+    row["metadata"]["axis_signature"] = hashlib.sha256(
+        json.dumps(row["metadata"], sort_keys=True).encode()
+    ).hexdigest()[:16]
+    return row
+
+
 def _natural_curriculum_episode(
     rung: Literal["natural_n1", "natural_n2"],
     split: Split,
@@ -858,6 +1181,22 @@ def generate_curriculum_episode(
     names = rng.sample(list(CHILD_NAMES[split]), 2)
     children: list[dict[str, Any]] = []
 
+    if rung in {
+        "natural_n1a",
+        "natural_n1a_local",
+        "natural_n1b",
+        "natural_direct_control",
+    }:
+        return _causal_n1_curriculum_episode(
+            rung,
+            split,
+            index,
+            seed,
+            rng,
+            style,
+            names[0],
+            private_payload_mode,
+        )
     if rung in {"natural_n1", "natural_n2"}:
         return _natural_curriculum_episode(
             rung,

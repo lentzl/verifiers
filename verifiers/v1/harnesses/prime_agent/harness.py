@@ -313,6 +313,8 @@ cleanup_descendants'''
     def _env(self, trace: Trace, secret: str) -> dict[str, str]:
         root = self._root(trace)
         return {
+            "PAGER": "cat",
+            "PYTHONPAGER": "cat",
             **self.config.resolved_env,
             KEY_VAR: secret,
             ENV_AGENT_DIR: f"{root}/agent",

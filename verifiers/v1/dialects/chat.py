@@ -622,7 +622,15 @@ class ChatDialect(Dialect[CompletionCreateParams, ChatCompletion]):
         # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set. The selected model is authoritative even if a permissive
         # sampling config carries an extra field named `model`.
+        overrides = sampling.model_dump(exclude_none=True)
+        steered = dict(body)
+        # Chat Completions accepts both aliases, but providers such as vLLM give
+        # `max_completion_tokens` precedence when both are present. The eval serializes its
+        # canonical limit as `max_tokens`, so leaving a harness-supplied alias on the request
+        # would silently defeat the supposedly authoritative eval limit.
+        if "max_tokens" in overrides:
+            steered.pop("max_completion_tokens", None)
         return cast(
             CompletionCreateParams,
-            {**body, **sampling.model_dump(exclude_none=True), "model": model},
+            {**steered, **overrides, "model": model},
         )

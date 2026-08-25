@@ -7,10 +7,20 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+import verifiers.v1 as vf
+from procedural_harness_master_v1.causal_context_boundary import (
+    BOUNDARY_MARKER,
+    _rewrite_for_boundary,
+    install_causal_context_boundary,
+)
 from procedural_harness_master_v1.taskset import (
+    CHILD_ACTION_SCAFFOLD_HEADER,
     COMPLETION_GATE_PATH,
     PRIVATE_EVIDENCE_HEADER,
+    PRIVILEGED_BOOTSTRAP_HEADER,
+    PRIVILEGED_HINT_HEADER,
     ProceduralHarnessMasterConfig,
+    ProceduralHarnessMasterTaskConfig,
     ProceduralHarnessMasterEnv,
     ProceduralHarnessMasterTaskset,
     _contract_behavior,
@@ -18,14 +28,32 @@ from procedural_harness_master_v1.taskset import (
     _natural_yield_feedback_diagnostic,
     _record_followup_feedback,
     _record_natural_yield_feedback,
+    _resolve_alias,
     keep_atomic_child_request_coordinator_actions,
     keep_followup_feedback_response,
     keep_natural_yield_feedback_response,
 )
-
-import verifiers.v1 as vf
+from verifiers.v1.dialects.chat import ChatDialect, message_to_wire
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolCall, ToolMessage, UserMessage
+
+
+@pytest.mark.parametrize(
+    ("aliases", "name", "resolved"),
+    [
+        ({"msg": "agent_message"}, "msg.send", "agent_message.send"),
+        (
+            {"agent_message": "agent_message.agent_message"},
+            "agent_message.send",
+            "agent_message.agent_message.send",
+        ),
+        ({"left": "right", "right": "left"}, "left.send", "left.send"),
+    ],
+)
+def test_alias_resolution_is_bounded_by_distinct_heads(
+    aliases: dict[str, str], name: str, resolved: str
+) -> None:
+    assert _resolve_alias(name, aliases) == resolved
 
 
 def _task(family: str, split: str = "train_gen"):
@@ -93,7 +121,10 @@ def _child_completion_notice(nodes, parent: int, child: str, body: str) -> int:
             message=UserMessage(
                 content=(
                     f"[from child:{child}]\n"
-                    "RLM child completed without sending a reply. "
+                    "Agent-to-agent message received.\n"
+                    "Source: agent_message\n"
+                    f"Message id: msg-{len(nodes)}\n\n"
+                    f"RLM child {child} (sub-test) completed without sending a reply. "
                     f"Last assistant text: {body}"
                 )
             ),
@@ -171,6 +202,100 @@ def test_taskset_keeps_oracle_out_of_model_visible_fields() -> None:
     assert task.data.oracle["trajectory_contract"]
 
 
+def test_privileged_context_is_opt_in_and_requires_the_selected_task(tmp_path) -> None:
+    plain = _curriculum_task("natural_n1a_local")
+    hint_path = tmp_path / "hints.json"
+    hint_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "qwen35-2b-spade-rung0-hints/v1",
+                "status": "complete",
+                "hints": {plain.key: "Delegate only the reviewer-owned evidence."},
+            }
+        )
+    )
+    hinted = ProceduralHarnessMasterTaskset(
+        ProceduralHarnessMasterConfig(
+            count=1,
+            curriculum_rung="natural_n1a_local",
+            privileged_hint_path=str(hint_path),
+        )
+    ).load()[0]
+
+    assert PRIVILEGED_HINT_HEADER not in plain.data.prompt
+    assert hinted.data.prompt == (
+        f"{plain.data.prompt}\n\n{PRIVILEGED_HINT_HEADER}\n"
+        "Delegate only the reviewer-owned evidence."
+    )
+    assert hinted.data.oracle == plain.data.oracle
+    assert hinted.data.workspace_files == plain.data.workspace_files
+
+    hint_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "qwen35-2b-spade-rung0-hints/v1",
+                "status": "complete",
+                "hints": {"different-task": "Do the task."},
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="lacks selected task"):
+        ProceduralHarnessMasterTaskset(
+            ProceduralHarnessMasterConfig(
+                count=1,
+                curriculum_rung="natural_n1a_local",
+                privileged_hint_path=str(hint_path),
+            )
+        ).load()
+
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "qwen35-2b-environment-bootstrap-context/v1",
+                "status": "complete",
+                "split": "train_gen",
+                "contexts": {plain.key: "Execute the supplied first action exactly."},
+            }
+        )
+    )
+    scaffolded = ProceduralHarnessMasterTaskset(
+        ProceduralHarnessMasterConfig(
+            count=1,
+            curriculum_rung="natural_n1a_local",
+            privileged_bootstrap_path=str(bootstrap_path),
+        )
+    ).load()[0]
+
+    assert PRIVILEGED_BOOTSTRAP_HEADER not in plain.data.prompt
+    assert scaffolded.data.prompt == (
+        f"{plain.data.prompt}\n\n{PRIVILEGED_BOOTSTRAP_HEADER}\n"
+        "Execute the supplied first action exactly."
+    )
+    assert scaffolded.data.oracle == plain.data.oracle
+    assert scaffolded.data.workspace_files == plain.data.workspace_files
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        ProceduralHarnessMasterTaskset(
+            ProceduralHarnessMasterConfig(
+                count=1,
+                curriculum_rung="natural_n1a_local",
+                privileged_hint_path=str(hint_path),
+                privileged_bootstrap_path=str(bootstrap_path),
+            )
+        ).load()
+
+    with pytest.raises(ValueError, match="restricted to train_gen"):
+        ProceduralHarnessMasterTaskset(
+            ProceduralHarnessMasterConfig(
+                split="valid_gen",
+                count=1,
+                curriculum_rung="natural_n1a_local",
+                privileged_bootstrap_path=str(bootstrap_path),
+            )
+        ).load()
+
+
 def test_natural_private_evidence_is_injected_only_into_child_context() -> None:
     task = _curriculum_task("natural_n1")
     private = task.data.oracle["private_resources"]
@@ -213,6 +338,40 @@ def test_natural_finding_card_mode_reaches_task_and_child_context() -> None:
     assert next(iter(task.data.oracle["private_resources"].values())) in text
 
 
+def test_exact_child_action_scaffold_is_opt_in_and_child_only() -> None:
+    plain = ProceduralHarnessMasterTaskset(
+        ProceduralHarnessMasterConfig(
+            count=1,
+            curriculum_rung="natural_n1a",
+            private_payload_mode="finding_card",
+        )
+    ).load()[0]
+    scaffolded = ProceduralHarnessMasterTaskset(
+        ProceduralHarnessMasterConfig(
+            count=1,
+            curriculum_rung="natural_n1a",
+            private_payload_mode="finding_card",
+            task=ProceduralHarnessMasterTaskConfig(leak_child_exact_action=True),
+        )
+    ).load()[0]
+    child_request = vf.Request(messages=[UserMessage(content="Review the private evidence.")])
+
+    plain_rewrite = plain.inject_natural_private_evidence(child_request)
+    scaffolded_rewrite = scaffolded.inject_natural_private_evidence(child_request)
+
+    assert plain_rewrite is not None and scaffolded_rewrite is not None
+    plain_text = str(plain_rewrite.messages[-1].content)
+    scaffolded_text = str(scaffolded_rewrite.messages[-1].content)
+    expected = str(scaffolded.data.oracle["children"][0]["expected_result"])
+    exact_call = f"await agent_message.send({expected!r}, receiver_role='parent')"
+    assert CHILD_ACTION_SCAFFOLD_HEADER not in plain_text
+    assert CHILD_ACTION_SCAFFOLD_HEADER in scaffolded_text
+    assert exact_call in scaffolded_text
+    assert expected not in scaffolded.data.prompt
+    root_request = vf.Request(messages=[UserMessage(content=scaffolded.data.prompt)])
+    assert scaffolded.inject_natural_private_evidence(root_request) is None
+
+
 @pytest.mark.asyncio
 async def test_setup_materializes_only_public_files() -> None:
     class Runtime:
@@ -237,6 +396,229 @@ async def test_setup_materializes_only_public_files() -> None:
     for child in task.data.oracle["children"]:
         assert child["name"] in gate
     assert repr(task.data.oracle["final_answer"]) not in gate
+
+
+def test_causal_n1_contracts_score_their_separate_capabilities() -> None:
+    for rung in ("natural_n1a", "natural_n1a_local"):
+        task = _curriculum_task(rung)
+        child = task.data.oracle["children"][0]
+        actions = [
+            (
+                "cell",
+                (
+                    "child_handle = await rlm("
+                    f"'Review {child['resource_path']} and report to parent', "
+                    f"name={child['name']!r})"
+                ),
+                f"RLMSpawnHandle(name='{child['name']}')",
+            )
+        ]
+        for path, ownership in task.data.oracle["resource_ownership"].items():
+            if ownership["owner"] == "coordinator":
+                actions.append(("cell", f"open({path!r}).read()", "local evidence"))
+        actions.append(("incoming", child["name"], str(child["expected_result"])))
+
+        behavior = _contract_behavior(_trace(task, actions), task.data)
+
+        assert behavior["harness_score"] == 1.0, behavior
+
+    task = _curriculum_task("natural_n1b")
+    child = task.data.oracle["children"][0]
+    lease = task.data.oracle["persistence_lease"]
+    trace = _trace(
+        task,
+        [
+            (
+                "cell",
+                (
+                    "import json\n"
+                    f"captured = json.loads(open({lease['path']!r}).read())"
+                    f"[{lease['key']!r}]"
+                ),
+                "",
+            ),
+            (
+                "cell",
+                (
+                    "child_handle = await rlm("
+                    f"'Review {child['resource_path']} and report to parent', "
+                    f"name={child['name']!r})"
+                ),
+                f"RLMSpawnHandle(name='{child['name']}')",
+            ),
+            ("incoming", child["name"], str(child["expected_result"])),
+            ("cell", f"combined = captured + {child['expected_result']}", "combined"),
+        ],
+    )
+    trace.info["persistence_lease"] = {
+        "schema_version": "procedural-harness-master-v1/persistence-lease/v1",
+        "closed": True,
+        "path": lease["path"],
+    }
+    trace.info["causal_context_boundary"] = {
+        "schema_version": "procedural-harness-master-v1/causal-context-boundary/v1",
+        "applied": True,
+        "applications": 1,
+    }
+
+    behavior = _contract_behavior(trace, task.data)
+
+    assert behavior["harness_score"] == 1.0, behavior
+
+
+def test_direct_control_allows_local_compute_and_rejects_delegation() -> None:
+    task = _curriculum_task("natural_direct_control")
+
+    direct = _contract_behavior(_trace(task, []), task.data)
+    local_compute = _contract_behavior(
+        _trace(task, [("cell", "scratch = 1 + 1", "2")]), task.data
+    )
+    delegated = _contract_behavior(
+        _trace(
+            task,
+            [("cell", "child = await rlm('unneeded')", "RLMSpawnHandle(name='x')")],
+        ),
+        task.data,
+    )
+
+    assert direct["harness_score"] == 1.0
+    assert local_compute["harness_score"] == 1.0
+    assert delegated["harness_score"] == 0.0
+    assert delegated["forbidden_atom_violations"] == 1.0
+
+
+def test_n1a_instruction_string_is_not_misclassified_as_child_resource_read() -> None:
+    task = _curriculum_task("natural_n1a")
+    child = task.data.oracle["children"][0]
+    trace = _trace(
+        task,
+        [
+            (
+                "cell",
+                f"instruction = 'Review {child['resource_path']} and reply once'",
+                "",
+            ),
+            (
+                "cell",
+                f"handle = await rlm(instruction, name={child['name']!r})",
+                f"RLMSpawnHandle(name='{child['name']}')",
+            ),
+            ("incoming", child["name"], str(child["expected_result"])),
+        ],
+    )
+
+    behavior = _contract_behavior(trace, task.data)
+
+    assert behavior["harness_score"] == 1.0, behavior
+    assert behavior["forbidden_atom_violations"] == 0.0
+
+
+def test_n1b_context_boundary_removes_visible_ephemeral_history() -> None:
+    task = _curriculum_task("natural_n1b")
+    child = task.data.oracle["children"][0]
+    lease = task.data.oracle["persistence_lease"]
+    secret = str(lease["expected_value"])
+    trace = _trace(task, [])
+    trace.info["persistence_lease"] = {
+        "schema_version": "procedural-harness-master-v1/persistence-lease/v1",
+        "closed": True,
+        "path": lease["path"],
+    }
+    tool_call = ToolCall(
+        id="capture",
+        name="ipython",
+        arguments=json.dumps(
+            {"code": f"captured = json.loads(open({lease['path']!r}).read())"}
+        ),
+    )
+    request = vf.Request(
+        messages=[
+            UserMessage(content=task.data.prompt),
+            AssistantMessage(content="", tool_calls=[tool_call]),
+            ToolMessage(tool_call_id="capture", content=f"captured={secret}"),
+            UserMessage(
+                content=(
+                    f"[from child:{child['name']}]\n"
+                    "Agent-to-agent message received.\n"
+                    "Source: agent_message\nMessage id: msg-test\n\n"
+                    f"FINDING={child['expected_result']}"
+                )
+            ),
+        ]
+    )
+
+    rewritten = _rewrite_for_boundary(trace, request)
+
+    assert rewritten is not None
+    assert len(rewritten.messages) == 2
+    visible = json.dumps([message.model_dump() for message in rewritten.messages])
+    assert f"captured={secret}" not in visible
+    assert BOUNDARY_MARKER in visible
+    assert rewritten.messages[0].content == task.data.prompt
+    assert trace.info["causal_context_boundary"]["applied"] is True
+
+    install_causal_context_boundary()
+    body = {"messages": [message_to_wire(message) for message in request.messages]}
+    ChatDialect().rewrite_request(body, request, rewritten)
+    wire = json.dumps(body)
+    assert len(body["messages"]) == 2
+    assert f"captured={secret}" not in wire
+    assert BOUNDARY_MARKER in wire
+
+
+@pytest.mark.asyncio
+async def test_n1b_closes_the_intake_lease_after_delegation_is_admitted() -> None:
+    class Runtime:
+        def __init__(self):
+            self.commands = []
+            self.writes = {}
+
+        async def run(self, argv, env):
+            self.commands.append(argv)
+            return SimpleNamespace(exit_code=0, stderr="")
+
+        async def write(self, path, data):
+            self.writes[path] = data
+
+    task = _curriculum_task("natural_n1b")
+    trace = _trace(task, [])
+    runtime = Runtime()
+    await task.setup(trace, runtime)
+    setup_commands = list(runtime.commands)
+    response = vf.Response(
+        id="response",
+        created=0,
+        model="test",
+        message=AssistantMessage(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="delegate",
+                    name="ipython",
+                    arguments=json.dumps(
+                        {"code": "child = await rlm('review', name='reviewer')"}
+                    ),
+                )
+            ],
+        ),
+        finish_reason="tool_calls",
+    )
+
+    task.arm_causal_persistence_lease(response, trace)
+
+    assert runtime.commands == setup_commands
+    assert trace.info["persistence_lease"]["pending"] is True
+
+    await task.close_causal_persistence_lease(
+        vf.Request(messages=[UserMessage(content="child admission request")]), trace
+    )
+
+    lease_path = task.data.oracle["persistence_lease"]["path"]
+    assert runtime.commands[-1] == ["rm", "-f", lease_path]
+    assert trace.info["persistence_lease"]["pending"] is False
+    assert trace.info["persistence_lease"]["closed"] is True
+    await task.finalize(trace, runtime)
+    assert trace.id not in task._runtime_by_trace
 
 
 @pytest.mark.asyncio
@@ -1332,6 +1714,99 @@ async def test_event_control_reward_trains_clean_partial_followup_progress() -> 
     violating = _contract_behavior(violating_trace, task.data)
     assert violating["event_control_progress"] == 0.0
     assert await task.harness_score(violating_trace) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_event_control_reward_preserves_first_atom_signal_before_ordering_progress() -> None:
+    task = _task("single")
+    task.config.reward_mode = "event_control"
+    child = task.data.oracle["children"][0]
+    trace = _trace(
+        task,
+        [("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')")],
+        reply="{}",
+    )
+
+    behavior = _contract_behavior(trace, task.data)
+    assert behavior["harness_score"] == 0.0
+    assert behavior["required_atoms_fraction"] > 0.0
+    assert behavior["causal_prefix_fraction"] > 0.0
+    assert behavior["ordering_fraction"] < 1.0
+    assert behavior["event_control_progress"] > 0.0
+    assert await task.harness_score(trace) == pytest.approx(
+        behavior["event_control_progress"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_event_control_rewards_correct_child_send_before_delivery() -> None:
+    task = _curriculum_task("natural_n1a")
+    task.config.reward_mode = "event_control"
+    child = task.data.oracle["children"][0]
+    trace = _trace(
+        task,
+        [("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')")],
+        reply="{}",
+    )
+    child_root = len(trace.nodes)
+    trace.nodes.append(
+        MessageNode(
+            parent=None,
+            message=UserMessage(content=f"{PRIVATE_EVIDENCE_HEADER}\nevidence"),
+            sampled=False,
+        )
+    )
+    _cell(
+        trace.nodes,
+        child_root,
+        f"await agent_message.send({str(child['expected_result'])!r}, receiver_role='parent')",
+    )
+
+    behavior = _contract_behavior(trace, task.data)
+    assert behavior["child_action_progress"] == 1.0
+    assert behavior["child_action_bridge"] > 0.0
+    assert await task.harness_score(trace) == pytest.approx(
+        behavior["event_control_progress"] + behavior["child_action_bridge"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_event_control_does_not_reward_empty_child_tool_code() -> None:
+    task = _curriculum_task("natural_n1a")
+    task.config.reward_mode = "event_control"
+    child = task.data.oracle["children"][0]
+    trace = _trace(
+        task,
+        [("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')")],
+        reply="{}",
+    )
+    child_root = len(trace.nodes)
+    trace.nodes.append(
+        MessageNode(
+            parent=None,
+            message=UserMessage(content=f"{PRIVATE_EVIDENCE_HEADER}\nevidence"),
+            sampled=False,
+        )
+    )
+    _cell(trace.nodes, child_root, "")
+
+    behavior = _contract_behavior(trace, task.data)
+    assert behavior["child_action_progress"] == 0.0
+    assert behavior["child_action_bridge"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_event_control_reward_rejects_out_of_order_final_answer_credit() -> None:
+    task = _task("single")
+    task.config.reward_mode = "event_control"
+    trace = _trace(task, [], reply="premature final response")
+
+    behavior = _contract_behavior(trace, task.data)
+
+    assert behavior["required_atoms_fraction"] > 0.0
+    assert behavior["causal_prefix_fraction"] == 0.0
+    assert behavior["event_control_progress"] == 0.0
+    assert await task.harness_score(trace) == 0.0
 
 
 @pytest.mark.parametrize(
