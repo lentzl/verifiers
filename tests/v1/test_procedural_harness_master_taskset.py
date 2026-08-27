@@ -1771,6 +1771,104 @@ async def test_event_control_rewards_correct_child_send_before_delivery() -> Non
 
 
 @pytest.mark.asyncio
+async def test_child_action_reward_is_local_to_sampled_child_send() -> None:
+    task = _curriculum_task("natural_n1a")
+    task.config.reward_mode = "child_action"
+    child = task.data.oracle["children"][0]
+    # Deliberately leave the coordinator terminal answer wrong. Child-role GRPO
+    # must still receive full credit for its own correct, independently sampled
+    # report instead of inheriting downstream coordinator noise.
+    trace = _trace(
+        task,
+        [("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')")],
+        reply="{}",
+    )
+    child_root = len(trace.nodes)
+    trace.nodes.append(
+        MessageNode(
+            parent=None,
+            message=UserMessage(content=f"{PRIVATE_EVIDENCE_HEADER}\nevidence"),
+            sampled=False,
+        )
+    )
+    _cell(
+        trace.nodes,
+        child_root,
+        f"await agent_message.send({str(child['expected_result'])!r}, receiver_role='parent')",
+    )
+    _incoming(trace.nodes, 0, child["name"], str(child["expected_result"]))
+
+    behavior = _contract_behavior(trace, task.data)
+    assert behavior["harness_score"] == 0.0
+    assert behavior["child_action_progress"] == 1.0
+    assert behavior["child_action_completed"] == 1.0
+    assert behavior["child_action_local_reward"] == 1.0
+    assert await task.harness_score(trace) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_child_action_reward_preserves_baby_step_ramp() -> None:
+    task = _curriculum_task("natural_n1a")
+    task.config.reward_mode = "child_action"
+    child = task.data.oracle["children"][0]
+    trace = _trace(task, [], reply="{}")
+    child_root = len(trace.nodes)
+    trace.nodes.append(
+        MessageNode(
+            parent=None,
+            message=UserMessage(content=f"{PRIVATE_EVIDENCE_HEADER}\nevidence"),
+            sampled=False,
+        )
+    )
+    _cell(
+        trace.nodes,
+        child_root,
+        "await agent_message.send('wrong', receiver_role='parent')",
+    )
+
+    behavior = _contract_behavior(trace, task.data)
+    assert behavior["child_action_progress"] == 0.75
+    assert behavior["child_action_completed"] == 0.0
+    assert behavior["child_action_local_reward"] == 0.75
+    assert await task.harness_score(trace) == 0.75
+
+
+@pytest.mark.asyncio
+async def test_child_action_reward_caps_correct_send_without_clean_stop() -> None:
+    task = _curriculum_task("natural_n1a")
+    task.config.reward_mode = "child_action"
+    child = task.data.oracle["children"][0]
+    trace = _trace(task, [], reply="{}")
+    child_root = len(trace.nodes)
+    trace.nodes.append(
+        MessageNode(
+            parent=None,
+            message=UserMessage(content=f"{PRIVATE_EVIDENCE_HEADER}\nevidence"),
+            sampled=False,
+        )
+    )
+    parent = _cell(
+        trace.nodes,
+        child_root,
+        f"await agent_message.send({str(child['expected_result'])!r}, receiver_role='parent')",
+    )
+    trace.nodes.append(
+        MessageNode(
+            parent=parent,
+            message=AssistantMessage(content="Sent."),
+            sampled=True,
+        )
+    )
+    _incoming(trace.nodes, 0, child["name"], str(child["expected_result"]))
+
+    behavior = _contract_behavior(trace, task.data)
+    assert behavior["child_action_progress"] == 1.0
+    assert behavior["child_action_completed"] == 0.0
+    assert behavior["child_action_local_reward"] == 0.75
+    assert await task.harness_score(trace) == 0.75
+
+
+@pytest.mark.asyncio
 async def test_event_control_does_not_reward_empty_child_tool_code() -> None:
     task = _curriculum_task("natural_n1a")
     task.config.reward_mode = "event_control"

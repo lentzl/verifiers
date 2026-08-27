@@ -259,6 +259,21 @@ def _sampled_child_ipython_codes(trace: vf.Trace) -> list[str]:
     return codes
 
 
+def _sampled_child_assistant_nodes(trace: vf.Trace) -> list[MessageNode]:
+    """Return sampled assistant nodes from non-root agent branches in trace order."""
+
+    if not trace.nodes:
+        return []
+    coordinator_root = _branch_root(trace, 0)
+    return [
+        node
+        for index, node in enumerate(trace.nodes)
+        if _branch_root(trace, index) != coordinator_root
+        and isinstance(node.message, AssistantMessage)
+        and node.sampled
+    ]
+
+
 def _child_action_progress(trace: vf.Trace, expected_values: set[str]) -> float:
     """Grade the causal bridge from a child tool action to an explicit parent send."""
 
@@ -882,6 +897,19 @@ def _contract_behavior(
         if isinstance(child, dict) and "expected_result" in child
     }
     child_action_progress = _child_action_progress(trace, expected_child_values)
+    sampled_child_nodes = _sampled_child_assistant_nodes(trace)
+    # Reserve a full local score for a completed one-turn transition: the child
+    # independently emits the exact send, it is delivered once to the parent,
+    # and the child stops instead of sampling a trailing assistant turn. Partial
+    # action structure still earns the 0.25/0.50/0.75 baby-step ramp above.
+    child_action_completed = float(
+        child_action_progress == 1.0
+        and len(result_messages) == 1
+        and len(sampled_child_nodes) == 1
+    )
+    child_action_local_reward = min(
+        child_action_progress, 0.75 + 0.25 * child_action_completed
+    )
     # Before a child delivery exists, reward a syntactically valid, correctly routed
     # send as a small causal bridge.  The bonus decays as the declared protocol prefix
     # fills and is zero on a complete trajectory, so terminal reward remains unchanged.
@@ -931,6 +959,8 @@ def _contract_behavior(
         "bootstrap_progress": bootstrap_progress,
         "event_control_progress": event_control_progress,
         "child_action_progress": child_action_progress,
+        "child_action_completed": child_action_completed,
+        "child_action_local_reward": child_action_local_reward,
         "child_action_bridge": child_action_bridge,
         "local_work_before_yield": local_work_before_yield,
         "premature_yield_before_local_work": premature_yield_before_local_work,
@@ -1489,7 +1519,9 @@ def keep_followup_feedback_response(trace: vf.Trace) -> list[list[bool]]:
 
 
 class ProceduralHarnessMasterTaskConfig(vf.TaskConfig):
-    reward_mode: Literal["hard", "bootstrap", "event_control"] = "hard"
+    reward_mode: Literal[
+        "hard", "bootstrap", "event_control", "child_action"
+    ] = "hard"
     leak_child_exact_action: bool = False
 
 
@@ -1705,6 +1737,14 @@ class ProceduralHarnessMasterTask(
                 + behavior["event_control_progress"]
                 + behavior["child_action_bridge"]
             )
+        if self.config.reward_mode == "child_action":
+            # Role-scoped child GRPO must compare the child's own sampled action,
+            # not the frozen coordinator's later success or failure.  The graded
+            # ramp gives baby-step credit for executable Python, an awaited send,
+            # the parent route, and finally the correct value.  A full score can
+            # only come from the child's independently sampled tool call because
+            # child-action synthesis is disabled in the role router for this mode.
+            return behavior["child_action_local_reward"]
         return behavior["harness_score"]
 
     @vf.metric
