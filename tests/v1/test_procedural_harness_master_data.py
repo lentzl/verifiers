@@ -171,6 +171,74 @@ def test_natural_n1_varies_the_composition_graph() -> None:
     }
 
 
+def test_causal_n1_rungs_separate_event_control_persistence_and_local_work() -> None:
+    expected = {
+        "natural_n1a": ("N1a", "pure_async_child"),
+        "natural_n1a_local": ("N1a", "pure_async_child_with_local_work"),
+        "natural_n1b": (
+            "N1b",
+            "context_boundary_persistence_then_async_child",
+        ),
+    }
+    for rung, (stage, graph) in expected.items():
+        row = MODULE.generate_curriculum_episode(
+            rung,
+            "train_gen",
+            17,
+            private_payload_mode="finding_card",
+        )
+        MODULE.validate_row(row)
+        contract = row["oracle"]["trajectory_contract"]
+        prompt = row["public"]["user_prompt"].lower()
+
+        assert row["generator_version"] == MODULE.CAUSAL_N1_CURRICULUM_VERSION
+        assert row["metadata"]["natural_stage"] == stage
+        assert row["metadata"]["graph_variant"] == graph
+        assert not {
+            term for term in MODULE.NATURAL_USER_PROMPT_FORBIDDEN if term in prompt
+        }
+
+        if rung == "natural_n1a":
+            assert row["oracle"]["coordinator_state"] == {}
+            assert "capture_state" not in contract["required_atoms"]
+            assert "coordinator_read_local" not in contract["required_atoms"]
+        elif rung == "natural_n1a_local":
+            assert "coordinator_read_local" in contract["required_atoms"]
+        else:
+            lease = row["oracle"]["persistence_lease"]
+            assert lease["path"] in row["public"]["workspace_files"]
+            assert row["public"]["workspace_files"][lease["path"]] not in prompt
+            assert {
+                "capture_state",
+                "persistence_lease_closed",
+                "context_boundary",
+                "reuse_captured_state",
+            } <= set(contract["required_atoms"])
+
+
+def test_natural_direct_control_allows_local_compute_but_forbids_delegation() -> None:
+    row = MODULE.generate_curriculum_episode(
+        "natural_direct_control", "train_gen", 17
+    )
+
+    MODULE.validate_row(row)
+    contract = row["oracle"]["trajectory_contract"]
+    prompt = row["public"]["user_prompt"]
+    assert row["metadata"]["natural_stage"] == "paired_control"
+    assert row["metadata"]["graph_variant"] == "direct_coordinator_compute_control"
+    assert row["public"]["workspace_files"] == {}
+    assert row["oracle"]["children"] == []
+    assert row["oracle"]["private_resources"] == {}
+    assert "coordinator_tool" not in contract["forbidden_atoms"]
+    assert "spawn_child" in contract["forbidden_atoms"]
+    assert "already present in this request" in prompt
+    answer = row["oracle"]["final_answer"]
+    first, second, result = answer.values()
+    assert str(first) in prompt
+    assert str(second) in prompt
+    assert str(result) not in prompt
+
+
 def test_natural_n2_holds_out_a_composition_graph_for_ood() -> None:
     train_variants = {
         MODULE.generate_curriculum_episode("natural_n2", "train_gen", index)[

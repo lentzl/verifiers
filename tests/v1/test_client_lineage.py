@@ -6,6 +6,7 @@ from verifiers.v1.clients import EvalClientConfig
 from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.dialects import ChatDialect
 from verifiers.v1.interception.server import InterceptionServer
+from verifiers.v1.types import SamplingConfig
 
 
 @pytest.mark.asyncio
@@ -51,3 +52,38 @@ def test_record_call_preserves_client_session_id() -> None:
     )
 
     assert session.trace.calls[0].client_session_id == "prime-agent-child"
+
+
+def test_chat_eval_max_tokens_removes_competing_program_alias() -> None:
+    body = {
+        "model": "program-model",
+        "messages": [],
+        "max_tokens": 8192,
+        "max_completion_tokens": 24576,
+    }
+
+    steered = ChatDialect().apply_overrides(
+        body,
+        "eval-model",
+        SamplingConfig(max_tokens=3072),
+    )
+
+    assert steered["model"] == "eval-model"
+    assert steered["max_tokens"] == 3072
+    assert "max_completion_tokens" not in steered
+
+
+def test_chat_preserves_program_max_tokens_when_eval_has_no_limit() -> None:
+    body = {
+        "model": "program-model",
+        "messages": [],
+        "max_completion_tokens": 24576,
+    }
+
+    steered = ChatDialect().apply_overrides(
+        body,
+        "eval-model",
+        SamplingConfig(),
+    )
+
+    assert steered["max_completion_tokens"] == 24576

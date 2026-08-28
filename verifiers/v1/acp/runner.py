@@ -35,6 +35,7 @@ from acp.schema import (
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+MAX_SESSION_UPDATE_BYTES = 8 * 1024 * 1024
 
 
 class VerifiersACPClient(Client):
@@ -42,13 +43,21 @@ class VerifiersACPClient(Client):
         self.visible_reply = ""
         self.message_id: str | None = None
         self.tool_calls: dict[str, str] = {}
+        self.update_bytes = 0
 
     def reset(self) -> None:
         self.visible_reply = ""
         self.message_id = None
         self.tool_calls = {}
+        self.update_bytes = 0
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        self.update_bytes += len(update.model_dump_json().encode())
+        if self.update_bytes > MAX_SESSION_UPDATE_BYTES:
+            raise RuntimeError(
+                "ACP session updates exceeded "
+                f"{MAX_SESSION_UPDATE_BYTES} bytes"
+            )
         if isinstance(update, ToolCall):
             self.tool_calls[update.tool_call_id] = update.status or "pending"
         elif isinstance(update, ToolCallUpdate):

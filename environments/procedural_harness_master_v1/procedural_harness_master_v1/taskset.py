@@ -13,6 +13,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal
 
+import verifiers.v1 as vf
 from pydantic import Field
 from subagent_communication_v1.taskset import (
     _assigned_call_names,
@@ -26,8 +27,8 @@ from subagent_communication_v1.taskset import (
     _spawn_name,
     _spawn_prompt,
 )
+from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 
-import verifiers.v1 as vf
 from procedural_harness_master_v1.followup_feedback import (
     FEEDBACK_SCHEMA_VERSION,
     FollowupFailureDiagnostic,
@@ -44,7 +45,6 @@ from procedural_harness_master_v1.natural_yield_feedback import (
 from procedural_harness_master_v1.natural_yield_feedback import (
     feedback_contract_payload as natural_yield_feedback_contract_payload,
 )
-from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 
 Split = Literal["train_gen", "valid_gen", "ood_gen"]
 CurriculumRung = Literal[
@@ -54,6 +54,10 @@ CurriculumRung = Literal[
     "atomic_followup",
     "atomic_parallel",
     "natural_n1",
+    "natural_n1a",
+    "natural_n1a_local",
+    "natural_n1b",
+    "natural_direct_control",
     "natural_n2",
 ]
 COMPLETION_GATE_PATH = "/workspace/.procedural-harness-master/completion_gate.py"
@@ -66,6 +70,9 @@ COMPLETION_GATE_FEEDBACK = (
     "only after all required child evidence has arrived."
 )
 PRIVATE_EVIDENCE_HEADER = "[private evidence supplied to this reviewer]"
+CHILD_ACTION_SCAFFOLD_HEADER = "[training-only child action scaffold]"
+PRIVILEGED_HINT_HEADER = "[privileged strategy hint]"
+PRIVILEGED_BOOTSTRAP_HEADER = "[training-only environment scaffold]"
 
 
 @lru_cache(maxsize=1)
@@ -144,6 +151,57 @@ def _assigned_state(statement: ast.stmt, name: str, value: Any) -> bool:
     return False
 
 
+def _assignment_names(statement: ast.stmt) -> set[str]:
+    if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+        return set()
+    targets = (
+        statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+    )
+    return {
+        node.id
+        for target in targets
+        for node in ast.walk(target)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
+
+
+def _assigned_from_path(statement: ast.stmt, path: str) -> set[str]:
+    if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+        return set()
+    if not any(
+        isinstance(node, ast.Constant) and node.value == path
+        for node in ast.walk(statement.value)
+    ):
+        return set()
+    if not any(isinstance(node, ast.Call) for node in ast.walk(statement.value)):
+        return set()
+    return _assignment_names(statement)
+
+
+def _response_proposes_delegation(response: vf.Response) -> bool:
+    for tool_call in response.message.tool_calls or []:
+        if tool_call.name != "ipython" or not isinstance(tool_call.arguments, str):
+            continue
+        try:
+            arguments = json.loads(tool_call.arguments)
+        except json.JSONDecodeError:
+            continue
+        code = arguments.get("code") if isinstance(arguments, dict) else None
+        if not isinstance(code, str):
+            continue
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            continue
+        if any(
+            _call_name(call) == "rlm"
+            for call in ast.walk(tree)
+            if isinstance(call, ast.Call)
+        ):
+            return True
+    return False
+
+
 def _incoming_messages(trace: vf.Trace) -> list[tuple[int, str, str]]:
     messages = []
     for index, node in enumerate(trace.nodes):
@@ -159,9 +217,101 @@ def _incoming_messages(trace: vf.Trace) -> list[tuple[int, str, str]]:
         visible_child_failure = (
             body.startswith("RLM child failure") or "RESOURCE_UNAVAILABLE" in body
         )
-        if explicit_delivery or injected_failure or visible_child_failure:
+        # Prime Agent emits a terminal lifecycle notification on the same visible
+        # agent-message channel when a child exits without calling send().  It is
+        # not child evidence and must not satisfy receive/cardinality contracts.
+        # In particular, child-role GRPO must rank an explicit child reply above
+        # an empty completion instead of assigning both the same protocol reward.
+        completed_without_reply = bool(
+            re.match(r"^RLM child .* completed without sending a reply\b", body)
+        )
+        if (
+            explicit_delivery or injected_failure or visible_child_failure
+        ) and not completed_without_reply:
             messages.append((index, match.group(1), body))
     return messages
+
+
+def _sampled_child_ipython_codes(trace: vf.Trace) -> list[str]:
+    """Return executable IPython payloads sampled on non-root agent branches."""
+
+    if not trace.nodes:
+        return []
+    coordinator_root = _branch_root(trace, 0)
+    codes = []
+    for index, node in enumerate(trace.nodes):
+        if (
+            _branch_root(trace, index) == coordinator_root
+            or not isinstance(node.message, AssistantMessage)
+            or not node.sampled
+        ):
+            continue
+        for call in node.message.tool_calls or []:
+            if call.name != "ipython":
+                continue
+            try:
+                arguments = json.loads(call.arguments)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            code = arguments.get("code") if isinstance(arguments, dict) else None
+            if isinstance(code, str) and code.strip():
+                codes.append(code)
+    return codes
+
+
+def _sampled_child_assistant_nodes(trace: vf.Trace) -> list[MessageNode]:
+    """Return sampled assistant nodes from non-root agent branches in trace order."""
+
+    if not trace.nodes:
+        return []
+    coordinator_root = _branch_root(trace, 0)
+    return [
+        node
+        for index, node in enumerate(trace.nodes)
+        if _branch_root(trace, index) != coordinator_root
+        and isinstance(node.message, AssistantMessage)
+        and node.sampled
+    ]
+
+
+def _child_action_progress(trace: vf.Trace, expected_values: set[str]) -> float:
+    """Grade the causal bridge from a child tool action to an explicit parent send."""
+
+    progress = 0.0
+    for code in _sampled_child_ipython_codes(trace):
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            continue
+        progress = max(progress, 0.25)
+        for statement in tree.body:
+            for call in (
+                node for node in ast.walk(statement) if isinstance(node, ast.Call)
+            ):
+                if _dotted_name(call.func) != "agent_message.send" or not _is_awaited(
+                    statement, call
+                ):
+                    continue
+                progress = max(progress, 0.5)
+                receiver = _keyword(call, "receiver_role")
+                receiver_name = _keyword(call, "receiver_name")
+                if receiver not in {None, "parent"} or (
+                    receiver is None and receiver_name is not None
+                ):
+                    continue
+                progress = max(progress, 0.75)
+                message = _message_argument(call)
+                value = _literal(message) if message is not None else None
+                if (
+                    isinstance(message, ast.Call)
+                    and isinstance(message.func, ast.Name)
+                    and message.func.id == "str"
+                    and len(message.args) == 1
+                ):
+                    value = _literal(message.args[0])
+                if value is not None and str(value) in expected_values:
+                    progress = 1.0
+    return progress
 
 
 def _is_request_message(
@@ -231,15 +381,76 @@ def _dotted_name(node: ast.AST) -> str | None:
 
 
 def _resolve_alias(name: str, aliases: dict[str, str]) -> str:
-    seen = set()
-    while name not in seen:
-        seen.add(name)
+    seen_heads: set[str] = set()
+    while True:
         head, separator, tail = name.partition(".")
+        if head in seen_heads:
+            break
+        seen_heads.add(head)
         target = aliases.get(head)
         if target is None or target == head:
             break
         name = target + (separator + tail if separator else "")
     return name
+
+
+def _record_path_aliases(
+    statement: ast.stmt,
+    paths: set[str],
+    path_aliases: dict[str, set[str]],
+) -> None:
+    if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+        return
+    targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+    source = ast.unparse(statement.value)
+    matched = {path for path in paths if path in source}
+    if not matched:
+        matched = {
+            path
+            for name in {
+                node.id for node in ast.walk(statement.value) if isinstance(node, ast.Name)
+            }
+            for path in path_aliases.get(name, set())
+        }
+    for target in targets:
+        if isinstance(target, ast.Name):
+            if matched:
+                path_aliases[target.id] = matched
+            else:
+                path_aliases.pop(target.id, None)
+
+
+def _statement_accesses_owned_path(
+    statement: ast.stmt,
+    path: str,
+    path_aliases: dict[str, set[str]],
+    aliases: dict[str, str],
+) -> bool:
+    """Detect resource access without treating instruction construction as a read."""
+
+    harmless_calls = {
+        "rlm",
+        "agent_message.send",
+        "print",
+        "repr",
+        "str",
+        "json.dumps",
+    }
+    for call in (node for node in ast.walk(statement) if isinstance(node, ast.Call)):
+        raw_name = _dotted_name(call.func) or _call_name(call) or ""
+        call_name = _resolve_alias(raw_name, aliases)
+        if call_name in harmless_calls:
+            continue
+        source = ast.unparse(call)
+        literal_match = path in source
+        alias_match = any(
+            path in path_aliases.get(node.id, set())
+            for node in ast.walk(call)
+            if isinstance(node, ast.Name)
+        )
+        if literal_match or alias_match:
+            return True
+    return False
 
 
 def _update_aliases(statement: ast.stmt, aliases: dict[str, str]) -> None:
@@ -323,6 +534,12 @@ def _contract_behavior(
         path for path, item in ownership.items() if item["owner"] == "coordinator"
     }
     state = oracle.get("coordinator_state", {})
+    persistence_lease = oracle.get("persistence_lease", {})
+    capture_path = (
+        persistence_lease.get("path")
+        if isinstance(persistence_lease, dict)
+        else None
+    )
 
     events = _ipython_events(trace)
     coordinator_root = _branch_root(trace, 0) if trace.nodes else -1
@@ -346,9 +563,12 @@ def _contract_behavior(
     local_access_positions: list[tuple[str, float]] = []
     parent_sends: list[tuple[float, str | None, bool]] = []
     aliases: dict[str, str] = {}
+    path_aliases: dict[str, set[str]] = {}
     retained_state_nodes: dict[str, list[int]] = {name: [] for name in state}
+    captured_state_nodes: dict[str, list[int]] = {}
 
     for event in coordinator_events:
+        mark("coordinator_tool", float(event.node_index))
         try:
             tree = ast.parse(event.code)
         except SyntaxError:
@@ -356,8 +576,21 @@ def _contract_behavior(
         assigned_calls = _assigned_call_names(tree)
         for statement_index, statement in enumerate(tree.body):
             position = event.node_index + statement_index / 1000
-            statement_source = ast.unparse(statement)
             _update_aliases(statement, aliases)
+            _record_path_aliases(statement, child_paths | local_paths, path_aliases)
+            if isinstance(capture_path, str):
+                for name in _assigned_from_path(statement, capture_path):
+                    mark("capture_state", position)
+                    captured_state_nodes.setdefault(name, []).append(event.node_index)
+            for name, node_indices in captured_state_nodes.items():
+                reused_later = any(
+                    isinstance(node, ast.Name)
+                    and isinstance(node.ctx, ast.Load)
+                    and node.id == name
+                    for node in ast.walk(statement)
+                ) and any(node_index < event.node_index for node_index in node_indices)
+                if reused_later:
+                    mark("reuse_captured_state", position)
             for name, value in state.items():
                 if _assigned_state(statement, name, value):
                     mark("retain_state", position)
@@ -433,10 +666,14 @@ def _contract_behavior(
                     )
                     counts["parent_to_child_message"] += 1
             for path in child_paths:
-                if _delegated_path_used_outside_spawn(statement_source, path):
+                if _statement_accesses_owned_path(
+                    statement, path, path_aliases, aliases
+                ):
                     child_access_positions.append(position)
             for path in local_paths:
-                if _delegated_path_used_outside_spawn(statement_source, path):
+                if _statement_accesses_owned_path(
+                    statement, path, path_aliases, aliases
+                ):
                     local_access_positions.append((path, position))
 
     for _, position in local_access_positions:
@@ -476,6 +713,26 @@ def _contract_behavior(
         mark(f"receive_failure:{name}", float(position))
 
     successful_spawns = [item for item in spawn_records if item[3]]
+    lease_record = trace.info.get("persistence_lease")
+    if (
+        successful_spawns
+        and isinstance(lease_record, dict)
+        and lease_record.get("closed") is True
+    ):
+        mark(
+            "persistence_lease_closed",
+            min(position for _, _, position, _ in successful_spawns) + 0.0001,
+        )
+    boundary_record = trace.info.get("causal_context_boundary")
+    if (
+        successful_spawns
+        and isinstance(boundary_record, dict)
+        and boundary_record.get("applied") is True
+    ):
+        mark(
+            "context_boundary",
+            min(position for _, _, position, _ in successful_spawns) + 0.0001,
+        )
     first_incoming = min((item[0] for item in incoming), default=None)
     all_expected_spawned = set(expected_names) <= {
         name for name, _, _, successful in successful_spawns if successful and name
@@ -486,6 +743,21 @@ def _contract_behavior(
             last_spawn < pos < first_incoming for pos in poll_positions
         ):
             mark("yield", first_incoming - 0.1)
+    last_spawn_node = (
+        int(max(position for _, _, position, ok in successful_spawns if ok))
+        if successful_spawns
+        else None
+    )
+    post_spawn_tool_before_child = bool(
+        last_spawn_node is not None
+        and any(
+            event.node_index > last_spawn_node
+            and (first_incoming is None or event.node_index < first_incoming)
+            for event in coordinator_events
+        )
+    )
+    if post_spawn_tool_before_child:
+        mark("post_spawn_tool_before_child", float(last_spawn_node) + 0.01)
     if first_incoming is not None and not all(
         position < first_incoming for _, _, position, ok in successful_spawns if ok
     ):
@@ -574,6 +846,25 @@ def _contract_behavior(
     required_fraction = (
         (len(required) - len(missing)) / len(required) if required else 1.0
     )
+    # Reward only the longest causal prefix of the declared protocol.  A later atom
+    # by itself is not progress: for example, returning a premature final answer
+    # before spawning the required child must not outrank a clean no-op.  Contracts
+    # list required atoms in acquisition order; atoms that occur at the same event
+    # (notably spawn + retained handle) are both admitted before the next boundary.
+    causal_prefix_length = 0
+    causal_prefix_position = float("-inf")
+    for atom in required:
+        positions = observed.get(atom)
+        if not positions:
+            break
+        position = min(positions)
+        if position < causal_prefix_position:
+            break
+        causal_prefix_length += 1
+        causal_prefix_position = position
+    causal_prefix_fraction = (
+        causal_prefix_length / len(required) if required else 1.0
+    )
     ordering_fraction = (
         (len(contract["ordering"]) - len(ordering_failures)) / len(contract["ordering"])
         if contract["ordering"]
@@ -592,11 +883,44 @@ def _contract_behavior(
         * ordering_fraction
         * cardinality_fraction
     )
+    # Early role learning needs credit for the first clean protocol step. Ordering
+    # and cardinality refine that progress rather than erasing it, while the causal
+    # prefix prevents out-of-order terminal behavior from receiving baby-step credit.
+    # Keep forbidden behavior as a hard zero and preserve a unit score only for a
+    # complete clean trajectory.
     event_control_progress = (
         float(not violations)
-        * required_fraction
-        * ordering_fraction
-        * cardinality_fraction
+        * causal_prefix_fraction
+        * (1.0 + ordering_fraction + cardinality_fraction)
+        / 3.0
+    )
+    expected_child_values = {
+        str(child["expected_result"])
+        for child in children
+        if isinstance(child, dict) and "expected_result" in child
+    }
+    child_action_progress = _child_action_progress(trace, expected_child_values)
+    sampled_child_nodes = _sampled_child_assistant_nodes(trace)
+    # Reserve a full local score for a completed one-turn transition: the child
+    # independently emits the exact send, it is delivered once to the parent,
+    # and the child stops instead of sampling a trailing assistant turn. Partial
+    # action structure still earns the 0.25/0.50/0.75 baby-step ramp above.
+    child_action_completed = float(
+        child_action_progress == 1.0
+        and len(result_messages) == 1
+        and len(sampled_child_nodes) == 1
+    )
+    child_action_local_reward = min(
+        child_action_progress, 0.75 + 0.25 * child_action_completed
+    )
+    # Before a child delivery exists, reward a syntactically valid, correctly routed
+    # send as a small causal bridge.  The bonus decays as the declared protocol prefix
+    # fills and is zero on a complete trajectory, so terminal reward remains unchanged.
+    child_action_bridge = (
+        float(not violations)
+        * 0.25
+        * child_action_progress
+        * (1.0 - causal_prefix_fraction)
     )
     local_work_required = "coordinator_read_local" in required
     local_work_before_yield = float(
@@ -612,21 +936,8 @@ def _contract_behavior(
         and "yield" in observed
         and not local_work_before_yield
     )
-    last_spawn_node = (
-        int(max(position for _, _, position, ok in successful_spawns if ok))
-        if successful_spawns
-        else None
-    )
-    post_spawn_tool_before_child = bool(
-        last_spawn_node is not None
-        and any(
-            event.node_index > last_spawn_node
-            and (first_incoming is None or event.node_index < first_incoming)
-            for event in coordinator_events
-        )
-    )
     forbidden_post_spawn_tool_before_child = float(
-        data.family == "natural_n1"
+        data.family in {"natural_n1", "natural_n1a", "natural_n1b"}
         and not local_work_required
         and post_spawn_tool_before_child
     )
@@ -645,10 +956,15 @@ def _contract_behavior(
         "ordering_satisfied": float(not ordering_failures),
         "cardinality_exact": float(not cardinality_failures),
         "required_atoms_fraction": required_fraction,
+        "causal_prefix_fraction": causal_prefix_fraction,
         "ordering_fraction": ordering_fraction,
         "cardinality_fraction": cardinality_fraction,
         "bootstrap_progress": bootstrap_progress,
         "event_control_progress": event_control_progress,
+        "child_action_progress": child_action_progress,
+        "child_action_completed": child_action_completed,
+        "child_action_local_reward": child_action_local_reward,
+        "child_action_bridge": child_action_bridge,
         "local_work_before_yield": local_work_before_yield,
         "premature_yield_before_local_work": premature_yield_before_local_work,
         "forbidden_post_spawn_tool_before_child": (
@@ -1206,7 +1522,10 @@ def keep_followup_feedback_response(trace: vf.Trace) -> list[list[bool]]:
 
 
 class ProceduralHarnessMasterTaskConfig(vf.TaskConfig):
-    reward_mode: Literal["hard", "bootstrap", "event_control"] = "hard"
+    reward_mode: Literal[
+        "hard", "bootstrap", "event_control", "child_action"
+    ] = "hard"
+    leak_child_exact_action: bool = False
 
 
 class ProceduralHarnessMasterTask(
@@ -1214,9 +1533,69 @@ class ProceduralHarnessMasterTask(
 ):
     NEEDS_CONTAINER = True
 
+    def __init__(
+        self,
+        data: ProceduralHarnessMasterData,
+        config: ProceduralHarnessMasterTaskConfig | None = None,
+    ) -> None:
+        super().__init__(data, config)
+        self._runtime_by_trace: dict[str, vf.Runtime] = {}
+
     @property
     def key(self) -> str:
         return self.data.episode_id
+
+    @vf.intercept(priority=30)
+    def arm_causal_persistence_lease(
+        self, response: vf.Response, trace: vf.Trace
+    ) -> None:
+        if self.data.family != "natural_n1b":
+            return
+        existing = trace.info.get("persistence_lease")
+        if isinstance(existing, dict) and (
+            existing.get("pending") is True or existing.get("closed") is True
+        ):
+            return
+        if not _response_proposes_delegation(response):
+            return
+        lease = self.data.oracle.get("persistence_lease", {})
+        path = lease.get("path") if isinstance(lease, dict) else None
+        if not isinstance(path, str):
+            raise TypeError("natural N1b task lacks a persistence lease path")
+        trace.info["persistence_lease"] = {
+            "schema_version": "procedural-harness-master-v1/persistence-lease/v2",
+            "pending": True,
+            "closed": False,
+            "path": path,
+        }
+
+    @vf.intercept(priority=20)
+    async def close_causal_persistence_lease(
+        self, request: vf.Request, trace: vf.Trace
+    ) -> None:
+        if self.data.family != "natural_n1b":
+            return
+        lease_record = trace.info.get("persistence_lease")
+        if not isinstance(lease_record, dict) or lease_record.get("pending") is not True:
+            return
+        path = lease_record.get("path")
+        if not isinstance(path, str):
+            raise TypeError("natural N1b pending lease lacks a path")
+        runtime = self._runtime_by_trace.get(trace.id)
+        if runtime is None:
+            raise RuntimeError("natural N1b persistence runtime is unavailable")
+        result = await runtime.run(["rm", "-f", path], {})
+        if result.exit_code != 0:
+            raise RuntimeError(
+                "natural N1b persistence lease closure failed: "
+                f"{result.stderr[-500:]}"
+            )
+        trace.info["persistence_lease"] = {
+            "schema_version": "procedural-harness-master-v1/persistence-lease/v2",
+            "pending": False,
+            "closed": True,
+            "path": path,
+        }
 
     @vf.intercept
     def inject_natural_private_evidence(self, request: vf.Request) -> vf.Request | None:
@@ -1262,6 +1641,24 @@ class ProceduralHarnessMasterTask(
                     )
                 )
             )
+        child_action_scaffold = ""
+        if self.config.leak_child_exact_action:
+            children = self.data.oracle.get("children", [])
+            if len(children) != 1 or "expected_result" not in children[0]:
+                raise ValueError(
+                    "exact child action scaffolding requires one child with an expected result"
+                )
+            expected = str(children[0]["expected_result"])
+            child_action_scaffold = (
+                f"\n\n{CHILD_ACTION_SCAFFOLD_HEADER}\n"
+                "This scaffold is visible only while collecting child-training rollouts. "
+                "In your first IPython call execute exactly:\n\n"
+                "```python\n"
+                f"await agent_message.send({expected!r}, receiver_role='parent')\n"
+                "```\n\n"
+                "After the call succeeds, stop; do not inspect the evidence label as a path, "
+                "send a second message, or continue with prose."
+            )
         target = request.messages[target_index]
         assert isinstance(target, UserMessage) and isinstance(target.content, str)
         replacement = target.model_copy(
@@ -1272,6 +1669,7 @@ class ProceduralHarnessMasterTask(
                     "does not have a workspace copy. The evidence label is an identifier, "
                     "not a runtime file path; process the inline contents below directly.\n"
                     + "\n\n".join(sections)
+                    + child_action_scaffold
                 )
             }
         )
@@ -1280,6 +1678,8 @@ class ProceduralHarnessMasterTask(
         return request.model_copy(update={"messages": messages})
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        if self.data.family == "natural_n1b":
+            self._runtime_by_trace[trace.id] = runtime
         deferred = set()
         if self.data.family == "reclaim":
             deferred = {
@@ -1308,7 +1708,8 @@ class ProceduralHarnessMasterTask(
             "followup"
             if self.data.family in {"followup", "atomic_followup", "natural_n2"}
             else "single"
-            if self.data.family == "natural_n1"
+            if self.data.family
+            in {"natural_n1", "natural_n1a", "natural_n1a_local", "natural_n1b"}
             else "direct"
         )
         final_answer = self.data.oracle["final_answer"]
@@ -1325,13 +1726,28 @@ class ProceduralHarnessMasterTask(
             ).encode(),
         )
 
+    async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        self._runtime_by_trace.pop(trace.id, None)
+
     @vf.reward(weight=1.0)
     async def harness_score(self, trace: vf.Trace) -> float:
         behavior = _contract_behavior(trace, self.data)
         if self.config.reward_mode == "bootstrap":
             return behavior["harness_score"] + 0.1 * behavior["bootstrap_progress"]
         if self.config.reward_mode == "event_control":
-            return behavior["harness_score"] + behavior["event_control_progress"]
+            return (
+                behavior["harness_score"]
+                + behavior["event_control_progress"]
+                + behavior["child_action_bridge"]
+            )
+        if self.config.reward_mode == "child_action":
+            # Role-scoped child GRPO must compare the child's own sampled action,
+            # not the frozen coordinator's later success or failure.  The graded
+            # ramp gives baby-step credit for executable Python, an awaited send,
+            # the parent route, and finally the correct value.  A full score can
+            # only come from the child's independently sampled tool call because
+            # child-action synthesis is disabled in the role router for this mode.
+            return behavior["child_action_local_reward"]
         return behavior["harness_score"]
 
     @vf.metric
@@ -1349,13 +1765,91 @@ class ProceduralHarnessMasterConfig(vf.TasksetConfig):
     curriculum_rung: CurriculumRung | None = None
     private_payload_mode: Literal["raw_resource", "finding_card"] = "raw_resource"
     record_causal_feedback: bool = False
+    privileged_hint_path: str | None = None
+    privileged_bootstrap_path: str | None = None
+
+
+def _load_privileged_hints(path: str | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    hint_path = Path(path)
+    payload = json.loads(hint_path.read_text())
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != "qwen35-2b-spade-rung0-hints/v1"
+        or payload.get("status") != "complete"
+    ):
+        raise ValueError(f"invalid privileged hint artifact: {hint_path}")
+    hints = payload.get("hints")
+    if not isinstance(hints, dict) or not hints:
+        raise ValueError(f"privileged hint artifact has no hints: {hint_path}")
+    validated = {}
+    for episode_id, hint in hints.items():
+        if not isinstance(episode_id, str) or not episode_id:
+            raise TypeError("privileged hint episode ids must be non-empty strings")
+        if not isinstance(hint, str) or not hint.strip():
+            raise TypeError(f"privileged hint for {episode_id!r} must be non-empty text")
+        validated[episode_id] = hint.strip()
+    return validated
+
+
+def _load_privileged_bootstrap(path: str | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    bootstrap_path = Path(path)
+    payload = json.loads(bootstrap_path.read_text())
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version")
+        != "qwen35-2b-environment-bootstrap-context/v1"
+        or payload.get("status") != "complete"
+        or payload.get("split") != "train_gen"
+    ):
+        raise ValueError(f"invalid privileged bootstrap artifact: {bootstrap_path}")
+    contexts = payload.get("contexts")
+    if not isinstance(contexts, dict) or not contexts:
+        raise ValueError(
+            f"privileged bootstrap artifact has no contexts: {bootstrap_path}"
+        )
+    validated = {}
+    for episode_id, context in contexts.items():
+        if not isinstance(episode_id, str) or not episode_id:
+            raise TypeError("privileged bootstrap episode ids must be non-empty strings")
+        if not isinstance(context, str) or not context.strip():
+            raise TypeError(
+                f"privileged bootstrap context for {episode_id!r} must be non-empty text"
+            )
+        validated[episode_id] = context.strip()
+    return validated
 
 
 class ProceduralHarnessMasterTaskset(
     vf.Taskset[ProceduralHarnessMasterTask, ProceduralHarnessMasterConfig]
 ):
     def load(self) -> list[ProceduralHarnessMasterTask]:
+        if self.config.curriculum_rung == "natural_n1b":
+            from procedural_harness_master_v1.causal_context_boundary import (
+                install_causal_context_boundary,
+            )
+
+            install_causal_context_boundary()
         generator = _generator()
+        if (
+            self.config.privileged_hint_path is not None
+            and self.config.privileged_bootstrap_path is not None
+        ):
+            raise ValueError(
+                "privileged_hint_path and privileged_bootstrap_path are mutually exclusive"
+            )
+        if (
+            self.config.privileged_bootstrap_path is not None
+            and self.config.split != "train_gen"
+        ):
+            raise ValueError("privileged bootstrap context is restricted to train_gen")
+        privileged_hints = _load_privileged_hints(self.config.privileged_hint_path)
+        privileged_bootstrap = _load_privileged_bootstrap(
+            self.config.privileged_bootstrap_path
+        )
         if self.config.curriculum_rung is not None and self.config.families is not None:
             raise ValueError("curriculum_rung and families are mutually exclusive")
         tasks = []
@@ -1378,12 +1872,34 @@ class ProceduralHarnessMasterTaskset(
             if self.config.families is not None and family not in self.config.families:
                 continue
             public = row["public"]
+            prompt = public["user_prompt"]
+            if self.config.privileged_hint_path is not None:
+                episode_id = row["episode_id"]
+                if episode_id not in privileged_hints:
+                    raise ValueError(
+                        f"privileged hint artifact lacks selected task {episode_id}"
+                    )
+                prompt = (
+                    f"{prompt.rstrip()}\n\n{PRIVILEGED_HINT_HEADER}\n"
+                    f"{privileged_hints[episode_id]}"
+                )
+            if self.config.privileged_bootstrap_path is not None:
+                episode_id = row["episode_id"]
+                if episode_id not in privileged_bootstrap:
+                    raise ValueError(
+                        "privileged bootstrap artifact lacks selected task "
+                        f"{episode_id}"
+                    )
+                prompt = (
+                    f"{prompt.rstrip()}\n\n{PRIVILEGED_BOOTSTRAP_HEADER}\n"
+                    f"{privileged_bootstrap[episode_id]}"
+                )
             tasks.append(
                 ProceduralHarnessMasterTask(
                     ProceduralHarnessMasterData(
                         idx=len(tasks),
                         name=row["episode_id"],
-                        prompt=public["user_prompt"],
+                        prompt=prompt,
                         system_prompt=public["system_prompt"],
                         episode_id=row["episode_id"],
                         split=row["split"],

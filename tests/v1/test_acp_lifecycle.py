@@ -72,3 +72,20 @@ async def test_acp_stop_does_not_wait_forever_for_stderr_drain(monkeypatch):
     assert session._stderr_task is None
     release.set()
     await asyncio.wait_for(stderr_task, timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_acp_stderr_drain_rejects_unbounded_output(monkeypatch):
+    monkeypatch.setattr("verifiers.v1.acp.MAX_STDERR_BYTES", 5)
+
+    async def chunks():
+        yield b"abc"
+        yield b"def"
+
+    session = object.__new__(ACPHarnessSession)
+    session._stderr_tail = bytearray()
+
+    with pytest.raises(RuntimeError, match="stderr exceeded 5 bytes"):
+        await session._drain_stderr(chunks())
+
+    assert session._stderr() == "abcdef"

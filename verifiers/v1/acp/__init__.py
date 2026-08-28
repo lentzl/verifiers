@@ -21,6 +21,7 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+MAX_STDERR_BYTES = 8 * 1024 * 1024
 PROCESS_EXIT_POLL_TIMEOUT = 0.1
 PROCESS_SIGNAL_TIMEOUT = 5.0
 
@@ -187,10 +188,16 @@ class ACPHarnessSession(HarnessSession):
         self._stderr_task = asyncio.create_task(self._drain_stderr(process.stderr))
 
     async def _drain_stderr(self, stream: AsyncIterator[bytes]) -> None:
+        total = 0
         async for chunk in stream:
+            total += len(chunk)
             self._stderr_tail.extend(chunk)
             if len(self._stderr_tail) > 4000:
                 del self._stderr_tail[:-4000]
+            if total > MAX_STDERR_BYTES:
+                raise RuntimeError(
+                    f"ACP process stderr exceeded {MAX_STDERR_BYTES} bytes"
+                )
 
     def _stderr(self) -> str:
         return self._stderr_tail.decode(errors="replace").strip()
@@ -233,7 +240,20 @@ class ACPHarnessSession(HarnessSession):
                 await self._process.write(
                     _packet({"operation": "prompt", "config": config})
                 )
-                response = await self._reader.read()
+                response_task = asyncio.create_task(self._reader.read())
+                assert self._stderr_task is not None
+                done, _ = await asyncio.wait(
+                    {response_task, self._stderr_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if self._stderr_task in done:
+                    error = self._stderr_task.exception()
+                    if error is not None:
+                        response_task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await response_task
+                        raise error
+                response = await response_task
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
