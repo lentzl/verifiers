@@ -1069,8 +1069,12 @@ async def test_natural_child_phases_force_ipython_but_leave_code_unconstrained(
     assert body["tools"][0]["function"]["parameters"] == {}
 
     sampled_code = (
-        "await agent_message.send(str("
-        f"{child_spec['expected_result']}), receiver_role='parent')"
+        f"await agent_message.send(str({child_spec['expected_result']}))"
+        if phase == "e0c3_natural_child_minimal"
+        else (
+            "await agent_message.send(str("
+            f"{child_spec['expected_result']}), receiver_role='parent')"
+        )
     )
     child_branch = len(trace.nodes)
     trace.nodes.extend(

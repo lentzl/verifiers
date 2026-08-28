@@ -406,11 +406,20 @@ def _natural_child_send_value(code: str) -> str | None:
         and len(call.args) == 1
     ):
         return None
-    receiver = next(
-        (keyword.value for keyword in call.keywords if keyword.arg == "receiver_role"),
-        None,
-    )
-    if not isinstance(receiver, ast.Constant) or receiver.value != "parent":
+    receivers = [
+        keyword.value
+        for keyword in call.keywords
+        if keyword.arg == "receiver_role"
+    ]
+    if len(receivers) > 1 or (
+        receivers
+        and (
+            not isinstance(receivers[0], ast.Constant)
+            or receivers[0].value != "parent"
+        )
+    ):
+        return None
+    if any(keyword.arg == "receiver_name" for keyword in call.keywords):
         return None
     value = call.args[0]
     if isinstance(value, ast.Constant) and isinstance(value.value, (str, int)):

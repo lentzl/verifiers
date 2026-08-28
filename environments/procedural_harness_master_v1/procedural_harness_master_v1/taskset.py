@@ -294,7 +294,10 @@ def _child_action_progress(trace: vf.Trace, expected_values: set[str]) -> float:
                     continue
                 progress = max(progress, 0.5)
                 receiver = _keyword(call, "receiver_role")
-                if receiver != "parent":
+                receiver_name = _keyword(call, "receiver_name")
+                if receiver not in {None, "parent"} or (
+                    receiver is None and receiver_name is not None
+                ):
                     continue
                 progress = max(progress, 0.75)
                 message = _message_argument(call)
