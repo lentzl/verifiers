@@ -1709,9 +1709,14 @@ class ProceduralHarnessMasterTask(
                     "exact child action scaffolding requires one child with an expected result"
                 )
             expected = str(children[0]["expected_result"])
+            rollout_role = (
+                "recursive coordinator-return"
+                if self.config.delegated_session_role == "coordinator"
+                else "terminal child"
+            )
             child_action_scaffold = (
                 f"\n\n{CHILD_ACTION_SCAFFOLD_HEADER}\n"
-                "This scaffold is visible only while collecting child-training rollouts. "
+                f"This scaffold is visible only while collecting {rollout_role} rollouts. "
                 "In your first IPython call execute exactly:\n\n"
                 "```python\n"
                 f"await agent_message.send({expected!r}, receiver_role='parent')\n"
