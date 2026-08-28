@@ -199,8 +199,10 @@ def _child_prompt(
         return (
             f"You are {child['name']}, a non-root coordinator. Only this session owns "
             f"{child['resource_path']}. You cannot finalize the user's request and must not "
-            f"create descendants. {action} Send exactly one report to your parent, then "
-            "stop; do not return the result only as prose."
+            "create descendants. The private evidence is the inline card supplied in your "
+            "system message; its evidence label is not a runtime path, so do not use Path, "
+            f"open, or filesystem search. {action} Send exactly one report to your parent, "
+            "then stop; do not return the result only as prose."
         )
     return (
         f"You are {child['name']}. Only you own {child['resource_path']}. {action} "

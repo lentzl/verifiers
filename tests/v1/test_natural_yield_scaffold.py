@@ -332,6 +332,8 @@ async def test_recursive_coordinator_return_uses_coordinator_contract() -> None:
         root_code = root.tools[0].parameters["properties"]["code"]["enum"][0]
         assert "a non-root coordinator" in root_code
         assert "must not create descendants" in root_code
+        assert "evidence label is not a runtime path" in root_code
+        assert "do not use Path, open, or filesystem search" in root_code
 
         delegated_request = _request(
             f"review\n\n{RECURSIVE_COORDINATOR_HEADER}\nsession_role=coordinator"
