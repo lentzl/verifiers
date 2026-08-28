@@ -70,6 +70,7 @@ _INTERACTION_ROOT_PHASES = {
     "e0c28_inline_only",
     "e0c29_evidence_available",
     "e0c3_natural_child_minimal",
+    "e0c4_recursive_coordinator_return",
     "e0d_guided_yield",
     "e0d2_capped_yield",
     "e0d2_capped_yield_exact_child",
@@ -87,6 +88,7 @@ _EXACT_YIELD_PHASES = {
     "e0c28_inline_only",
     "e0c29_evidence_available",
     "e0c3_natural_child_minimal",
+    "e0c4_recursive_coordinator_return",
 }
 _GUIDED_YIELD_PHASES = {"e0d_guided_yield"}
 _CAPPED_YIELD_PHASES = {
