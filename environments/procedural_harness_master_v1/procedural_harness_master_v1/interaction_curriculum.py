@@ -14,6 +14,7 @@ from typing import Any
 from procedural_harness_master_v1.taskset import (
     PRIVATE_EVIDENCE_HEADER,
     PRIVILEGED_BOOTSTRAP_HEADER,
+    RECURSIVE_COORDINATOR_HEADER,
 )
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.session import RolloutSession
@@ -50,6 +51,7 @@ class InteractionCurriculumPhase(StrEnum):
     E0C28_INLINE_ONLY = "e0c28_inline_only"
     E0C29_EVIDENCE_AVAILABLE = "e0c29_evidence_available"
     E0C3_NATURAL_CHILD_MINIMAL = "e0c3_natural_child_minimal"
+    E0C4_RECURSIVE_COORDINATOR_RETURN = "e0c4_recursive_coordinator_return"
     E0D_GUIDED_YIELD = "e0d_guided_yield"
     E0D2_CAPPED_YIELD = "e0d2_capped_yield"
     E0D2_CAPPED_YIELD_EXACT_CHILD = "e0d2_capped_yield_exact_child"
@@ -71,10 +73,13 @@ def _data(trace: Any) -> Any | None:
     return getattr(task, "data", None)
 
 
-def _is_child_context(request: Request) -> bool:
+def _is_delegated_context(request: Request) -> bool:
     return any(
         isinstance(message, UserMessage)
-        and PRIVATE_EVIDENCE_HEADER in content_text(message.content)
+        and (
+            PRIVATE_EVIDENCE_HEADER in content_text(message.content)
+            or RECURSIVE_COORDINATOR_HEADER in content_text(message.content)
+        )
         for message in request.messages
     )
 
@@ -114,7 +119,11 @@ def _coevolution_child_context(data: Any) -> str | None:
     context = payload.get("child_context")
     if not isinstance(context, str) or not context.strip() or len(context) > 2000:
         raise ValueError("SPADE coevolution child context must be 1-2000 characters")
-    if PRIVATE_EVIDENCE_HEADER in context or PRIVILEGED_BOOTSTRAP_HEADER in context:
+    if (
+        PRIVATE_EVIDENCE_HEADER in context
+        or RECURSIVE_COORDINATOR_HEADER in context
+        or PRIVILEGED_BOOTSTRAP_HEADER in context
+    ):
         raise ValueError("SPADE coevolution child context contains a reserved header")
     return context.strip()
 
@@ -123,6 +132,7 @@ def _child_prompt(
     child: dict[str, Any],
     *,
     reveal_result: bool,
+    delegated_session_role: str = "worker",
     natural_child_template: bool = False,
     inline_evidence_hint: bool = False,
     concise_inline_evidence_hint: bool = False,
@@ -185,6 +195,13 @@ def _child_prompt(
             f"{child['operation']}. In your first IPython call send only the resulting "
             "integer as a string to receiver_role='parent'."
         )
+    if delegated_session_role == "coordinator":
+        return (
+            f"You are {child['name']}, a non-root coordinator. Only this session owns "
+            f"{child['resource_path']}. You cannot finalize the user's request and must not "
+            f"create descendants. {action} Send exactly one report to your parent, then "
+            "stop; do not return the result only as prose."
+        )
     return (
         f"You are {child['name']}. Only you own {child['resource_path']}. {action} "
         "Send exactly once, then stop; do not return the result only as prose."
@@ -196,10 +213,12 @@ def _root_code(
     phase: InteractionCurriculumPhase,
     *,
     child_context: str | None = None,
+    delegated_session_role: str = "worker",
 ) -> str:
     prompt = _child_prompt(
         child,
         reveal_result=phase is InteractionCurriculumPhase.E0_FULL_ACTIONS,
+        delegated_session_role=delegated_session_role,
         # Prime Agent child sessions are outside the parent verifier trace, so
         # the request interceptor cannot always constrain their first action.
         # Exact-child phases therefore also carry the value-free natural send
@@ -240,7 +259,7 @@ def _event_kind(
     request: Request,
     phase: InteractionCurriculumPhase,
 ) -> str | None:
-    if _is_child_context(request):
+    if _is_delegated_context(request):
         if phase is InteractionCurriculumPhase.E0_FULL_ACTIONS:
             return "child_typed_send"
         if phase is InteractionCurriculumPhase.E0B_SELECT_CHILD_VALUE:
@@ -269,6 +288,7 @@ def _event_kind(
             InteractionCurriculumPhase.E0C28_INLINE_ONLY,
             InteractionCurriculumPhase.E0C29_EVIDENCE_AVAILABLE,
             InteractionCurriculumPhase.E0C3_NATURAL_CHILD_MINIMAL,
+            InteractionCurriculumPhase.E0C4_RECURSIVE_COORDINATOR_RETURN,
             InteractionCurriculumPhase.E0D_GUIDED_YIELD,
             InteractionCurriculumPhase.E0D2_CAPPED_YIELD,
             InteractionCurriculumPhase.E0D2_CAPPED_YIELD_EXACT_CHILD,
@@ -479,6 +499,7 @@ def _rewrite_child_stop(
         InteractionCurriculumPhase.E0C28_INLINE_ONLY: "child_natural_send",
         InteractionCurriculumPhase.E0C29_EVIDENCE_AVAILABLE: "child_natural_send",
         InteractionCurriculumPhase.E0C3_NATURAL_CHILD_MINIMAL: "child_natural_send",
+        InteractionCurriculumPhase.E0C4_RECURSIVE_COORDINATOR_RETURN: "child_natural_send",
         InteractionCurriculumPhase.E0D_GUIDED_YIELD: "child_value_send",
         InteractionCurriculumPhase.E0D2_CAPPED_YIELD: "child_value_send",
         InteractionCurriculumPhase.E0D2_CAPPED_YIELD_EXACT_CHILD: "child_typed_send",
@@ -493,6 +514,7 @@ def _rewrite_child_stop(
         InteractionCurriculumPhase.E0C28_INLINE_ONLY,
         InteractionCurriculumPhase.E0C29_EVIDENCE_AVAILABLE,
         InteractionCurriculumPhase.E0C3_NATURAL_CHILD_MINIMAL,
+        InteractionCurriculumPhase.E0C4_RECURSIVE_COORDINATOR_RETURN,
     }:
         child = _child(data) if data is not None else None
         codes = _sampled_child_ipython_codes(trace)
@@ -507,7 +529,7 @@ def _rewrite_child_stop(
         child_event is None
         or data is None
         or not _eligible_data(data)
-        or not _is_child_context(request)
+        or not _is_delegated_context(request)
         or not request.tools
         or _child_stop_seen(trace)
         or not _sampled_event_action_seen(trace, child_event)
@@ -610,7 +632,8 @@ def _rewrite_for_curriculum(trace: Any, request: Request) -> Request | None:
         InteractionCurriculumPhase.E0C28_INLINE_ONLY,
         InteractionCurriculumPhase.E0C29_EVIDENCE_AVAILABLE,
         InteractionCurriculumPhase.E0C3_NATURAL_CHILD_MINIMAL,
-    } and _is_child_context(request):
+        InteractionCurriculumPhase.E0C4_RECURSIVE_COORDINATOR_RETURN,
+    } and _is_delegated_context(request):
         if not _sampled_child_ipython_codes(trace):
             return _forced_ipython_request(request)
         return None
@@ -631,6 +654,11 @@ def _rewrite_for_curriculum(trace: Any, request: Request) -> Request | None:
                 child,
                 phase,
                 child_context=_coevolution_child_context(data),
+                delegated_session_role=(
+                    data.generation_metadata.get("delegated_session_role", "worker")
+                    if isinstance(data.generation_metadata, dict)
+                    else "worker"
+                ),
             )
         )
         rewritten = _exact_ipython_request(request, code)

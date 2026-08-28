@@ -70,6 +70,7 @@ COMPLETION_GATE_FEEDBACK = (
     "only after all required child evidence has arrived."
 )
 PRIVATE_EVIDENCE_HEADER = "[private evidence supplied to this reviewer]"
+RECURSIVE_COORDINATOR_HEADER = "[recursive coordinator session contract]"
 CHILD_ACTION_SCAFFOLD_HEADER = "[training-only child action scaffold]"
 PRIVILEGED_HINT_HEADER = "[privileged strategy hint]"
 PRIVILEGED_BOOTSTRAP_HEADER = "[training-only environment scaffold]"
@@ -272,6 +273,24 @@ def _sampled_child_assistant_nodes(trace: vf.Trace) -> list[MessageNode]:
         and isinstance(node.message, AssistantMessage)
         and node.sampled
     ]
+
+
+def _sampled_child_descendant_calls(trace: vf.Trace) -> int:
+    """Count attempted ``rlm`` calls sampled on non-root branches."""
+
+    count = 0
+    for code in _sampled_child_ipython_codes(trace):
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            continue
+        count += sum(
+            1
+            for call in ast.walk(tree)
+            if isinstance(call, ast.Call)
+            and (_dotted_name(call.func) or _call_name(call)) == "rlm"
+        )
+    return count
 
 
 def _child_action_progress(trace: vf.Trace, expected_values: set[str]) -> float:
@@ -901,6 +920,12 @@ def _contract_behavior(
     }
     child_action_progress = _child_action_progress(trace, expected_child_values)
     sampled_child_nodes = _sampled_child_assistant_nodes(trace)
+    delegated_role = data.generation_metadata.get("delegated_session_role", "worker")
+    delegated_descendant_calls = (
+        _sampled_child_descendant_calls(trace)
+        if delegated_role == "coordinator"
+        else 0
+    )
     # Reserve a full local score for a completed one-turn transition: the child
     # independently emits the exact send, it is delivered once to the parent,
     # and the child stops instead of sampling a trailing assistant turn. Partial
@@ -909,8 +934,9 @@ def _contract_behavior(
         child_action_progress == 1.0
         and len(result_messages) == 1
         and len(sampled_child_nodes) == 1
+        and delegated_descendant_calls == 0
     )
-    child_action_local_reward = min(
+    child_action_local_reward = float(delegated_descendant_calls == 0) * min(
         child_action_progress, 0.75 + 0.25 * child_action_completed
     )
     # Before a child delivery exists, reward a syntactically valid, correctly routed
@@ -965,6 +991,7 @@ def _contract_behavior(
         "child_action_completed": child_action_completed,
         "child_action_local_reward": child_action_local_reward,
         "child_action_bridge": child_action_bridge,
+        "delegated_descendant_calls": float(delegated_descendant_calls),
         "local_work_before_yield": local_work_before_yield,
         "premature_yield_before_local_work": premature_yield_before_local_work,
         "forbidden_post_spawn_tool_before_child": (
@@ -1526,6 +1553,7 @@ class ProceduralHarnessMasterTaskConfig(vf.TaskConfig):
         "hard", "bootstrap", "event_control", "child_action"
     ] = "hard"
     leak_child_exact_action: bool = False
+    delegated_session_role: Literal["worker", "coordinator"] = "worker"
 
 
 class ProceduralHarnessMasterTask(
@@ -1611,8 +1639,14 @@ class ProceduralHarnessMasterTask(
             for message in user_messages
         ):
             return None
+        delegated_header = (
+            RECURSIVE_COORDINATOR_HEADER
+            if self.config.delegated_session_role == "coordinator"
+            else PRIVATE_EVIDENCE_HEADER
+        )
         if any(
             PRIVATE_EVIDENCE_HEADER in content_text(message.content)
+            or RECURSIVE_COORDINATOR_HEADER in content_text(message.content)
             for message in user_messages
         ):
             return None
@@ -1664,10 +1698,25 @@ class ProceduralHarnessMasterTask(
         replacement = target.model_copy(
             update={
                 "content": (
-                    f"{target.content.rstrip()}\n\n{PRIVATE_EVIDENCE_HEADER}\n"
-                    "This evidence is available in this child context only; the coordinator "
-                    "does not have a workspace copy. The evidence label is an identifier, "
-                    "not a runtime file path; process the inline contents below directly.\n"
+                    f"{target.content.rstrip()}\n\n{delegated_header}\n"
+                    + (
+                        "session_role=coordinator\n"
+                        "is_root=false\n"
+                        "can_delegate=false\n"
+                        "can_finalize_user=false\n"
+                        "return_contract=exactly_one_parent_report\n"
+                        "You are the non-root coordinator for this bounded subproblem. "
+                        "Do not call rlm or create descendants. Compute from the inline "
+                        "evidence, send exactly one result to your parent with "
+                        "agent_message.send, then stop.\n"
+                        if self.config.delegated_session_role == "coordinator"
+                        else (
+                            "This evidence is available in this child context only; the "
+                            "coordinator does not have a workspace copy. The evidence label "
+                            "is an identifier, not a runtime file path; process the inline "
+                            "contents below directly.\n"
+                        )
+                    )
                     + "\n\n".join(sections)
                     + child_action_scaffold
                 )
@@ -1906,7 +1955,12 @@ class ProceduralHarnessMasterTaskset(
                         family=family,
                         workspace_files=public["workspace_files"],
                         oracle=row["oracle"],
-                        generation_metadata=row["metadata"],
+                        generation_metadata={
+                            **row["metadata"],
+                            "delegated_session_role": (
+                                self.config.task.delegated_session_role
+                            ),
+                        },
                     ),
                     self.config.task,
                 )

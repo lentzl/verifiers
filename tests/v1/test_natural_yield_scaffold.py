@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,7 @@ from procedural_harness_master_v1.natural_yield_scaffold import (
 from procedural_harness_master_v1.taskset import (
     PRIVATE_EVIDENCE_HEADER,
     PRIVILEGED_BOOTSTRAP_HEADER,
+    RECURSIVE_COORDINATOR_HEADER,
     ProceduralHarnessMasterConfig,
     ProceduralHarnessMasterTask,
     ProceduralHarnessMasterTaskset,
@@ -307,6 +309,40 @@ async def test_empty_spawn_output_requires_a_causally_new_matching_child_branch(
     assert all(
         record.handler != "natural_yield_training_scaffold" for record in stale_records
     )
+
+
+@pytest.mark.asyncio
+async def test_recursive_coordinator_return_uses_coordinator_contract() -> None:
+    os.environ[CURRICULUM_ENV_VAR] = "e0c4_recursive_coordinator_return"
+    try:
+        install_natural_yield_scaffold()
+        install_interaction_curriculum()
+        task = _bootstrapped_task()
+        metadata = {
+            **task.data.generation_metadata,
+            "delegated_session_role": "coordinator",
+        }
+        task = ProceduralHarnessMasterTask(
+            task.data.model_copy(update={"generation_metadata": metadata}), task.config
+        )
+        trace = _initial_trace(task)
+        session = RolloutSession(ctx=SimpleNamespace(), trace=trace)
+
+        root, _, _ = await session.rewrite_request(_request(task.data.prompt))
+        root_code = root.tools[0].parameters["properties"]["code"]["enum"][0]
+        assert "a non-root coordinator" in root_code
+        assert "must not create descendants" in root_code
+
+        delegated_request = _request(
+            f"review\n\n{RECURSIVE_COORDINATOR_HEADER}\nsession_role=coordinator"
+        )
+        delegated, records, _ = await session.rewrite_request(delegated_request)
+        assert records[-1].handler == "interaction_curriculum_exact_action"
+        assert delegated.tools is not None and len(delegated.tools) == 1
+        assert delegated.tools[0].name == "ipython"
+        assert delegated.tools[0].parameters == {}
+    finally:
+        os.environ.pop(CURRICULUM_ENV_VAR, None)
 
 
 @pytest.mark.parametrize(

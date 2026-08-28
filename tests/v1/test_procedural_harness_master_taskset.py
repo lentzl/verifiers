@@ -19,9 +19,11 @@ from procedural_harness_master_v1.taskset import (
     PRIVATE_EVIDENCE_HEADER,
     PRIVILEGED_BOOTSTRAP_HEADER,
     PRIVILEGED_HINT_HEADER,
+    RECURSIVE_COORDINATOR_HEADER,
     ProceduralHarnessMasterConfig,
     ProceduralHarnessMasterTaskConfig,
     ProceduralHarnessMasterEnv,
+    ProceduralHarnessMasterTask,
     ProceduralHarnessMasterTaskset,
     _contract_behavior,
     _followup_feedback_diagnostic,
@@ -317,6 +319,33 @@ def test_natural_private_evidence_is_injected_only_into_child_context() -> None:
     root_request = vf.Request(messages=[UserMessage(content=task.data.prompt)])
     assert task.inject_natural_private_evidence(root_request) is None
     assert task.inject_natural_private_evidence(rewritten) is None
+
+
+def test_recursive_coordinator_context_is_explicit_and_excludes_worker_marker() -> None:
+    task = ProceduralHarnessMasterTaskset(
+        ProceduralHarnessMasterConfig(
+            count=1,
+            curriculum_rung="natural_n1a",
+            private_payload_mode="raw_resource",
+            task=ProceduralHarnessMasterTaskConfig(
+                reward_mode="child_action",
+                delegated_session_role="coordinator",
+            ),
+        )
+    ).load()[0]
+    request = vf.Request(messages=[UserMessage(content="Handle the bounded subproblem.")])
+
+    rewritten = task.inject_natural_private_evidence(request)
+
+    assert rewritten is not None
+    text = str(rewritten.messages[-1].content)
+    assert RECURSIVE_COORDINATOR_HEADER in text
+    assert PRIVATE_EVIDENCE_HEADER not in text
+    assert "session_role=coordinator" in text
+    assert "is_root=false" in text
+    assert "can_delegate=false" in text
+    assert "return_contract=exactly_one_parent_report" in text
+    assert task.data.generation_metadata["delegated_session_role"] == "coordinator"
 
 
 def test_natural_finding_card_mode_reaches_task_and_child_context() -> None:
@@ -1836,6 +1865,52 @@ async def test_child_action_reward_accepts_implicit_parent_send() -> None:
     assert behavior["child_action_completed"] == 1.0
     assert behavior["child_action_local_reward"] == 1.0
     assert await task.harness_score(trace) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_recursive_coordinator_return_rejects_descendant_spawn() -> None:
+    original = _curriculum_task("natural_n1a")
+    metadata = {
+        **original.data.generation_metadata,
+        "delegated_session_role": "coordinator",
+    }
+    config = ProceduralHarnessMasterTaskConfig(
+        reward_mode="child_action",
+        delegated_session_role="coordinator",
+    )
+    task = ProceduralHarnessMasterTask(
+        original.data.model_copy(update={"generation_metadata": metadata}), config
+    )
+    child = task.data.oracle["children"][0]
+    trace = _trace(
+        task,
+        [("cell", _spawn_code(task), f"RLMSpawnHandle(name='{child['name']}')")],
+        reply="{}",
+    )
+    delegated_root = len(trace.nodes)
+    trace.nodes.append(
+        MessageNode(
+            parent=None,
+            message=UserMessage(content=f"{RECURSIVE_COORDINATOR_HEADER}\nevidence"),
+            sampled=False,
+        )
+    )
+    _cell(
+        trace.nodes,
+        delegated_root,
+        (
+            "helper = await rlm('do this', name='descendant')\n"
+            f"await agent_message.send({str(child['expected_result'])!r})"
+        ),
+    )
+    _incoming(trace.nodes, 0, child["name"], str(child["expected_result"]))
+
+    behavior = _contract_behavior(trace, task.data)
+    assert behavior["child_action_progress"] == 1.0
+    assert behavior["delegated_descendant_calls"] == 1.0
+    assert behavior["child_action_completed"] == 0.0
+    assert behavior["child_action_local_reward"] == 0.0
+    assert await task.harness_score(trace) == 0.0
 
 
 @pytest.mark.asyncio
