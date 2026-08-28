@@ -1917,7 +1917,6 @@ async def test_recursive_coordinator_return_rejects_descendant_spawn() -> None:
 async def test_child_action_reward_preserves_baby_step_ramp() -> None:
     task = _curriculum_task("natural_n1a")
     task.config.reward_mode = "child_action"
-    child = task.data.oracle["children"][0]
     trace = _trace(task, [], reply="{}")
     child_root = len(trace.nodes)
     trace.nodes.append(
@@ -1973,6 +1972,80 @@ async def test_child_action_reward_caps_correct_send_without_clean_stop() -> Non
     assert behavior["child_action_completed"] == 0.0
     assert behavior["child_action_local_reward"] == 0.75
     assert await task.harness_score(trace) == 0.75
+
+
+@pytest.mark.asyncio
+async def test_child_action_reward_accepts_scaffolded_terminal_prose_stop() -> None:
+    task = _curriculum_task("natural_n1a")
+    task.config.reward_mode = "child_action"
+    child = task.data.oracle["children"][0]
+    trace = _trace(task, [], reply="{}")
+    child_root = len(trace.nodes)
+    trace.nodes.append(
+        MessageNode(
+            parent=None,
+            message=UserMessage(content=f"{PRIVATE_EVIDENCE_HEADER}\nevidence"),
+            sampled=False,
+        )
+    )
+    parent = _cell(
+        trace.nodes,
+        child_root,
+        f"await agent_message.send({str(child['expected_result'])!r}, receiver_role='parent')",
+    )
+    trace.nodes.append(
+        MessageNode(
+            parent=parent,
+            message=AssistantMessage(content="Sent to parent. Stopping."),
+            sampled=True,
+        )
+    )
+    trace.info["interaction_curriculum"] = {
+        "child_stop": {"mode": "one_turn_no_tools", "fired": True}
+    }
+    _incoming(trace.nodes, 0, child["name"], str(child["expected_result"]))
+
+    behavior = _contract_behavior(trace, task.data)
+    assert behavior["child_action_progress"] == 1.0
+    assert behavior["child_action_completed"] == 1.0
+    assert behavior["child_action_local_reward"] == 1.0
+    assert await task.harness_score(trace) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_child_action_reward_accepts_natural_terminal_prose_stop() -> None:
+    task = _curriculum_task("natural_n1a")
+    task.config.reward_mode = "child_action"
+    child = task.data.oracle["children"][0]
+    trace = _trace(task, [], reply="{}")
+    child_root = len(trace.nodes)
+    trace.nodes.append(
+        MessageNode(
+            parent=None,
+            message=UserMessage(content=f"{PRIVATE_EVIDENCE_HEADER}\nevidence"),
+            sampled=False,
+        )
+    )
+    parent = _cell(
+        trace.nodes,
+        child_root,
+        f"await agent_message.send({str(child['expected_result'])!r}, receiver_role='parent')",
+    )
+    trace.nodes.append(
+        MessageNode(
+            parent=parent,
+            message=AssistantMessage(content="Sent to parent. Stopping."),
+            sampled=True,
+        )
+    )
+    trace.stop_condition = "user_closed"
+    _incoming(trace.nodes, 0, child["name"], str(child["expected_result"]))
+
+    behavior = _contract_behavior(trace, task.data)
+    assert behavior["child_action_progress"] == 1.0
+    assert behavior["child_action_completed"] == 1.0
+    assert behavior["child_action_local_reward"] == 1.0
+    assert await task.harness_score(trace) == 1.0
 
 
 @pytest.mark.asyncio

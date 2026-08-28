@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 import verifiers.v1 as vf
 from pydantic import Field
+from verifiers.v1.graph import MessageNode
 from subagent_communication_v1.taskset import (
     _assigned_call_names,
     _branch_root,
@@ -273,6 +274,31 @@ def _sampled_child_assistant_nodes(trace: vf.Trace) -> list[MessageNode]:
         and isinstance(node.message, AssistantMessage)
         and node.sampled
     ]
+
+
+def _child_transition_stopped_cleanly(
+    trace: vf.Trace, sampled_child_nodes: list[MessageNode]
+) -> bool:
+    """Accept a direct stop or the curriculum's single forced terminal prose turn."""
+
+    if len(sampled_child_nodes) == 1:
+        return True
+    if len(sampled_child_nodes) != 2:
+        return False
+    record = trace.info.get("interaction_curriculum")
+    child_stop = record.get("child_stop") if isinstance(record, dict) else None
+    trailing = sampled_child_nodes[-1].message
+    return bool(
+        isinstance(trailing, AssistantMessage)
+        and not trailing.tool_calls
+        and content_text(trailing.content).strip()
+        and (
+            trace.stop_condition == "user_closed"
+            or isinstance(child_stop, dict)
+            and child_stop.get("mode") == "one_turn_no_tools"
+            and child_stop.get("fired") is True
+        )
+    )
 
 
 def _sampled_child_descendant_calls(trace: vf.Trace) -> int:
@@ -933,7 +959,7 @@ def _contract_behavior(
     child_action_completed = float(
         child_action_progress == 1.0
         and len(result_messages) == 1
-        and len(sampled_child_nodes) == 1
+        and _child_transition_stopped_cleanly(trace, sampled_child_nodes)
         and delegated_descendant_calls == 0
     )
     child_action_local_reward = float(delegated_descendant_calls == 0) * min(
