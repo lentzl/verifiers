@@ -359,6 +359,19 @@ def _child_action_progress(trace: vf.Trace, expected_values: set[str]) -> float:
     return progress
 
 
+def _delivered_child_result_matches(
+    result_messages: list[tuple[int, str, str]],
+    expected_values_by_child: dict[str, str],
+) -> bool:
+    """Verify one dynamically computed send from its delivered parent message."""
+
+    if len(result_messages) != 1:
+        return False
+    _, child_name, delivered = result_messages[0]
+    expected = expected_values_by_child.get(child_name)
+    return expected is not None and delivered.strip() == expected
+
+
 def _is_request_message(
     body: str, request_terms: tuple[str, ...] = ("multiplier",)
 ) -> bool:
@@ -939,12 +952,23 @@ def _contract_behavior(
         * (1.0 + ordering_fraction + cardinality_fraction)
         / 3.0
     )
-    expected_child_values = {
-        str(child["expected_result"])
+    expected_child_values_by_name = {
+        str(child["name"]): str(child["expected_result"])
         for child in children
-        if isinstance(child, dict) and "expected_result" in child
+        if isinstance(child, dict)
+        and "name" in child
+        and "expected_result" in child
     }
+    expected_child_values = set(expected_child_values_by_name.values())
     child_action_progress = _child_action_progress(trace, expected_child_values)
+    # A correct send may naturally use a Python variable (for example,
+    # ``send(str(result))``), whose runtime value cannot be recovered from the AST.
+    # Preserve the awaited, correctly routed send requirement above and use the
+    # single message actually delivered to the parent as the value authority.
+    if child_action_progress >= 0.75 and _delivered_child_result_matches(
+        result_messages, expected_child_values_by_name
+    ):
+        child_action_progress = 1.0
     sampled_child_nodes = _sampled_child_assistant_nodes(trace)
     delegated_role = data.generation_metadata.get("delegated_session_role", "worker")
     delegated_descendant_calls = (
