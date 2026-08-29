@@ -436,6 +436,24 @@ async def test_early_exact_root_action_hash_is_synchronous_spawn_evidence(
 
 
 @pytest.mark.asyncio
+async def test_live_dict_backed_task_data_remains_eligible() -> None:
+    task = _task(0)
+    trace = _spawn_trace(task)
+    trace.task = trace.task.model_copy(
+        update={"data": task.data.model_dump(mode="json")}
+    )
+    session = RolloutSession(ctx=SimpleNamespace(), trace=trace)
+    install_natural_yield_scaffold()
+
+    rewritten, records, stopped = await session.rewrite_request(_request())
+
+    assert stopped is None
+    assert rewritten.tools is None
+    assert records[-1].handler == "natural_yield_training_scaffold"
+    assert trace.info[SCAFFOLD_INFO_KEY]["fired"] is True
+
+
+@pytest.mark.asyncio
 async def test_e0d_guides_but_does_not_constrain_the_waiting_text() -> None:
     task = _task(0, rung="natural_n1a")
     trace = _spawn_trace(task)

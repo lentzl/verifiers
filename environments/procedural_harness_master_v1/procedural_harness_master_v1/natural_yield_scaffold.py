@@ -111,6 +111,14 @@ def _mapping(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _field(value: Any, name: str) -> Any:
+    """Read task data from both live trace dictionaries and typed fixtures."""
+
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
 def _is_child_context(request: Request) -> bool:
     """The benchmark's private-evidence injection is a hidden, environment-owned role tag."""
 
@@ -170,7 +178,7 @@ def _valid_retained_spawn_node(trace: Any, data: Any) -> int | None:
     nodes = getattr(trace, "nodes", [])
     if not nodes:
         return None
-    oracle = _mapping(getattr(data, "oracle", None))
+    oracle = _mapping(_field(data, "oracle"))
     children = oracle.get("children", [])
     if not isinstance(children, list) or len(children) != 1:
         return None
@@ -241,10 +249,10 @@ def _has_forbidden_post_spawn_detour(trace: Any, spawn_node_index: int) -> bool:
 
 def _eligible(trace: Any, request: Request) -> tuple[bool, int | None, str]:
     data = _data(trace)
-    family = getattr(data, "family", None) if data is not None else None
+    family = _field(data, "family") if data is not None else None
     if family not in _ELIGIBLE_GRAPHS:
         return False, None, "not_natural_n1"
-    metadata = _mapping(getattr(data, "generation_metadata", None))
+    metadata = _mapping(_field(data, "generation_metadata"))
     if metadata.get("graph_variant") != _ELIGIBLE_GRAPHS[family]:
         return False, None, "local_work_control"
     if _is_child_context(request):
@@ -272,8 +280,8 @@ def _record_fire(
     guidance_level: str,
 ) -> None:
     data = _data(trace)
-    metadata = _mapping(getattr(data, "generation_metadata", None)) if data else {}
-    oracle = _mapping(getattr(data, "oracle", None)) if data else {}
+    metadata = _mapping(_field(data, "generation_metadata")) if data is not None else {}
+    oracle = _mapping(_field(data, "oracle")) if data is not None else {}
     children = oracle.get("children", [])
     child_name = (
         children[0].get("name") if children and isinstance(children[0], dict) else None
