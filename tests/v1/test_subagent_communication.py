@@ -326,6 +326,9 @@ def test_document_topologies_share_one_answer_free_filesystem_fixture() -> None:
     assert "[recursive document coordinator session contract]" in hierarchical.prompt
     assert "can_delegate=true" in hierarchical.prompt
     assert "maximum_descendant_depth=1" in hierarchical.prompt
+    assert "shard checksum" not in direct.prompt
+    assert "shard checksum" not in flat.prompt
+    assert "shard checksum" not in hierarchical.prompt
     assert json.dumps(hierarchical.answer) not in hierarchical.prompt
     assert all(path in flat.prompt for path in flat.files)
 

@@ -1030,7 +1030,9 @@ def _task_prompt(
 ]:
     rng = random.Random(seed * 1_000_003 + variant * 10_007 + instance * 101)
     prefix = "Return one JSON object with exactly the requested keys and integer values."
-    if prompt_contract == "historical_v1" or family in {"direct", "single", "parallel"}:
+    if family not in DOCUMENT_FAMILIES and (
+        prompt_contract == "historical_v1" or family in {"direct", "single", "parallel"}
+    ):
         prefix = f"{prefix} A shard checksum is sum((index + 1) * value)."
 
     if family == "direct":
