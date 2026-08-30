@@ -294,6 +294,42 @@ def test_taskset_balances_families_and_holds_out_generator_variants() -> None:
     assert not ({task.data.name for task in train} & {task.data.name for task in evaluation})
 
 
+def test_document_topologies_share_one_answer_free_filesystem_fixture() -> None:
+    tasks = {
+        family: SubagentCommunicationTaskset(
+            SubagentCommunicationConfig(
+                split="eval",
+                families=(family,),
+                instances_per_template=1,
+                instance_offset=17,
+            )
+        ).load()[0]
+        for family in (
+            "document_direct",
+            "document_flat",
+            "document_hierarchical",
+        )
+    }
+
+    direct = tasks["document_direct"].data
+    flat = tasks["document_flat"].data
+    hierarchical = tasks["document_hierarchical"].data
+    assert direct.files == flat.files == hierarchical.files
+    assert direct.answer == flat.answer == hierarchical.answer
+    assert direct.expected_children == ()
+    assert flat.expected_children == (
+        "alpha-document-worker",
+        "beta-document-worker",
+        "gamma-document-worker",
+    )
+    assert hierarchical.expected_children == ("document-manager",)
+    assert "[recursive document coordinator session contract]" in hierarchical.prompt
+    assert "can_delegate=true" in hierarchical.prompt
+    assert "maximum_descendant_depth=1" in hierarchical.prompt
+    assert json.dumps(hierarchical.answer) not in hierarchical.prompt
+    assert all(path in flat.prompt for path in flat.files)
+
+
 def test_single_tasks_expose_task_specific_opsd_demonstrations() -> None:
     task = SubagentCommunicationTaskset(
         SubagentCommunicationConfig(

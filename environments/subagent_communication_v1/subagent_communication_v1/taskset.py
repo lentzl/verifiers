@@ -15,12 +15,26 @@ from pydantic import Field
 import verifiers.v1 as vf
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage, content_text
 
-Family = Literal["direct", "single", "parallel", "handshake", "followup"]
+Family = Literal[
+    "direct",
+    "single",
+    "parallel",
+    "handshake",
+    "followup",
+    "document_direct",
+    "document_flat",
+    "document_hierarchical",
+]
 InstructionLevel = Literal["standard", "guided"]
 PromptContract = Literal["historical_v1", "explicit_bidirectional_v2"]
 WEIGHTED_CHECKSUM_FORMULA = "sum((index + 1) * value for index, value in enumerate(values))"
 
 FAMILIES: tuple[Family, ...] = ("direct", "single", "parallel", "followup")
+DOCUMENT_FAMILIES: tuple[Family, ...] = (
+    "document_direct",
+    "document_flat",
+    "document_hierarchical",
+)
 TRAIN_VARIANTS = (0, 1, 2, 3)
 EVAL_VARIANTS = (4, 5)
 COMPLETION_GATE_PATH = "/workspace/.subagent-communication/completion_gate.py"
@@ -95,6 +109,76 @@ def _json(values: list[int]) -> str:
     return json.dumps(values, separators=(",", ":"))
 
 
+def _document_fixture(
+    variant: int,
+    instance: int,
+    seed: int,
+) -> tuple[str, dict[str, str], dict[str, int]]:
+    rng = random.Random(seed * 1_000_003 + variant * 10_007 + instance * 101)
+    root = f"/workspace/document-recursion/v{variant}-i{instance}"
+    files: dict[str, str] = {}
+    answer: dict[str, int] = {}
+    for index, stem in enumerate(("alpha", "beta", "gamma")):
+        section_count = 2 + (variant + index) % 3
+        sections = []
+        for section in range(section_count):
+            values = [rng.randint(10, 99) for _ in range(3 + (section + index) % 3)]
+            sections.append(
+                f"## Section {section + 1}\n\n"
+                f"{stem} evidence " + " ".join(f"value-{value}" for value in values)
+            )
+        content = f"# {stem.title()} document\n\n" + "\n\n".join(sections) + "\n"
+        path = f"{root}/{stem}.md"
+        files[path] = content
+        answer[f"{stem}_words"] = len(content.split())
+        answer[f"{stem}_h2"] = sum(line.startswith("## ") for line in content.splitlines())
+    answer["total_words"] = sum(answer[f"{stem}_words"] for stem in ("alpha", "beta", "gamma"))
+    answer["total_h2"] = sum(answer[f"{stem}_h2"] for stem in ("alpha", "beta", "gamma"))
+    return root, files, answer
+
+
+def _document_worker_instruction(path: str) -> str:
+    return (
+        f"Read {path} using the CLI or IPython. Count words with Python str.split() over the "
+        "complete file contents and count lines beginning exactly `## `. Send one JSON object "
+        "with integer keys `words` and `h2` to your parent using "
+        "await agent_message.send(json.dumps(result), receiver_role='parent'). After the "
+        "delivery receipt succeeds, stop."
+    )
+
+
+def _document_manager_instruction(root: str) -> str:
+    assignments = "\n".join(
+        f"- {stem}-document-worker owns {root}/{stem}.md"
+        for stem in ("alpha", "beta", "gamma")
+    )
+    final_keys = ", ".join(
+        [
+            *(f"{stem}_words, {stem}_h2" for stem in ("alpha", "beta", "gamma")),
+            "total_words, total_h2",
+        ]
+    )
+    return (
+        "[recursive document coordinator session contract]\n"
+        "session_role=document_coordinator\n"
+        "is_root=false\n"
+        "has_parent=true\n"
+        "can_delegate=true\n"
+        "can_finalize_user=false\n"
+        "maximum_descendant_depth=1\n"
+        "return_contract=exactly_one_parent_report\n"
+        f"You own the document directory {root}. Do not compute the three file statistics "
+        "yourself. Delegate all three assignments below to three independent terminal children, "
+        "retaining their handles and spawning them before waiting:\n"
+        f"{assignments}\n"
+        "Each child must read only its assigned file, count all words with Python str.split(), "
+        "count lines beginning exactly `## `, and send one JSON object with integer keys "
+        "`words` and `h2` to you through agent_message.send. After all three explicit child "
+        "reports arrive, assemble one JSON object with the per-file values and totals. Its exact "
+        f"keys are: {final_keys}. Send that object exactly once to receiver_role='parent', then stop."
+    )
+
+
 def _child_instruction(path: str) -> str:
     return (
         f"Read {path}. Its top-level JSON value is the integer list itself, not an object: bind "
@@ -154,7 +238,7 @@ def _expert_demonstration(
     child_paths: dict[str, str],
     followup_secret: int | None,
 ) -> str | None:
-    if family == "direct":
+    if family == "direct" or family in DOCUMENT_FAMILIES:
         return None
     if family == "followup":
         if followup_secret is None:
@@ -679,6 +763,12 @@ def _completion_gate_source(
         "parallel": {"alpha-worker": 1, "beta-worker": 1},
         "followup": {"key-worker": 2},
         "handshake": {"relay-worker": 2},
+        "document_flat": {
+            "alpha-document-worker": 1,
+            "beta-document-worker": 1,
+            "gamma-document-worker": 1,
+        },
+        "document_hierarchical": {"document-manager": 1},
     }.get(family, {})
     if required_child_messages is None:
         required_child_messages = default_child_messages
@@ -715,7 +805,12 @@ def _completion_gate_source(
             "future child messages. Return strict JSON only after a later visible relay-worker "
             "message echoes the nonce."
         )
-    elif family in {"single", "parallel"}:
+    elif family in {
+        "single",
+        "parallel",
+        "document_flat",
+        "document_hierarchical",
+    }:
         gate_feedback = (
             "completion gate: final JSON is not ready. Preserve every existing delegation: do not "
             "inspect a delegated shard, spawn replacement children, or redo their work. If no new "
@@ -1013,6 +1108,63 @@ def _task_prompt(
             "then stop calling tools for this turn. "
             f"{MESSAGE_DELIVERY_GUIDANCE}"
         )
+    elif family in DOCUMENT_FAMILIES:
+        root, files, answer = _document_fixture(variant, instance, seed)
+        secret = None
+        schema = "{" + ", ".join(f'\"{key}\": value' for key in answer) + "}"
+        if family == "document_direct":
+            request = (
+                f"Inspect every Markdown file in {root} yourself using the CLI or IPython; do "
+                "not create a subagent. For each file, count words with Python str.split() over "
+                "the complete contents and count lines beginning exactly `## `. Return "
+                f"{schema}."
+            )
+            children = ()
+            child_paths = {}
+            guidance = (
+                "Keep the work local. First inventory the directory, then read every listed "
+                "file, compute the requested counts, verify coverage, and return strict JSON."
+            )
+        elif family == "document_flat":
+            children = tuple(f"{stem}-document-worker" for stem in ("alpha", "beta", "gamma"))
+            child_paths = {
+                child: f"{root}/{child.removesuffix('-document-worker')}.md"
+                for child in children
+            }
+            assignments = "\n".join(
+                f"- {child}: {_document_worker_instruction(path)}"
+                for child, path in child_paths.items()
+            )
+            request = (
+                "Delegate the following three document files to the three specifically named "
+                "terminal children. Do not read the files in the root coordinator. Spawn all "
+                "three children before waiting, retain every admission handle, and use only "
+                "their explicit reports to assemble the final result:\n"
+                f"{assignments}\n"
+                f"Return {schema}."
+            )
+            guidance = (
+                "Use one retained rlm handle per named worker, end the turn without polling, "
+                "and aggregate only after all three explicit child reports arrive."
+            )
+        else:
+            manager_prompt = _document_manager_instruction(root)
+            children = ("document-manager",)
+            child_paths = {"document-manager": root}
+            request = (
+                f"Delegate the complete document directory {root} to exactly one non-root "
+                "coordinator named document-manager. Do not inspect that directory in the root. "
+                "The delegated prompt must begin with the recursive document coordinator header "
+                "and preserve this complete contract:\n\n"
+                f"{manager_prompt}\n\n"
+                "Retain the document-manager admission handle and end the turn without polling. "
+                "When its one explicit report arrives, return the same values as strict JSON with "
+                f"this schema: {schema}."
+            )
+            guidance = (
+                "Use one retained rlm handle for document-manager. The manager, not the root, "
+                "owns file discovery, leaf delegation, aggregation, and the parent report."
+            )
     elif family == "handshake":
         secret = rng.randint(1_000, 9_999)
         answer = {"nonce": secret}
@@ -1650,9 +1802,9 @@ def _protocol_behavior(
             + float(repeated == 0)
         ) / 6
 
-    if family == "direct":
+    if family in {"direct", "document_direct"}:
         checks = [not spawns, not parent_messages, not child_messages, repeated == 0]
-    elif family == "single":
+    elif family in {"single", "document_hierarchical"}:
         checks = [
             len(spawns) == 1,
             retained == len(expected_children),
@@ -1661,9 +1813,9 @@ def _protocol_behavior(
             set(expected_children) <= parent_message_names,
             repeated == 0,
         ]
-    elif family == "parallel":
+    elif family in {"parallel", "document_flat"}:
         checks = [
-            len(spawns) == 2,
+            len(spawns) == len(expected_children),
             retained == len(expected_children),
             set(expected_children) <= names,
             set(expected_children) <= delegated,
@@ -1685,7 +1837,7 @@ def _protocol_behavior(
             *([result_matches_secret] if family == "handshake" else []),
             repeated == 0,
         ]
-    if family != "direct":
+    if family not in {"direct", "document_direct"}:
         checks.append(coordinator_delegated_path_accesses == 0)
     post_fan_in = _post_fan_in_behavior(
         trace,
@@ -1724,7 +1876,12 @@ def _protocol_behavior(
         inert_cells == 0,
         post_parent_send_tool_calls == 0,
     ]
-    if family in {"single", "parallel"}:
+    if family in {
+        "single",
+        "parallel",
+        "document_flat",
+        "document_hierarchical",
+    }:
         clean_checks.append(set(expected_children) <= explicit_parent_message_names)
         clean_checks.append(post_fan_in["post_fan_in_cells"] == 0)
     elif family in {"followup", "handshake"}:
@@ -1915,7 +2072,7 @@ class SubagentCommunicationTask(
         if not self._include_standard_rewards():
             return 0.0
         accuracy = _answer_score(trace.last_reply, self.data.answer)
-        if self.data.family == "direct":
+        if self.data.family in {"direct", "document_direct"}:
             return accuracy
         behavior = _protocol_behavior(
             trace,
