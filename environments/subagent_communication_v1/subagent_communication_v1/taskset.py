@@ -822,6 +822,15 @@ def _completion_gate_source(
             "existing child sends its result, make no tool call and return bare strict JSON immediately, "
             "with no prose or Markdown."
         )
+    elif family == "document_free":
+        gate_feedback = (
+            "completion gate: final JSON is not ready. Preserve the one topology you already "
+            "selected and do not switch or mix graphs. If you selected direct work, finish the "
+            "local document computation. If you delegated, do not inspect delegated files, "
+            "spawn replacements, poll, or redo child work; respond with a brief waiting status "
+            "until every child in the selected graph reports. Then return bare strict JSON with "
+            "no prose or Markdown."
+        )
     else:
         gate_feedback = (
             "completion gate: final JSON is not ready. Complete the coordinator-local computation "
@@ -832,7 +841,8 @@ def _completion_gate_source(
         "inspect state, repeat work, or wait. Return one bare JSON object now with exactly the "
         f"keys {expected_keys!r} and value types {expected_types!r}, with no prose or Markdown fence."
     )
-    return f"""import json
+    return f"""import ast
+import json
 import os
 import sys
 import time
@@ -841,6 +851,7 @@ from pathlib import Path
 EXPECTED_KEYS = {expected_keys!r}
 EXPECTED_TYPES = {expected_types!r}
 REQUIRED_CHILD_MESSAGES = {required_child_messages!r}
+FREE_DOCUMENT_TOPOLOGY = {family == "document_free"!r}
 
 
 def content_text(content):
@@ -912,6 +923,67 @@ def value_matches_type(value, expected_type):
     return False
 
 
+def selected_required_child_messages(entries):
+    if not FREE_DOCUMENT_TOPOLOGY:
+        return REQUIRED_CHILD_MESSAGES
+    names = set()
+    spawn_calls = 0
+    for entry in entries:
+        message = session_message(entry)
+        if message.get("role") != "assistant":
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                function = tool_call
+            if function.get("name") != "ipython":
+                continue
+            arguments = function.get("arguments")
+            try:
+                arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+            except json.JSONDecodeError:
+                continue
+            code = arguments.get("code") if isinstance(arguments, dict) else None
+            if not isinstance(code, str):
+                continue
+            try:
+                tree = ast.parse(code)
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "rlm"
+                ):
+                    continue
+                spawn_calls += 1
+                for keyword in node.keywords:
+                    if (
+                        keyword.arg == "name"
+                        and isinstance(keyword.value, ast.Constant)
+                        and isinstance(keyword.value.value, str)
+                    ):
+                        names.add(keyword.value.value)
+    flat_names = {{
+        "alpha-document-worker",
+        "beta-document-worker",
+        "gamma-document-worker",
+    }}
+    if spawn_calls == 0:
+        return {{}}
+    if spawn_calls == 3 and names == flat_names:
+        return {{name: 1 for name in flat_names}}
+    if spawn_calls == 1 and names == {{"document-manager"}}:
+        return {{"document-manager": 1}}
+    return None
+
+
 def inspect_sessions():
     agent_dir = Path(os.environ.get("PRIME_AGENT_CODING_AGENT_DIR", ""))
     session_files = sorted(
@@ -919,7 +991,8 @@ def inspect_sessions():
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
-    observed_counts = {{name: 0 for name in REQUIRED_CHILD_MESSAGES}}
+    observed_counts = {{}}
+    wait_required = {{}}
     valid = False
     for path in session_files:
         entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
@@ -930,6 +1003,13 @@ def inspect_sessions():
             continue
         if header.get("parentSession") or header.get("parentSessionId"):
             continue
+        required_child_messages = selected_required_child_messages(entries)
+        if required_child_messages is None:
+            continue
+        if not wait_required:
+            wait_required = required_child_messages
+        for name in required_child_messages:
+            observed_counts.setdefault(name, 0)
         final_index = None
         final_payload = None
         for index in range(len(entries) - 1, -1, -1):
@@ -944,8 +1024,8 @@ def inspect_sessions():
             break
         if final_index is None:
             continue
-        child_message_counts = {{name: 0 for name in REQUIRED_CHILD_MESSAGES}}
-        all_child_message_counts = {{name: 0 for name in REQUIRED_CHILD_MESSAGES}}
+        child_message_counts = {{name: 0 for name in required_child_messages}}
+        all_child_message_counts = {{name: 0 for name in required_child_messages}}
         seen_child_message_ids = set()
         for index, entry in enumerate(entries):
             message = session_message(entry)
@@ -965,7 +1045,7 @@ def inspect_sessions():
             observed_counts[child_name] = max(observed_counts[child_name], count)
         child_evidence_ready = all(
             child_message_counts.get(name, 0) >= count
-            for name, count in REQUIRED_CHILD_MESSAGES.items()
+            for name, count in required_child_messages.items()
         )
         valid = valid or (
             child_evidence_ready
@@ -976,15 +1056,15 @@ def inspect_sessions():
                 for key in EXPECTED_KEYS
             )
         )
-    observed = tuple(observed_counts[name] for name in REQUIRED_CHILD_MESSAGES)
+    observed = tuple(observed_counts.get(name, 0) for name in wait_required)
     ready = all(
         observed_counts.get(name, 0) >= count
-        for name, count in REQUIRED_CHILD_MESSAGES.items()
+        for name, count in wait_required.items()
     )
-    return valid, ready, observed
+    return valid, ready, observed, bool(wait_required)
 
 
-valid, child_evidence_observed, observed = inspect_sessions()
+valid, child_evidence_observed, observed, should_wait = inspect_sessions()
 if valid:
     raise SystemExit(0)
 
@@ -999,9 +1079,9 @@ except ValueError:
     grace_seconds = 30.0
 grace_seconds = max(0.0, min(grace_seconds, 60.0))
 deadline = time.monotonic() + grace_seconds
-while REQUIRED_CHILD_MESSAGES and time.monotonic() < deadline:
+while should_wait and time.monotonic() < deadline:
     time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
-    valid, child_evidence_observed, current = inspect_sessions()
+    valid, child_evidence_observed, current, should_wait = inspect_sessions()
     if valid:
         raise SystemExit(0)
     if current != observed:

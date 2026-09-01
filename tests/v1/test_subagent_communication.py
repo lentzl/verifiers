@@ -1344,6 +1344,111 @@ def test_completion_gate_supports_typed_json_without_embedding_values() -> None:
     assert "value_matches_type(final_payload[key], EXPECTED_TYPES[key])" in source
 
 
+def test_free_document_completion_gate_follows_the_selected_graph(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agent"
+    sessions = agent_dir / "sessions"
+    sessions.mkdir(parents=True)
+    session = sessions / "root.jsonl"
+    gate = tmp_path / "completion_gate.py"
+    gate.write_text(_completion_gate_source(("result",), "document_free"))
+    env = {
+        **os.environ,
+        "PRIME_AGENT_CODING_AGENT_DIR": str(agent_dir),
+        "VF_PRIME_AGENT_CHILD_EVIDENCE_GRACE_SECONDS": "0",
+    }
+
+    def assistant_tool(code: str) -> str:
+        return json.dumps(
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "ipython",
+                            "arguments": json.dumps({"code": code}),
+                        }
+                    ],
+                },
+            }
+        )
+
+    def child_message(name: str) -> str:
+        return json.dumps(
+            {
+                "type": "custom_message",
+                "customType": "agent_message",
+                "content": f"[from child:{name}] result",
+                "details": {
+                    "id": f"message-{name}",
+                    "from": {"sessionName": name},
+                    "fromRelationship": "child",
+                },
+            }
+        )
+
+    header = json.dumps({"type": "session", "rlmDepth": 0})
+    flat_code = "\n".join(
+        f"{stem} = await rlm('task', name='{stem}-document-worker')"
+        for stem in ("alpha", "beta", "gamma")
+    )
+    session.write_text(
+        "\n".join((header, assistant_tool(flat_code), json.dumps({
+            "type": "message",
+            "message": {"role": "assistant", "content": "Waiting."},
+        })))
+        + "\n"
+    )
+    waiting = subprocess.run(
+        [sys.executable, str(gate)], env=env, capture_output=True, text=True, check=False
+    )
+    assert waiting.returncode == 1
+
+    complete_entries = [header, assistant_tool(flat_code)]
+    complete_entries.extend(
+        child_message(f"{stem}-document-worker")
+        for stem in ("alpha", "beta", "gamma")
+    )
+    complete_entries.append(
+        json.dumps(
+            {
+                "type": "message",
+                "message": {"role": "assistant", "content": '{"result": 1}'},
+            }
+        )
+    )
+    session.write_text("\n".join(complete_entries) + "\n")
+    complete = subprocess.run(
+        [sys.executable, str(gate)], env=env, capture_output=True, text=True, check=False
+    )
+    assert complete.returncode == 0
+
+    direct_code = (
+        "root = Path('/workspace/document-recursion/v0-i1')\n"
+        "files = list(root.glob('*.md'))"
+    )
+    session.write_text(
+        "\n".join(
+            (
+                header,
+                assistant_tool(direct_code),
+                json.dumps(
+                    {
+                        "type": "message",
+                        "message": {"role": "assistant", "content": '{"result": 1}'},
+                    }
+                ),
+            )
+        )
+        + "\n"
+    )
+    direct = subprocess.run(
+        [sys.executable, str(gate)], env=env, capture_output=True, text=True, check=False
+    )
+    assert direct.returncode == 0
+
+
 def test_completion_gate_rejects_type_keys_that_do_not_match_answer_keys() -> None:
     with pytest.raises(ValueError, match="types must match"):
         _completion_gate_source(
