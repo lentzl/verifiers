@@ -35,6 +35,7 @@ UtilityPolicyProfile = Literal[
     "historical_v1",
     "causal_matched_v2",
     "causal_action_boundary_v3",
+    "causal_decision_boundary_v4",
 ]
 WEIGHTED_CHECKSUM_FORMULA = "sum((index + 1) * value for index, value in enumerate(values))"
 
@@ -1362,7 +1363,11 @@ def _task_prompt(
             utility_policy = (
                 causal_utility_policy
                 if utility_policy_profile
-                in {"causal_matched_v2", "causal_action_boundary_v3"}
+                in {
+                    "causal_matched_v2",
+                    "causal_action_boundary_v3",
+                    "causal_decision_boundary_v4",
+                }
                 else historical_utility_policy
             )
             contract_intro = (
@@ -1378,14 +1383,26 @@ def _task_prompt(
                     "or `hierarchical`. The harness will execute the selected public plan."
                 )
             )
-            action_boundary = (
-                "\n\n[document topology decision facts at action boundary]\n"
-                f"Resource policy: {utility_policy} Apply the causal utility rubric now. "
-                "Emit exactly one `document_topology` assignment; do not treat available "
-                "recursion as required."
-                if utility_policy_profile == "causal_action_boundary_v3"
-                else ""
-            )
+            if utility_policy_profile == "causal_action_boundary_v3":
+                action_boundary = (
+                    "\n\n[document topology decision facts at action boundary]\n"
+                    f"Resource policy: {utility_policy} Apply the causal utility rubric now. "
+                    "Emit exactly one `document_topology` assignment; do not treat available "
+                    "recursion as required."
+                )
+            elif utility_policy_profile == "causal_decision_boundary_v4":
+                action_boundary = (
+                    "\n\n[document topology decision rule at action boundary]\n"
+                    "Apply these cases in order: (1) when the root has inspection permission, select "
+                    "`direct`; (2) otherwise, when the root can admit all three terminal workers, "
+                    "select `flat`; (3) otherwise, when the root can admit at most one agent and "
+                    "that manager can delegate one further depth, select `hierarchical`. "
+                    "Availability of deeper recursion alone never changes an earlier decision. "
+                    f"Current resource policy: {utility_policy} Emit exactly one "
+                    "`document_topology` assignment."
+                )
+            else:
+                action_boundary = ""
             request = (
                 "[free document topology contract]\n"
                 f"{contract_intro}\n\n"

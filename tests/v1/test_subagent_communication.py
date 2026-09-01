@@ -393,7 +393,11 @@ def test_document_utility_tasks_expose_constraints_without_naming_the_choice(
 
 @pytest.mark.parametrize(
     "utility_policy_profile",
-    ["causal_matched_v2", "causal_action_boundary_v3"],
+    [
+        "causal_matched_v2",
+        "causal_action_boundary_v3",
+        "causal_decision_boundary_v4",
+    ],
 )
 def test_causal_document_utility_profile_flips_one_policy_fact_at_a_time(
     utility_policy_profile: str,
@@ -428,14 +432,22 @@ def test_causal_document_utility_profile_flips_one_policy_fact_at_a_time(
     assert all(
         task.data.utility_policy_profile == utility_policy_profile for task in tasks
     )
-    boundary_marker = "[document topology decision facts at action boundary]"
+    fact_boundary_marker = "[document topology decision facts at action boundary]"
+    rule_boundary_marker = "[document topology decision rule at action boundary]"
     if utility_policy_profile == "causal_action_boundary_v3":
-        assert direct.count(boundary_marker) == 1
+        assert direct.count(fact_boundary_marker) == 1
         assert direct.count("The root is permitted to inspect the directory") == 2
         assert flat.count("The root is not permitted to inspect the directory") == 2
         assert "do not treat available recursion as required" in hierarchical
+    elif utility_policy_profile == "causal_decision_boundary_v4":
+        assert direct.count(rule_boundary_marker) == 1
+        assert direct.count("The root is permitted to inspect the directory") == 2
+        assert flat.count("The root is not permitted to inspect the directory") == 2
+        assert "Apply these cases in order" in direct
+        assert "Availability of deeper recursion alone never changes" in hierarchical
     else:
-        assert boundary_marker not in direct
+        assert fact_boundary_marker not in direct
+        assert rule_boundary_marker not in direct
 
 
 def test_document_utility_metric_distinguishes_valid_from_useful_topology() -> None:
