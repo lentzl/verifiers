@@ -333,6 +333,31 @@ def test_document_topologies_share_one_answer_free_filesystem_fixture() -> None:
     assert all(path in flat.prompt for path in flat.files)
 
 
+def test_free_document_topology_exposes_legal_graphs_without_a_gold_choice() -> None:
+    task = SubagentCommunicationTaskset(
+        SubagentCommunicationConfig(
+            split="eval",
+            families=("document_free",),
+            instances_per_template=1,
+            instance_offset=18,
+        )
+    ).load()[0]
+
+    data = task.data
+    assert "[free document topology contract]" in data.prompt
+    assert "Legal topology `direct`" in data.prompt
+    assert "Legal topology `flat`" in data.prompt
+    assert "Legal topology `hierarchical`" in data.prompt
+    assert data.expected_children == ()
+    assert set(data.child_paths) == {
+        "alpha-document-worker",
+        "beta-document-worker",
+        "gamma-document-worker",
+        "document-manager",
+    }
+    assert json.dumps(data.answer) not in data.prompt
+
+
 def test_single_tasks_expose_task_specific_opsd_demonstrations() -> None:
     task = SubagentCommunicationTaskset(
         SubagentCommunicationConfig(

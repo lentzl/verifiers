@@ -24,6 +24,7 @@ Family = Literal[
     "document_direct",
     "document_flat",
     "document_hierarchical",
+    "document_free",
 ]
 InstructionLevel = Literal["standard", "guided"]
 PromptContract = Literal["historical_v1", "explicit_bidirectional_v2"]
@@ -34,6 +35,7 @@ DOCUMENT_FAMILIES: tuple[Family, ...] = (
     "document_direct",
     "document_flat",
     "document_hierarchical",
+    "document_free",
 )
 TRAIN_VARIANTS = (0, 1, 2, 3)
 EVAL_VARIANTS = (4, 5)
@@ -1149,7 +1151,7 @@ def _task_prompt(
                 "Use one retained rlm handle per named worker, end the turn without polling, "
                 "and aggregate only after all three explicit child reports arrive."
             )
-        else:
+        elif family == "document_hierarchical":
             manager_prompt = _document_manager_instruction(root)
             children = ("document-manager",)
             child_paths = {"document-manager": root}
@@ -1166,6 +1168,46 @@ def _task_prompt(
             guidance = (
                 "Use one retained rlm handle for document-manager. The manager, not the root, "
                 "owns file discovery, leaf delegation, aggregation, and the parent report."
+            )
+        else:
+            flat_children = tuple(
+                f"{stem}-document-worker" for stem in ("alpha", "beta", "gamma")
+            )
+            flat_paths = {
+                child: f"{root}/{child.removesuffix('-document-worker')}.md"
+                for child in flat_children
+            }
+            assignments = "\n".join(
+                f"- {child}: {_document_worker_instruction(path)}"
+                for child, path in flat_paths.items()
+            )
+            manager_prompt = _document_manager_instruction(root)
+            request = (
+                "[free document topology contract]\n"
+                "Choose exactly one legal execution topology for this document objective. "
+                "Do not mix topologies. Correctness and ownership are mandatory; use fewer "
+                "agent admissions when two plans are otherwise equally reliable.\n\n"
+                "Legal topology `direct`: Inspect every Markdown file in "
+                f"{root} yourself using the CLI or IPython; do not create a subagent.\n\n"
+                "Legal topology `flat`: delegate the three files to exactly these three "
+                "terminal children, retain all handles, spawn all three before waiting, and "
+                "aggregate only their explicit reports:\n"
+                f"{assignments}\n\n"
+                "Legal topology `hierarchical`: delegate the complete directory to exactly one "
+                "non-root coordinator named document-manager, retain its handle, and preserve "
+                "this complete recursive contract:\n\n"
+                f"{manager_prompt}\n\n"
+                f"Whichever topology you choose, return {schema}."
+            )
+            children = ()
+            child_paths = {
+                **flat_paths,
+                "document-manager": root,
+            }
+            guidance = (
+                "Choose direct, flat, or hierarchical from the public legal plans. Execute only "
+                "that graph, preserve ownership, wait passively for any delegated reports, and "
+                "return the exact JSON schema."
             )
     elif family == "handshake":
         secret = rng.randint(1_000, 9_999)
@@ -1609,17 +1651,43 @@ def _protocol_behavior(
 
     coordinator_calls = [(call, retained, event) for call, retained, event in calls if is_coordinator_event(event)]
     child_calls = [(call, retained, event) for call, retained, event in calls if is_child_event(event)]
+    attempted_spawns = [
+        (call, retained, event) for call, retained, event in coordinator_calls if _call_name(call) == "rlm"
+    ]
+    spawns = [item for item in attempted_spawns if not _failed(item[2].output)]
+    names = {_spawn_name(call, event.output) for call, _, event in spawns}
+    selected_free_topology: str | None = None
+    if family == "document_free":
+        flat_names = {
+            "alpha-document-worker",
+            "beta-document-worker",
+            "gamma-document-worker",
+        }
+        if not spawns:
+            selected_free_topology = "direct"
+            expected_children = ()
+            child_paths = {}
+        elif len(spawns) == 3 and names == flat_names:
+            selected_free_topology = "flat"
+            expected_children = tuple(sorted(flat_names))
+            child_paths = {
+                name: child_paths[name]
+                for name in expected_children
+            }
+        elif len(spawns) == 1 and names == {"document-manager"}:
+            selected_free_topology = "hierarchical"
+            expected_children = ("document-manager",)
+            child_paths = {"document-manager": child_paths["document-manager"]}
+        else:
+            selected_free_topology = "invalid"
+            expected_children = ()
+            child_paths = {}
     delegated_paths = {path for path in child_paths.values() if path.startswith("/")}
     coordinator_delegated_path_accesses = sum(
         any(_delegated_path_used_outside_spawn(event.code, path) for path in delegated_paths)
         for event in events
         if is_coordinator_event(event)
     )
-    attempted_spawns = [
-        (call, retained, event) for call, retained, event in coordinator_calls if _call_name(call) == "rlm"
-    ]
-    spawns = [item for item in attempted_spawns if not _failed(item[2].output)]
-    names = {_spawn_name(call, event.output) for call, _, event in spawns}
     parent_messages = _incoming_child_messages(trace)
     parent_message_names = {message.name for message in parent_messages}
     child_messages = [
@@ -1804,9 +1872,9 @@ def _protocol_behavior(
             + float(repeated == 0)
         ) / 6
 
-    if family in {"direct", "document_direct"}:
+    if family in {"direct", "document_direct"} or selected_free_topology == "direct":
         checks = [not spawns, not parent_messages, not child_messages, repeated == 0]
-    elif family in {"single", "document_hierarchical"}:
+    elif family in {"single", "document_hierarchical"} or selected_free_topology == "hierarchical":
         checks = [
             len(spawns) == 1,
             retained == len(expected_children),
@@ -1815,7 +1883,7 @@ def _protocol_behavior(
             set(expected_children) <= parent_message_names,
             repeated == 0,
         ]
-    elif family in {"parallel", "document_flat"}:
+    elif family in {"parallel", "document_flat"} or selected_free_topology == "flat":
         checks = [
             len(spawns) == len(expected_children),
             retained == len(expected_children),
@@ -1824,6 +1892,8 @@ def _protocol_behavior(
             set(expected_children) <= parent_message_names,
             repeated == 0,
         ]
+    elif family == "document_free":
+        checks = [False]
     else:
         checks = [
             len(spawns) == 1,
@@ -1839,7 +1909,7 @@ def _protocol_behavior(
             *([result_matches_secret] if family == "handshake" else []),
             repeated == 0,
         ]
-    if family not in {"direct", "document_direct"}:
+    if family not in {"direct", "document_direct"} and selected_free_topology != "direct":
         checks.append(coordinator_delegated_path_accesses == 0)
     post_fan_in = _post_fan_in_behavior(
         trace,
@@ -1883,7 +1953,7 @@ def _protocol_behavior(
         "parallel",
         "document_flat",
         "document_hierarchical",
-    }:
+    } or selected_free_topology in {"flat", "hierarchical"}:
         clean_checks.append(set(expected_children) <= explicit_parent_message_names)
         clean_checks.append(post_fan_in["post_fan_in_cells"] == 0)
     elif family in {"followup", "handshake"}:
@@ -1894,6 +1964,16 @@ def _protocol_behavior(
         "protocol_score": sum(checks) / len(checks),
         "protocol_aligned": float(all(checks)),
         "clean_protocol_aligned": float(all(clean_checks)),
+        "topology_valid": float(selected_free_topology != "invalid") if family == "document_free" else 0.0,
+        "topology_direct": float(selected_free_topology == "direct"),
+        "topology_flat": float(selected_free_topology == "flat"),
+        "topology_hierarchical": float(selected_free_topology == "hierarchical"),
+        "coordination_spawn_calls": float(
+            sum(
+                _call_name(call) == "rlm" and not _failed(event.output)
+                for call, _, event in calls
+            )
+        ),
         "spawn_calls": float(len(spawns)),
         "failed_spawn_calls": float(len(attempted_spawns) - len(spawns)),
         "retained_handles": float(retained),
