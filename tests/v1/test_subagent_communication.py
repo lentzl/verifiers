@@ -411,7 +411,14 @@ def test_causal_document_utility_profile_flips_one_policy_fact_at_a_time() -> No
     hierarchical = prompts["document_utility_hierarchical"]
 
     assert direct.replace("is permitted", "is not permitted", 1) == flat
-    assert flat.replace("may admit up to three", "may admit at most one", 1) == hierarchical
+    assert (
+        flat.replace(
+            "may admit up to three agents",
+            "may admit at most one agent",
+            1,
+        )
+        == hierarchical
+    )
     assert "fewest total agent admissions" in flat
     assert all(task.data.utility_policy_profile == "causal_matched_v2" for task in tasks)
 
