@@ -905,6 +905,23 @@ def child_message_sender(message):
     return text[len(prefix):].split("]", 1)[0]
 
 
+def child_message_payload(message):
+    details = message.get("details")
+    raw = details.get("message") if isinstance(details, dict) else None
+    if not isinstance(raw, str):
+        text = content_text(message.get("content"))
+        raw = text.rsplit("\\n\\n", 1)[-1].strip()
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not payload:
+        return None
+    if not all(isinstance(key, str) and type(value) is int for key, value in payload.items()):
+        return None
+    return payload
+
+
 def value_matches_type(value, expected_type):
     if expected_type == "bool":
         return isinstance(value, bool)
@@ -1007,6 +1024,7 @@ def inspect_sessions():
     )
     observed_counts = {{}}
     wait_required = {{}}
+    observed_reports = {{}}
     valid = False
     for path in session_files:
         entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
@@ -1053,6 +1071,9 @@ def inspect_sessions():
             if isinstance(message_id, str):
                 seen_child_message_ids.add(message_id)
             all_child_message_counts[child_name] += 1
+            payload = child_message_payload(message)
+            if payload is not None:
+                observed_reports[child_name] = payload
             if index < final_index:
                 child_message_counts[child_name] += 1
         for child_name, count in all_child_message_counts.items():
@@ -1075,10 +1096,10 @@ def inspect_sessions():
         observed_counts.get(name, 0) >= count
         for name, count in wait_required.items()
     )
-    return valid, ready, observed, bool(wait_required)
+    return valid, ready, observed, bool(wait_required), observed_reports
 
 
-valid, child_evidence_observed, observed, should_wait = inspect_sessions()
+valid, child_evidence_observed, observed, should_wait, observed_reports = inspect_sessions()
 if valid:
     raise SystemExit(0)
 
@@ -1095,16 +1116,18 @@ grace_seconds = max(0.0, min(grace_seconds, 60.0))
 deadline = time.monotonic() + grace_seconds
 while should_wait and time.monotonic() < deadline:
     time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
-    valid, child_evidence_observed, current, should_wait = inspect_sessions()
+    valid, child_evidence_observed, current, should_wait, observed_reports = inspect_sessions()
     if valid:
         raise SystemExit(0)
     if current != observed:
         break
 
-print(
-    {format_feedback!r} if child_evidence_observed else {gate_feedback!r},
-    file=sys.stderr,
-)
+feedback = {format_feedback!r} if child_evidence_observed else {gate_feedback!r}
+if FREE_DOCUMENT_TOPOLOGY and child_evidence_observed and observed_reports:
+    feedback += "\\nObserved child report map: " + json.dumps(
+        observed_reports, sort_keys=True, separators=(",", ":")
+    )
+print(feedback, file=sys.stderr)
 raise SystemExit(1)
 """
 

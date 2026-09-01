@@ -1376,15 +1376,23 @@ def test_free_document_completion_gate_follows_the_selected_graph(tmp_path: Path
         )
 
     def child_message(name: str) -> str:
+        stem = name.split("-", 1)[0]
+        payloads = {
+            "alpha": {"words": 20, "h2": 2},
+            "beta": {"words": 30, "h2": 3},
+            "gamma": {"words": 40, "h2": 4},
+        }
+        payload = json.dumps(payloads[stem], separators=(",", ":"))
         return json.dumps(
             {
                 "type": "custom_message",
                 "customType": "agent_message",
-                "content": f"[from child:{name}] result",
+                "content": f"[from child:{name}] result\n\n{payload}",
                 "details": {
                     "id": f"message-{name}",
                     "from": {"sessionName": name},
                     "fromRelationship": "child",
+                    "message": payload,
                 },
             }
         )
@@ -1405,6 +1413,27 @@ def test_free_document_completion_gate_follows_the_selected_graph(tmp_path: Path
         [sys.executable, str(gate)], env=env, capture_output=True, text=True, check=False
     )
     assert waiting.returncode == 1
+
+    reported_entries = [header, assistant_tool(flat_code)]
+    reported_entries.extend(
+        child_message(f"{stem}-document-worker")
+        for stem in ("alpha", "beta", "gamma")
+    )
+    reported_entries.append(
+        json.dumps(
+            {
+                "type": "message",
+                "message": {"role": "assistant", "content": "Waiting."},
+            }
+        )
+    )
+    session.write_text("\n".join(reported_entries) + "\n")
+    reports_ready = subprocess.run(
+        [sys.executable, str(gate)], env=env, capture_output=True, text=True, check=False
+    )
+    assert reports_ready.returncode == 1
+    assert 'Observed child report map: {"alpha-document-worker":' in reports_ready.stderr
+    assert '"gamma-document-worker":{"h2":4,"words":40}' in reports_ready.stderr
 
     complete_entries = [header, assistant_tool(flat_code)]
     complete_entries.extend(
