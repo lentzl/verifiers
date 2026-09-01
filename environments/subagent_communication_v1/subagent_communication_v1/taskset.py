@@ -926,35 +926,52 @@ def value_matches_type(value, expected_type):
 def selected_required_child_messages(entries):
     if not FREE_DOCUMENT_TOPOLOGY:
         return REQUIRED_CHILD_MESSAGES
-    names = set()
-    spawn_calls = 0
+
+    def ipython_codes(value):
+        codes = []
+
+        def visit(item):
+            if isinstance(item, list):
+                for child in item:
+                    visit(child)
+                return
+            if not isinstance(item, dict):
+                return
+            function = item.get("function")
+            candidate = function if isinstance(function, dict) else item
+            name = candidate.get("name") or item.get("toolName")
+            arguments = candidate.get("arguments")
+            if arguments is None:
+                arguments = item.get("input")
+            try:
+                arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+            except json.JSONDecodeError:
+                arguments = None
+            code = arguments.get("code") if isinstance(arguments, dict) else None
+            if name == "ipython" and isinstance(code, str) and code not in codes:
+                codes.append(code)
+            for child in item.values():
+                visit(child)
+
+        visit(value)
+        return codes
+
+    flat_names = {{
+        "alpha-document-worker",
+        "beta-document-worker",
+        "gamma-document-worker",
+    }}
     for entry in entries:
         message = session_message(entry)
         if message.get("role") != "assistant":
             continue
-        tool_calls = message.get("tool_calls")
-        if not isinstance(tool_calls, list):
-            continue
-        for tool_call in tool_calls:
-            if not isinstance(tool_call, dict):
-                continue
-            function = tool_call.get("function")
-            if not isinstance(function, dict):
-                function = tool_call
-            if function.get("name") != "ipython":
-                continue
-            arguments = function.get("arguments")
-            try:
-                arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
-            except json.JSONDecodeError:
-                continue
-            code = arguments.get("code") if isinstance(arguments, dict) else None
-            if not isinstance(code, str):
-                continue
+        for code in ipython_codes(message):
             try:
                 tree = ast.parse(code)
             except SyntaxError:
                 continue
+            names = set()
+            spawn_calls = 0
             for node in ast.walk(tree):
                 if not (
                     isinstance(node, ast.Call)
@@ -970,17 +987,14 @@ def selected_required_child_messages(entries):
                         and isinstance(keyword.value.value, str)
                     ):
                         names.add(keyword.value.value)
-    flat_names = {{
-        "alpha-document-worker",
-        "beta-document-worker",
-        "gamma-document-worker",
-    }}
-    if spawn_calls == 0:
-        return {{}}
-    if spawn_calls == 3 and names == flat_names:
-        return {{name: 1 for name in flat_names}}
-    if spawn_calls == 1 and names == {{"document-manager"}}:
-        return {{"document-manager": 1}}
+            if spawn_calls == 3 and names == flat_names:
+                return {{name: 1 for name in flat_names}}
+            if spawn_calls == 1 and names == {{"document-manager"}}:
+                return {{"document-manager": 1}}
+            if spawn_calls == 0 and "/workspace/document-recursion/" in code:
+                return {{}}
+            if spawn_calls:
+                return None
     return None
 
 

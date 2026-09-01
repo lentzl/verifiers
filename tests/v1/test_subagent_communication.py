@@ -1363,11 +1363,12 @@ def test_free_document_completion_gate_follows_the_selected_graph(tmp_path: Path
                 "type": "message",
                 "message": {
                     "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
+                    "content": [
                         {
+                            "type": "toolCall",
+                            "id": "tool-call-1",
                             "name": "ipython",
-                            "arguments": json.dumps({"code": code}),
+                            "arguments": {"code": code},
                         }
                     ],
                 },
