@@ -358,6 +358,68 @@ def test_free_document_topology_exposes_legal_graphs_without_a_gold_choice() -> 
     assert json.dumps(data.answer) not in data.prompt
 
 
+@pytest.mark.parametrize(
+    ("family", "policy_fragment"),
+    [
+        ("document_utility_direct", "total agent-admission budget is zero"),
+        ("document_utility_flat", "Descendant depth is limited to one"),
+        ("document_utility_hierarchical", "may admit at most one agent"),
+    ],
+)
+def test_document_utility_tasks_expose_constraints_without_naming_the_choice(
+    family: str,
+    policy_fragment: str,
+) -> None:
+    task = SubagentCommunicationTaskset(
+        SubagentCommunicationConfig(
+            split="eval",
+            families=(family,),
+            instances_per_template=1,
+            instance_offset=19,
+        )
+    ).load()[0]
+
+    data = task.data
+    assert "[free document topology contract]" in data.prompt
+    assert policy_fragment in data.prompt
+    assert "Select topology" not in data.prompt
+    assert "expected topology" not in data.prompt
+    assert "Legal topology `direct`" in data.prompt
+    assert "Legal topology `flat`" in data.prompt
+    assert "Legal topology `hierarchical`" in data.prompt
+    assert json.dumps(data.answer) not in data.prompt
+
+
+def test_document_utility_metric_distinguishes_valid_from_useful_topology() -> None:
+    direct_trace = _trace(
+        "from pathlib import Path\n"
+        "root = Path('/workspace/document-recursion/v4-i19')\n"
+        "texts = [path.read_text() for path in root.glob('*.md')]"
+    )
+
+    direct = _protocol_behavior(
+        direct_trace,
+        "document_utility_direct",
+        (),
+        {},
+        None,
+    )
+    flat_constraint = _protocol_behavior(
+        direct_trace,
+        "document_utility_flat",
+        (),
+        {},
+        None,
+    )
+
+    assert direct["topology_valid"] == 1.0
+    assert direct["topology_utility_aligned"] == 1.0
+    assert direct["protocol_aligned"] == 1.0
+    assert flat_constraint["topology_valid"] == 1.0
+    assert flat_constraint["topology_utility_aligned"] == 0.0
+    assert flat_constraint["protocol_aligned"] == 0.0
+
+
 def test_single_tasks_expose_task_specific_opsd_demonstrations() -> None:
     task = SubagentCommunicationTaskset(
         SubagentCommunicationConfig(

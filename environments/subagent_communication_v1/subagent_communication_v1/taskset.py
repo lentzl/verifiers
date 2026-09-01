@@ -25,6 +25,9 @@ Family = Literal[
     "document_flat",
     "document_hierarchical",
     "document_free",
+    "document_utility_direct",
+    "document_utility_flat",
+    "document_utility_hierarchical",
 ]
 InstructionLevel = Literal["standard", "guided"]
 PromptContract = Literal["historical_v1", "explicit_bidirectional_v2"]
@@ -36,7 +39,21 @@ DOCUMENT_FAMILIES: tuple[Family, ...] = (
     "document_flat",
     "document_hierarchical",
     "document_free",
+    "document_utility_direct",
+    "document_utility_flat",
+    "document_utility_hierarchical",
 )
+FREE_DOCUMENT_TOPOLOGY_FAMILIES: tuple[Family, ...] = (
+    "document_free",
+    "document_utility_direct",
+    "document_utility_flat",
+    "document_utility_hierarchical",
+)
+UTILITY_DOCUMENT_TOPOLOGIES: dict[Family, str] = {
+    "document_utility_direct": "direct",
+    "document_utility_flat": "flat",
+    "document_utility_hierarchical": "hierarchical",
+}
 TRAIN_VARIANTS = (0, 1, 2, 3)
 EVAL_VARIANTS = (4, 5)
 COMPLETION_GATE_PATH = "/workspace/.subagent-communication/completion_gate.py"
@@ -822,7 +839,7 @@ def _completion_gate_source(
             "existing child sends its result, make no tool call and return bare strict JSON immediately, "
             "with no prose or Markdown."
         )
-    elif family == "document_free":
+    elif family in FREE_DOCUMENT_TOPOLOGY_FAMILIES:
         gate_feedback = (
             "completion gate: final JSON is not ready. Preserve the one topology you already "
             "selected and do not switch or mix graphs. If you selected direct work, finish the "
@@ -851,7 +868,7 @@ from pathlib import Path
 EXPECTED_KEYS = {expected_keys!r}
 EXPECTED_TYPES = {expected_types!r}
 REQUIRED_CHILD_MESSAGES = {required_child_messages!r}
-FREE_DOCUMENT_TOPOLOGY = {family == "document_free"!r}
+FREE_DOCUMENT_TOPOLOGY = {family in FREE_DOCUMENT_TOPOLOGY_FAMILIES!r}
 
 
 def content_text(content):
@@ -1299,11 +1316,36 @@ def _task_prompt(
                 for child, path in flat_paths.items()
             )
             manager_prompt = _document_manager_instruction(root)
-            request = (
-                "[free document topology contract]\n"
+            utility_policy = {
+                "document_utility_direct": (
+                    "The root is permitted to inspect the directory. The total agent-admission "
+                    "budget is zero. Select the reliable plan that satisfies that budget."
+                ),
+                "document_utility_flat": (
+                    "The root is not permitted to inspect the directory. Descendant depth is "
+                    "limited to one, and the root may admit at most three agents. Select the "
+                    "reliable plan that respects ownership and depth."
+                ),
+                "document_utility_hierarchical": (
+                    "The root is not permitted to inspect the directory and may admit at most "
+                    "one agent. That admitted agent may delegate at one further depth. Select "
+                    "the reliable plan that respects ownership and both budgets."
+                ),
+            }.get(family)
+            contract_intro = (
                 "Choose exactly one legal execution topology for this document objective. "
                 "Do not mix topologies. Correctness and ownership are mandatory; use fewer "
-                "agent admissions when two plans are otherwise equally reliable.\n\n"
+                "agent admissions when two plans are otherwise equally reliable."
+                if utility_policy is None
+                else (
+                    "Choose exactly one candidate execution plan for this document objective. "
+                    "Do not mix plans. Correctness, ownership, and the resource policy are "
+                    f"mandatory. Resource policy: {utility_policy}"
+                )
+            )
+            request = (
+                "[free document topology contract]\n"
+                f"{contract_intro}\n\n"
                 "Legal topology `direct`: Inspect every Markdown file in "
                 f"{root} yourself using the CLI or IPython; do not create a subagent.\n\n"
                 "Legal topology `flat`: delegate the three files to exactly these three "
@@ -1322,9 +1364,9 @@ def _task_prompt(
                 "document-manager": root,
             }
             guidance = (
-                "Choose direct, flat, or hierarchical from the public legal plans. Execute only "
-                "that graph, preserve ownership, wait passively for any delegated reports, and "
-                "return the exact JSON schema."
+                "Compare direct, flat, and hierarchical against the public ownership and resource "
+                "policy. Execute only one compliant graph, wait passively for any delegated "
+                "reports, and return the exact JSON schema."
             )
     elif family == "handshake":
         secret = rng.randint(1_000, 9_999)
@@ -1774,7 +1816,8 @@ def _protocol_behavior(
     spawns = [item for item in attempted_spawns if not _failed(item[2].output)]
     names = {_spawn_name(call, event.output) for call, _, event in spawns}
     selected_free_topology: str | None = None
-    if family == "document_free":
+    utility_topology = UTILITY_DOCUMENT_TOPOLOGIES.get(family)
+    if family in FREE_DOCUMENT_TOPOLOGY_FAMILIES:
         flat_names = {
             "alpha-document-worker",
             "beta-document-worker",
@@ -2009,7 +2052,7 @@ def _protocol_behavior(
             set(expected_children) <= parent_message_names,
             repeated == 0,
         ]
-    elif family == "document_free":
+    elif family in FREE_DOCUMENT_TOPOLOGY_FAMILIES:
         checks = [False]
     else:
         checks = [
@@ -2028,6 +2071,8 @@ def _protocol_behavior(
         ]
     if family not in {"direct", "document_direct"} and selected_free_topology != "direct":
         checks.append(coordinator_delegated_path_accesses == 0)
+    if utility_topology is not None:
+        checks.append(selected_free_topology == utility_topology)
     post_fan_in = _post_fan_in_behavior(
         trace,
         expected_children,
@@ -2081,10 +2126,15 @@ def _protocol_behavior(
         "protocol_score": sum(checks) / len(checks),
         "protocol_aligned": float(all(checks)),
         "clean_protocol_aligned": float(all(clean_checks)),
-        "topology_valid": float(selected_free_topology != "invalid") if family == "document_free" else 0.0,
+        "topology_valid": float(selected_free_topology != "invalid") if family in FREE_DOCUMENT_TOPOLOGY_FAMILIES else 0.0,
         "topology_direct": float(selected_free_topology == "direct"),
         "topology_flat": float(selected_free_topology == "flat"),
         "topology_hierarchical": float(selected_free_topology == "hierarchical"),
+        "topology_utility_aligned": (
+            float(selected_free_topology == utility_topology)
+            if utility_topology is not None
+            else 0.0
+        ),
         "coordination_spawn_calls": float(
             sum(
                 _call_name(call) == "rlm" and not _failed(event.output)
