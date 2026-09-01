@@ -364,6 +364,7 @@ def test_free_document_topology_exposes_legal_graphs_without_a_gold_choice() -> 
         ("document_utility_direct", "total agent-admission budget is zero"),
         ("document_utility_flat", "Descendant depth is limited to one"),
         ("document_utility_hierarchical", "may admit at most one agent"),
+        ("document_utility_depth3", "one additional depth"),
     ],
 )
 def test_document_utility_tasks_expose_constraints_without_naming_the_choice(
@@ -389,6 +390,31 @@ def test_document_utility_tasks_expose_constraints_without_naming_the_choice(
     assert "Legal topology `hierarchical`" in data.prompt
     assert "one exact IPython cell assigning `document_topology`" in data.prompt
     assert json.dumps(data.answer) not in data.prompt
+
+
+def test_depth3_document_utility_task_exposes_disjoint_recursive_ownership() -> None:
+    task = SubagentCommunicationTaskset(
+        SubagentCommunicationConfig(
+            split="eval",
+            families=("document_utility_depth3",),
+            instances_per_template=1,
+            instance_offset=31100,
+            utility_policy_profile="causal_decision_boundary_v4",
+        )
+    ).load()[0]
+
+    prompt = task.data.prompt
+    assert prompt.count("document_coordinator_level=top") == 1
+    assert prompt.count("document_coordinator_level=subgroup") == 2
+    assert "document_group=alpha,beta" in prompt
+    assert "document_group=gamma" in prompt
+    assert "Coordinator name: ab-document-manager" in prompt
+    assert "Coordinator name: gamma-document-manager" in prompt
+    assert prompt.count("depth3_contract_end=subgroup") == 2
+    assert prompt.count("depth3_contract_end=top") == 1
+    assert task.data.expected_children == ()
+    assert task.data.child_paths["document-manager"].endswith("v4-i31100")
+    assert json.dumps(task.data.answer) not in prompt
 
 
 @pytest.mark.parametrize(

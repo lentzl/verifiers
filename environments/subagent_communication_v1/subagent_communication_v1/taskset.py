@@ -28,6 +28,7 @@ Family = Literal[
     "document_utility_direct",
     "document_utility_flat",
     "document_utility_hierarchical",
+    "document_utility_depth3",
 ]
 InstructionLevel = Literal["standard", "guided"]
 PromptContract = Literal["historical_v1", "explicit_bidirectional_v2"]
@@ -48,17 +49,20 @@ DOCUMENT_FAMILIES: tuple[Family, ...] = (
     "document_utility_direct",
     "document_utility_flat",
     "document_utility_hierarchical",
+    "document_utility_depth3",
 )
 FREE_DOCUMENT_TOPOLOGY_FAMILIES: tuple[Family, ...] = (
     "document_free",
     "document_utility_direct",
     "document_utility_flat",
     "document_utility_hierarchical",
+    "document_utility_depth3",
 )
 UTILITY_DOCUMENT_TOPOLOGIES: dict[Family, str] = {
     "document_utility_direct": "direct",
     "document_utility_flat": "flat",
     "document_utility_hierarchical": "hierarchical",
+    "document_utility_depth3": "hierarchical",
 }
 TRAIN_VARIANTS = (0, 1, 2, 3)
 EVAL_VARIANTS = (4, 5)
@@ -202,6 +206,76 @@ def _document_manager_instruction(root: str) -> str:
         "`words` and `h2` to you through agent_message.send. After all three explicit child "
         "reports arrive, assemble one JSON object with the per-file values and totals. Its exact "
         f"keys are: {final_keys}. Send that object exactly once to receiver_role='parent', then stop."
+    )
+
+
+def _document_subgroup_manager_instruction(
+    root: str, group: str, stems: tuple[str, ...]
+) -> str:
+    assignments = "\n".join(
+        f"- {stem}-document-worker owns {root}/{stem}.md" for stem in stems
+    )
+    partial_keys = ", ".join(
+        key for stem in stems for key in (f"{stem}_words", f"{stem}_h2")
+    )
+    return (
+        "[recursive document coordinator session contract]\n"
+        "session_role=document_coordinator\n"
+        "document_coordinator_level=subgroup\n"
+        f"document_group={group}\n"
+        "is_root=false\n"
+        "has_parent=true\n"
+        "can_delegate=true\n"
+        "can_finalize_user=false\n"
+        "maximum_descendant_depth=1\n"
+        "return_contract=exactly_one_parent_report\n"
+        f"You own only document group {group} under {root}. Do not read or inspect its files. "
+        "Delegate every assignment below to the named terminal children, retaining all handles "
+        "and spawning them before waiting:\n"
+        f"{assignments}\n"
+        "Each child must read only its assigned file, count all words with Python str.split(), "
+        "count lines beginning exactly `## `, and send one JSON object with integer keys "
+        "`words` and `h2` to you through agent_message.send. After every explicit child report "
+        f"arrives, send one JSON object with exactly these integer keys to your parent: {partial_keys}. "
+        "Send it exactly once to receiver_role='parent', then stop.\n"
+        "depth3_contract_end=subgroup"
+    )
+
+
+def _document_depth3_manager_instruction(root: str) -> str:
+    ab_contract = _document_subgroup_manager_instruction(
+        root, "alpha,beta", ("alpha", "beta")
+    )
+    gamma_contract = _document_subgroup_manager_instruction(
+        root, "gamma", ("gamma",)
+    )
+    final_keys = ", ".join(
+        [
+            *(f"{stem}_words, {stem}_h2" for stem in ("alpha", "beta", "gamma")),
+            "total_words, total_h2",
+        ]
+    )
+    return (
+        "[recursive document coordinator session contract]\n"
+        "session_role=document_coordinator\n"
+        "document_coordinator_level=top\n"
+        "is_root=false\n"
+        "has_parent=true\n"
+        "can_delegate=true\n"
+        "can_finalize_user=false\n"
+        "maximum_descendant_depth=2\n"
+        "return_contract=exactly_one_parent_report\n"
+        f"You own the decomposition of document directory {root}, but may not read or inspect "
+        "its files. Delegate its two disjoint groups to exactly these non-root coordinators, "
+        "retaining both handles and spawning both before waiting. Preserve each complete contract.\n\n"
+        "Coordinator name: ab-document-manager\n"
+        f"{ab_contract}\n\n"
+        "Coordinator name: gamma-document-manager\n"
+        f"{gamma_contract}\n\n"
+        "After both explicit subgroup reports arrive, combine their per-file values and compute "
+        "the two totals. Assemble one JSON object whose exact keys are: "
+        f"{final_keys}. Send that object exactly once to receiver_role='parent', then stop.\n"
+        "depth3_contract_end=top"
     )
 
 
@@ -1323,7 +1397,11 @@ def _task_prompt(
                 f"- {child}: {_document_worker_instruction(path)}"
                 for child, path in flat_paths.items()
             )
-            manager_prompt = _document_manager_instruction(root)
+            manager_prompt = (
+                _document_depth3_manager_instruction(root)
+                if family == "document_utility_depth3"
+                else _document_manager_instruction(root)
+            )
             historical_utility_policy = {
                 "document_utility_direct": (
                     "The root is permitted to inspect the directory. The total agent-admission "
@@ -1338,6 +1416,12 @@ def _task_prompt(
                     "The root is not permitted to inspect the directory and may admit at most "
                     "one agent. That admitted agent may delegate at one further depth. Select "
                     "the reliable plan that respects ownership and both budgets."
+                ),
+                "document_utility_depth3": (
+                    "The root is not permitted to inspect the directory and may admit at most "
+                    "one agent. That admitted coordinator may delegate at one further depth, "
+                    "and each admitted subgroup coordinator may delegate terminal work at one "
+                    "additional depth. Select the reliable plan that respects ownership and all budgets."
                 ),
             }.get(family)
             causal_utility_policy = {
@@ -1358,6 +1442,13 @@ def _task_prompt(
                     "one agent. An admitted coordinator may delegate at one further depth. All "
                     "legal plans are otherwise equally reliable. Select the plan with the "
                     "fewest total agent admissions."
+                ),
+                "document_utility_depth3": (
+                    "The root is not permitted to inspect the directory and may admit at most "
+                    "one agent. An admitted coordinator may delegate at one further depth, and "
+                    "each admitted subgroup coordinator may delegate terminal work at one "
+                    "additional depth. All legal plans are otherwise equally reliable. Select "
+                    "the plan with the fewest root-level agent admissions."
                 ),
             }.get(family)
             utility_policy = (
@@ -1876,6 +1967,28 @@ def _protocol_behavior(
     ]
     spawns = [item for item in attempted_spawns if not _failed(item[2].output)]
     names = {_spawn_name(call, event.output) for call, _, event in spawns}
+    all_attempted_spawns = [item for item in calls if _call_name(item[0]) == "rlm"]
+    all_spawns = [item for item in all_attempted_spawns if not _failed(item[2].output)]
+    all_spawn_names = [
+        _spawn_name(call, event.output) for call, _, event in all_spawns
+    ]
+    depth3_expected_names = Counter(
+        {
+            "document-manager": 1,
+            "ab-document-manager": 1,
+            "gamma-document-manager": 1,
+            "alpha-document-worker": 1,
+            "beta-document-worker": 1,
+            "gamma-document-worker": 1,
+        }
+    )
+    depth3_name_counts = Counter(all_spawn_names)
+    depth3_graph_complete = (
+        family == "document_utility_depth3"
+        and depth3_name_counts == depth3_expected_names
+        and len(all_attempted_spawns) == len(all_spawns)
+        and all(retained for _, retained, _ in all_spawns)
+    )
     selected_free_topology: str | None = None
     utility_topology = UTILITY_DOCUMENT_TOPOLOGIES.get(family)
     if family in FREE_DOCUMENT_TOPOLOGY_FAMILIES:
@@ -2134,6 +2247,8 @@ def _protocol_behavior(
         checks.append(coordinator_delegated_path_accesses == 0)
     if utility_topology is not None:
         checks.append(selected_free_topology == utility_topology)
+    if family == "document_utility_depth3":
+        checks.append(depth3_graph_complete)
     post_fan_in = _post_fan_in_behavior(
         trace,
         expected_children,
@@ -2201,6 +2316,26 @@ def _protocol_behavior(
                 _call_name(call) == "rlm" and not _failed(event.output)
                 for call, _, event in calls
             )
+        ),
+        "coordination_failed_spawn_calls": float(
+            len(all_attempted_spawns) - len(all_spawns)
+        ),
+        "depth3_top_manager_spawns": float(
+            depth3_name_counts["document-manager"]
+        ),
+        "depth3_subgroup_manager_spawns": float(
+            depth3_name_counts["ab-document-manager"]
+            + depth3_name_counts["gamma-document-manager"]
+        ),
+        "depth3_leaf_spawns": float(
+            sum(
+                depth3_name_counts[f"{stem}-document-worker"]
+                for stem in ("alpha", "beta", "gamma")
+            )
+        ),
+        "depth3_graph_complete": float(depth3_graph_complete),
+        "maximum_exercised_coordination_depth": float(
+            3 if depth3_graph_complete else 0
         ),
         "spawn_calls": float(len(spawns)),
         "failed_spawn_calls": float(len(attempted_spawns) - len(spawns)),
