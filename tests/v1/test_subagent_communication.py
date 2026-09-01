@@ -391,6 +391,31 @@ def test_document_utility_tasks_expose_constraints_without_naming_the_choice(
     assert json.dumps(data.answer) not in data.prompt
 
 
+def test_causal_document_utility_profile_flips_one_policy_fact_at_a_time() -> None:
+    tasks = SubagentCommunicationTaskset(
+        SubagentCommunicationConfig(
+            split="eval",
+            families=(
+                "document_utility_direct",
+                "document_utility_flat",
+                "document_utility_hierarchical",
+            ),
+            instances_per_template=1,
+            instance_offset=20,
+            utility_policy_profile="causal_matched_v2",
+        )
+    ).load()
+    prompts = {task.data.family: task.data.prompt for task in tasks[:3]}
+    direct = prompts["document_utility_direct"]
+    flat = prompts["document_utility_flat"]
+    hierarchical = prompts["document_utility_hierarchical"]
+
+    assert direct.replace("is permitted", "is not permitted", 1) == flat
+    assert flat.replace("may admit up to three", "may admit at most one", 1) == hierarchical
+    assert "fewest total agent admissions" in flat
+    assert all(task.data.utility_policy_profile == "causal_matched_v2" for task in tasks)
+
+
 def test_document_utility_metric_distinguishes_valid_from_useful_topology() -> None:
     direct_trace = _trace(
         "from pathlib import Path\n"

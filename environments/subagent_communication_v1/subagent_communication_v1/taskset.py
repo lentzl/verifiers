@@ -31,6 +31,7 @@ Family = Literal[
 ]
 InstructionLevel = Literal["standard", "guided"]
 PromptContract = Literal["historical_v1", "explicit_bidirectional_v2"]
+UtilityPolicyProfile = Literal["historical_v1", "causal_matched_v2"]
 WEIGHTED_CHECKSUM_FORMULA = "sum((index + 1) * value for index, value in enumerate(values))"
 
 FAMILIES: tuple[Family, ...] = ("direct", "single", "parallel", "followup")
@@ -101,6 +102,7 @@ class SubagentCommunicationData(vf.TaskData):
     family: Family
     template_variant: int
     instruction_level: InstructionLevel = "standard"
+    utility_policy_profile: UtilityPolicyProfile = "historical_v1"
     teacher_conditioned: bool = False
     answer: dict[str, int]
     expected_children: tuple[str, ...] = ()
@@ -1156,6 +1158,7 @@ def _task_prompt(
     seed: int,
     instruction_level: InstructionLevel,
     prompt_contract: PromptContract = "historical_v1",
+    utility_policy_profile: UtilityPolicyProfile = "historical_v1",
 ) -> tuple[
     str,
     dict[str, int],
@@ -1316,7 +1319,7 @@ def _task_prompt(
                 for child, path in flat_paths.items()
             )
             manager_prompt = _document_manager_instruction(root)
-            utility_policy = {
+            historical_utility_policy = {
                 "document_utility_direct": (
                     "The root is permitted to inspect the directory. The total agent-admission "
                     "budget is zero. Select the reliable plan that satisfies that budget."
@@ -1332,6 +1335,31 @@ def _task_prompt(
                     "the reliable plan that respects ownership and both budgets."
                 ),
             }.get(family)
+            causal_utility_policy = {
+                "document_utility_direct": (
+                    "The root is permitted to inspect the directory and may admit up to three "
+                    "agents. An admitted coordinator may delegate at one further depth. All "
+                    "legal plans are otherwise equally reliable. Select the plan with the "
+                    "fewest total agent admissions."
+                ),
+                "document_utility_flat": (
+                    "The root is not permitted to inspect the directory and may admit up to "
+                    "three agents. An admitted coordinator may delegate at one further depth. "
+                    "All legal plans are otherwise equally reliable. Select the plan with the "
+                    "fewest total agent admissions."
+                ),
+                "document_utility_hierarchical": (
+                    "The root is not permitted to inspect the directory and may admit at most "
+                    "one agent. An admitted coordinator may delegate at one further depth. All "
+                    "legal plans are otherwise equally reliable. Select the plan with the "
+                    "fewest total agent admissions."
+                ),
+            }.get(family)
+            utility_policy = (
+                causal_utility_policy
+                if utility_policy_profile == "causal_matched_v2"
+                else historical_utility_policy
+            )
             contract_intro = (
                 "Choose exactly one legal execution topology for this document objective. "
                 "Do not mix topologies. Correctness and ownership are mandatory; use fewer "
@@ -2451,6 +2479,7 @@ class SubagentCommunicationConfig(vf.TasksetConfig):
     families: tuple[Family, ...] = Field(FAMILIES, min_length=1)
     instruction_level: InstructionLevel = "standard"
     prompt_contract: PromptContract = "historical_v1"
+    utility_policy_profile: UtilityPolicyProfile = "historical_v1"
     instances_per_template: int = Field(4, ge=1)
     instance_offset: int = Field(0, ge=0)
     seed: int = 20260809
@@ -2480,6 +2509,7 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                         self.config.seed,
                         self.config.instruction_level,
                         self.config.prompt_contract,
+                        self.config.utility_policy_profile,
                     )
                     demonstration = _expert_demonstration(
                         family,
@@ -2539,6 +2569,7 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                                 family=family,
                                 template_variant=variant,
                                 instruction_level=self.config.instruction_level,
+                                utility_policy_profile=self.config.utility_policy_profile,
                                 teacher_conditioned=self.config.teacher_conditioned,
                                 answer=answer,
                                 expected_children=children,
