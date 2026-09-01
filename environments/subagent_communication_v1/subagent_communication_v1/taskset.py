@@ -31,7 +31,11 @@ Family = Literal[
 ]
 InstructionLevel = Literal["standard", "guided"]
 PromptContract = Literal["historical_v1", "explicit_bidirectional_v2"]
-UtilityPolicyProfile = Literal["historical_v1", "causal_matched_v2"]
+UtilityPolicyProfile = Literal[
+    "historical_v1",
+    "causal_matched_v2",
+    "causal_action_boundary_v3",
+]
 WEIGHTED_CHECKSUM_FORMULA = "sum((index + 1) * value for index, value in enumerate(values))"
 
 FAMILIES: tuple[Family, ...] = ("direct", "single", "parallel", "followup")
@@ -1357,7 +1361,8 @@ def _task_prompt(
             }.get(family)
             utility_policy = (
                 causal_utility_policy
-                if utility_policy_profile == "causal_matched_v2"
+                if utility_policy_profile
+                in {"causal_matched_v2", "causal_action_boundary_v3"}
                 else historical_utility_policy
             )
             contract_intro = (
@@ -1373,6 +1378,14 @@ def _task_prompt(
                     "or `hierarchical`. The harness will execute the selected public plan."
                 )
             )
+            action_boundary = (
+                "\n\n[document topology decision facts at action boundary]\n"
+                f"Resource policy: {utility_policy} Apply the causal utility rubric now. "
+                "Emit exactly one `document_topology` assignment; do not treat available "
+                "recursion as required."
+                if utility_policy_profile == "causal_action_boundary_v3"
+                else ""
+            )
             request = (
                 "[free document topology contract]\n"
                 f"{contract_intro}\n\n"
@@ -1385,7 +1398,8 @@ def _task_prompt(
                 "Legal topology `hierarchical`: delegate the complete directory to exactly one "
                 "non-root coordinator named document-manager, retain its handle, and preserve "
                 "this complete recursive contract:\n\n"
-                f"{manager_prompt}\n\n"
+                f"{manager_prompt}"
+                f"{action_boundary}\n\n"
                 f"Whichever topology you choose, return {schema}."
             )
             children = ()

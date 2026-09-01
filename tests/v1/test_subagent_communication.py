@@ -391,7 +391,13 @@ def test_document_utility_tasks_expose_constraints_without_naming_the_choice(
     assert json.dumps(data.answer) not in data.prompt
 
 
-def test_causal_document_utility_profile_flips_one_policy_fact_at_a_time() -> None:
+@pytest.mark.parametrize(
+    "utility_policy_profile",
+    ["causal_matched_v2", "causal_action_boundary_v3"],
+)
+def test_causal_document_utility_profile_flips_one_policy_fact_at_a_time(
+    utility_policy_profile: str,
+) -> None:
     tasks = SubagentCommunicationTaskset(
         SubagentCommunicationConfig(
             split="eval",
@@ -402,7 +408,7 @@ def test_causal_document_utility_profile_flips_one_policy_fact_at_a_time() -> No
             ),
             instances_per_template=1,
             instance_offset=20,
-            utility_policy_profile="causal_matched_v2",
+            utility_policy_profile=utility_policy_profile,
         )
     ).load()
     prompts = {task.data.family: task.data.prompt for task in tasks[:3]}
@@ -410,17 +416,26 @@ def test_causal_document_utility_profile_flips_one_policy_fact_at_a_time() -> No
     flat = prompts["document_utility_flat"]
     hierarchical = prompts["document_utility_hierarchical"]
 
-    assert direct.replace("is permitted", "is not permitted", 1) == flat
+    assert direct.replace("is permitted", "is not permitted") == flat
     assert (
         flat.replace(
             "may admit up to three agents",
             "may admit at most one agent",
-            1,
         )
         == hierarchical
     )
     assert "fewest total agent admissions" in flat
-    assert all(task.data.utility_policy_profile == "causal_matched_v2" for task in tasks)
+    assert all(
+        task.data.utility_policy_profile == utility_policy_profile for task in tasks
+    )
+    boundary_marker = "[document topology decision facts at action boundary]"
+    if utility_policy_profile == "causal_action_boundary_v3":
+        assert direct.count(boundary_marker) == 1
+        assert direct.count("The root is permitted to inspect the directory") == 2
+        assert flat.count("The root is not permitted to inspect the directory") == 2
+        assert "do not treat available recursion as required" in hierarchical
+    else:
+        assert boundary_marker not in direct
 
 
 def test_document_utility_metric_distinguishes_valid_from_useful_topology() -> None:
