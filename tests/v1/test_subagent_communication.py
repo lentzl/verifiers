@@ -387,6 +387,7 @@ def test_document_utility_tasks_expose_constraints_without_naming_the_choice(
     assert "Legal topology `direct`" in data.prompt
     assert "Legal topology `flat`" in data.prompt
     assert "Legal topology `hierarchical`" in data.prompt
+    assert "one exact IPython cell assigning `document_topology`" in data.prompt
     assert json.dumps(data.answer) not in data.prompt
 
 

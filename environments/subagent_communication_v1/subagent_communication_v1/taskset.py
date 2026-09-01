@@ -1340,7 +1340,9 @@ def _task_prompt(
                 else (
                     "Choose exactly one candidate execution plan for this document objective. "
                     "Do not mix plans. Correctness, ownership, and the resource policy are "
-                    f"mandatory. Resource policy: {utility_policy}"
+                    f"mandatory. Resource policy: {utility_policy} First select the plan with "
+                    "one exact IPython cell assigning `document_topology` to `direct`, `flat`, "
+                    "or `hierarchical`. The harness will execute the selected public plan."
                 )
             )
             request = (
