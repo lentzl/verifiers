@@ -2406,7 +2406,7 @@ def _protocol_behavior(
     adaptive_required_depth = ADAPTIVE_DOCUMENT_DEPTHS.get(family)
     adaptive_exercised_depth = -1
     if adaptive_required_depth is not None:
-        if selected_free_topology == "direct" and not all_spawns:
+        if selected_free_topology == "direct" and not all_spawns and events:
             adaptive_exercised_depth = 0
         elif selected_free_topology == "flat" and len(all_spawns) == 3:
             adaptive_exercised_depth = 1
