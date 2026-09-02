@@ -29,6 +29,10 @@ Family = Literal[
     "document_utility_flat",
     "document_utility_hierarchical",
     "document_utility_depth3",
+    "document_adaptive_d0",
+    "document_adaptive_d1",
+    "document_adaptive_d2",
+    "document_adaptive_d3",
 ]
 InstructionLevel = Literal["standard", "guided"]
 PromptContract = Literal["historical_v1", "explicit_bidirectional_v2"]
@@ -50,6 +54,10 @@ DOCUMENT_FAMILIES: tuple[Family, ...] = (
     "document_utility_flat",
     "document_utility_hierarchical",
     "document_utility_depth3",
+    "document_adaptive_d0",
+    "document_adaptive_d1",
+    "document_adaptive_d2",
+    "document_adaptive_d3",
 )
 FREE_DOCUMENT_TOPOLOGY_FAMILIES: tuple[Family, ...] = (
     "document_free",
@@ -57,12 +65,26 @@ FREE_DOCUMENT_TOPOLOGY_FAMILIES: tuple[Family, ...] = (
     "document_utility_flat",
     "document_utility_hierarchical",
     "document_utility_depth3",
+    "document_adaptive_d0",
+    "document_adaptive_d1",
+    "document_adaptive_d2",
+    "document_adaptive_d3",
 )
 UTILITY_DOCUMENT_TOPOLOGIES: dict[Family, str] = {
     "document_utility_direct": "direct",
     "document_utility_flat": "flat",
     "document_utility_hierarchical": "hierarchical",
     "document_utility_depth3": "hierarchical",
+    "document_adaptive_d0": "direct",
+    "document_adaptive_d1": "flat",
+    "document_adaptive_d2": "hierarchical",
+    "document_adaptive_d3": "hierarchical",
+}
+ADAPTIVE_DOCUMENT_DEPTHS: dict[Family, int] = {
+    "document_adaptive_d0": 0,
+    "document_adaptive_d1": 1,
+    "document_adaptive_d2": 2,
+    "document_adaptive_d3": 3,
 }
 TRAIN_VARIANTS = (0, 1, 2, 3)
 EVAL_VARIANTS = (4, 5)
@@ -197,6 +219,10 @@ def _document_manager_instruction(root: str) -> str:
         "can_finalize_user=false\n"
         "maximum_descendant_depth=1\n"
         "return_contract=exactly_one_parent_report\n"
+        "[local cognition facts]\n"
+        "owns_required_evidence=false\n"
+        "remaining_work_requires_decomposition=false\n"
+        "terminal_shards_ready=true\n"
         f"You own the document directory {root}. Do not compute the three file statistics "
         "yourself. Delegate all three assignments below to three independent terminal children, "
         "retaining their handles and spawning them before waiting:\n"
@@ -229,6 +255,10 @@ def _document_subgroup_manager_instruction(
         "can_finalize_user=false\n"
         "maximum_descendant_depth=1\n"
         "return_contract=exactly_one_parent_report\n"
+        "[local cognition facts]\n"
+        "owns_required_evidence=false\n"
+        "remaining_work_requires_decomposition=false\n"
+        "terminal_shards_ready=true\n"
         f"You own only document group {group} under {root}. Do not read or inspect its files. "
         "Delegate every assignment below to the named terminal children, retaining all handles "
         "and spawning them before waiting:\n"
@@ -265,6 +295,10 @@ def _document_depth3_manager_instruction(root: str) -> str:
         "can_finalize_user=false\n"
         "maximum_descendant_depth=2\n"
         "return_contract=exactly_one_parent_report\n"
+        "[local cognition facts]\n"
+        "owns_required_evidence=false\n"
+        "remaining_work_requires_decomposition=true\n"
+        "terminal_shards_ready=false\n"
         f"You own the decomposition of document directory {root}, but may not read or inspect "
         "its files. Delegate its two disjoint groups to exactly these non-root coordinators, "
         "retaining both handles and spawning both before waiting. Preserve each complete contract.\n\n"
@@ -276,6 +310,64 @@ def _document_depth3_manager_instruction(root: str) -> str:
         "the two totals. Assemble one JSON object whose exact keys are: "
         f"{final_keys}. Send that object exactly once to receiver_role='parent', then stop.\n"
         "depth3_contract_end=top"
+    )
+
+
+def _adaptive_document_request(
+    family: Family,
+    root: str,
+    schema: str,
+) -> str:
+    required_depth = ADAPTIVE_DOCUMENT_DEPTHS[family]
+    flat_paths = {
+        f"{stem}-document-worker": f"{root}/{stem}.md"
+        for stem in ("alpha", "beta", "gamma")
+    }
+    assignments = "\n".join(
+        f"- {child}: {_document_worker_instruction(path)}"
+        for child, path in flat_paths.items()
+    )
+    manager_prompt = (
+        _document_depth3_manager_instruction(root)
+        if required_depth == 3
+        else _document_manager_instruction(root)
+    )
+    owns_required_evidence = required_depth == 0
+    remaining_work_requires_decomposition = required_depth in {2, 3}
+    terminal_shards_ready = required_depth == 1
+    inspection_policy = (
+        "The current coordinator owns and may inspect the complete document directory."
+        if owns_required_evidence
+        else "The current coordinator may not inspect the document files."
+    )
+    admission_policy = {
+        0: "No additional cognition is needed when owned evidence is sufficient.",
+        1: "The current coordinator may admit the three terminal specialists.",
+        2: "The current coordinator may admit one coordinator that can organize terminal specialists.",
+        3: "The current coordinator may admit one coordinator because the remaining objective itself requires further decomposition.",
+    }[required_depth]
+    return (
+        "[adaptive document cognition contract]\n"
+        "Complete the document objective using the cheapest sufficient local cognition. "
+        "At every coordinator node, choose only the next action justified by that node's "
+        "owned evidence and scoped remaining work. Return only a generic action name. The "
+        "harness executes the selected action without changing it.\n\n"
+        "[local cognition facts]\n"
+        f"owns_required_evidence={str(owns_required_evidence).lower()}\n"
+        "remaining_work_requires_decomposition="
+        f"{str(remaining_work_requires_decomposition).lower()}\n"
+        f"terminal_shards_ready={str(terminal_shards_ready).lower()}\n"
+        f"{inspection_policy} {admission_policy}\n\n"
+        "Candidate action for owned work: Inspect every Markdown file in "
+        f"{root} yourself using the CLI or IPython; do not create a subagent.\n\n"
+        "Candidate action for terminal shards: admit the named terminal specialists, retain "
+        "all handles, and aggregate only their explicit reports:\n"
+        f"{assignments}\n\n"
+        "Candidate action for work that still needs decomposition: admit exactly one "
+        "coordinator named document-manager and preserve this complete scoped contract:\n\n"
+        f"{manager_prompt}\n\n"
+        "Choose exactly one generic next action. When the selected work completes, return "
+        f"{schema}."
     )
 
 
@@ -1385,6 +1477,19 @@ def _task_prompt(
                 "Use one retained rlm handle for document-manager. The manager, not the root, "
                 "owns file discovery, leaf delegation, aggregation, and the parent report."
             )
+        elif family in ADAPTIVE_DOCUMENT_DEPTHS:
+            flat_paths = {
+                f"{stem}-document-worker": f"{root}/{stem}.md"
+                for stem in ("alpha", "beta", "gamma")
+            }
+            request = _adaptive_document_request(family, root, schema)
+            children = ()
+            child_paths = {**flat_paths, "document-manager": root}
+            guidance = (
+                "Use only the public local cognition facts to choose the cheapest sufficient "
+                "generic next action. Execute one graph, wait passively for delegated evidence, "
+                "and return the exact JSON schema."
+            )
         else:
             flat_children = tuple(
                 f"{stem}-document-worker" for stem in ("alpha", "beta", "gamma")
@@ -1984,7 +2089,7 @@ def _protocol_behavior(
     )
     depth3_name_counts = Counter(all_spawn_names)
     depth3_graph_complete = (
-        family == "document_utility_depth3"
+        family in {"document_utility_depth3", "document_adaptive_d3"}
         and depth3_name_counts == depth3_expected_names
         and len(all_attempted_spawns) == len(all_spawns)
         and all(retained for _, retained, _ in all_spawns)
@@ -2247,7 +2352,7 @@ def _protocol_behavior(
         checks.append(coordinator_delegated_path_accesses == 0)
     if utility_topology is not None:
         checks.append(selected_free_topology == utility_topology)
-    if family == "document_utility_depth3":
+    if family in {"document_utility_depth3", "document_adaptive_d3"}:
         checks.append(depth3_graph_complete)
     post_fan_in = _post_fan_in_behavior(
         trace,
@@ -2298,6 +2403,17 @@ def _protocol_behavior(
         clean_checks.append(len(child_messages) == 1)
         clean_checks.append(len(explicit_parent_messages) == len(expected_messages) == 2)
         clean_checks.append(post_result_coordinator_cells == 0)
+    adaptive_required_depth = ADAPTIVE_DOCUMENT_DEPTHS.get(family)
+    adaptive_exercised_depth = -1
+    if adaptive_required_depth is not None:
+        if selected_free_topology == "direct" and not all_spawns:
+            adaptive_exercised_depth = 0
+        elif selected_free_topology == "flat" and len(all_spawns) == 3:
+            adaptive_exercised_depth = 1
+        elif selected_free_topology == "hierarchical" and depth3_graph_complete:
+            adaptive_exercised_depth = 3
+        elif selected_free_topology == "hierarchical" and len(all_spawns) == 4:
+            adaptive_exercised_depth = 2
     behavior = {
         "protocol_score": sum(checks) / len(checks),
         "protocol_aligned": float(all(checks)),
@@ -2336,6 +2452,14 @@ def _protocol_behavior(
         "depth3_graph_complete": float(depth3_graph_complete),
         "maximum_exercised_coordination_depth": float(
             3 if depth3_graph_complete else 0
+        ),
+        "adaptive_required_coordination_depth": float(
+            adaptive_required_depth if adaptive_required_depth is not None else -1
+        ),
+        "adaptive_exercised_coordination_depth": float(adaptive_exercised_depth),
+        "adaptive_depth_aligned": float(
+            adaptive_required_depth is not None
+            and adaptive_exercised_depth == adaptive_required_depth
         ),
         "spawn_calls": float(len(spawns)),
         "failed_spawn_calls": float(len(attempted_spawns) - len(spawns)),

@@ -418,6 +418,75 @@ def test_depth3_document_utility_task_exposes_disjoint_recursive_ownership() -> 
 
 
 @pytest.mark.parametrize(
+    ("family", "facts"),
+    [
+        (
+            "document_adaptive_d0",
+            (
+                "owns_required_evidence=true",
+                "remaining_work_requires_decomposition=false",
+                "terminal_shards_ready=false",
+            ),
+        ),
+        (
+            "document_adaptive_d1",
+            (
+                "owns_required_evidence=false",
+                "remaining_work_requires_decomposition=false",
+                "terminal_shards_ready=true",
+            ),
+        ),
+        (
+            "document_adaptive_d2",
+            (
+                "owns_required_evidence=false",
+                "remaining_work_requires_decomposition=true",
+                "terminal_shards_ready=false",
+            ),
+        ),
+        (
+            "document_adaptive_d3",
+            (
+                "owns_required_evidence=false",
+                "remaining_work_requires_decomposition=true",
+                "terminal_shards_ready=false",
+            ),
+        ),
+    ],
+)
+def test_adaptive_document_tasks_expose_local_facts_without_topology_labels(
+    family: str,
+    facts: tuple[str, str, str],
+) -> None:
+    task = SubagentCommunicationTaskset(
+        SubagentCommunicationConfig(
+            split="eval",
+            families=(family,),
+            instances_per_template=1,
+            instance_offset=33100,
+        )
+    ).load()[0]
+
+    prompt = task.data.prompt
+    current_card = prompt.split("[local cognition facts]", 1)[1]
+    assert all(fact in current_card for fact in facts)
+    assert "[adaptive document cognition contract]" in prompt
+    assert "document_adaptive_d" not in prompt
+    assert "select_document_topology" not in prompt
+    assert "document_topology" not in prompt
+    assert "Legal topology" not in prompt
+    assert "coordination level" not in prompt
+    assert task.data.expected_children == ()
+    assert set(task.data.child_paths) == {
+        "alpha-document-worker",
+        "beta-document-worker",
+        "gamma-document-worker",
+        "document-manager",
+    }
+    assert json.dumps(task.data.answer) not in prompt
+
+
+@pytest.mark.parametrize(
     "utility_policy_profile",
     [
         "causal_matched_v2",
