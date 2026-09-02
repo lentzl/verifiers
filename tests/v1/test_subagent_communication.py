@@ -333,6 +333,113 @@ def test_document_topologies_share_one_answer_free_filesystem_fixture() -> None:
     assert all(path in flat.prompt for path in flat.files)
 
 
+def test_specialist_population_is_held_out_answer_free_and_role_typed() -> None:
+    families = (
+        "specialist_local",
+        "specialist_generic",
+        "specialist_table_join",
+        "specialist_table_reconcile",
+        "specialist_source_ast",
+        "specialist_source_config",
+        "specialist_recursive_table",
+        "specialist_recursive_source",
+    )
+    tasks = SubagentCommunicationTaskset(
+        SubagentCommunicationConfig(
+            split="eval",
+            families=families,
+            instances_per_template=1,
+            instance_offset=35100,
+        )
+    ).load()
+
+    assert len(tasks) == 16
+    assert {task.data.template_variant for task in tasks} == {4, 5}
+    assert {task.data.family for task in tasks} == set(families)
+    assert sum(task.data.preferred_expert == "table_analyst" for task in tasks) == 6
+    assert sum(task.data.preferred_expert == "source_inspector" for task in tasks) == 6
+    assert sum(task.data.preferred_expert == "generic_worker" for task in tasks) == 2
+    assert sum(task.data.preferred_expert is None for task in tasks) == 2
+    for task in tasks:
+        data = task.data
+        assert "[specialist worker routing contract]" in data.prompt
+        assert json.dumps(data.answer) not in data.prompt
+        assert "preferred_expert" not in data.prompt
+        if data.family == "specialist_local":
+            assert data.expected_children == ()
+            assert data.files == {}
+        elif data.family.startswith("specialist_recursive_"):
+            assert data.expected_children == ("specialist-manager",)
+            assert "[recursive specialist coordinator session contract]" in data.prompt
+        else:
+            assert data.expected_children == ("task-worker",)
+            assert data.files
+        assert all(
+            path.startswith("/workspace/specialist-worker/") for path in data.files
+        )
+
+
+def test_specialist_control_registry_keeps_same_fixture_with_only_generic_worker() -> (
+    None
+):
+    common = {
+        "split": "eval",
+        "families": ("specialist_table_join",),
+        "instances_per_template": 1,
+        "instance_offset": 35100,
+    }
+    control = (
+        SubagentCommunicationTaskset(
+            SubagentCommunicationConfig(
+                **common,
+                available_experts=("generic_worker",),
+            )
+        )
+        .load()[0]
+        .data
+    )
+    population = (
+        SubagentCommunicationTaskset(
+            SubagentCommunicationConfig(
+                **common,
+                available_experts=(
+                    "generic_worker",
+                    "table_analyst",
+                    "source_inspector",
+                ),
+            )
+        )
+        .load()[0]
+        .data
+    )
+
+    assert control.files == population.files
+    assert control.answer == population.answer
+    assert control.preferred_expert == population.preferred_expert == "table_analyst"
+    assert control.prompt.count('"expert_id":"generic_worker"') == 1
+    assert '"expert_id":"table_analyst"' not in control.prompt
+    assert population.prompt.count('"expert_id":"table_analyst"') == 1
+
+
+@pytest.mark.parametrize(
+    "available_experts",
+    [(), ("table_analyst",), ("generic_worker", "not_registered")],
+)
+def test_specialist_registry_rejects_invalid_population(
+    available_experts: tuple[str, ...],
+) -> None:
+    taskset = SubagentCommunicationTaskset(
+        SubagentCommunicationConfig(
+            split="eval",
+            families=("specialist_generic",),
+            instances_per_template=1,
+            available_experts=available_experts,
+        )
+    )
+    with pytest.raises(ValueError, match="available_experts"):
+        taskset.load()
+
+
 def test_free_document_topology_exposes_legal_graphs_without_a_gold_choice() -> None:
     task = SubagentCommunicationTaskset(
         SubagentCommunicationConfig(

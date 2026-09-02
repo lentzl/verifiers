@@ -33,6 +33,14 @@ Family = Literal[
     "document_adaptive_d1",
     "document_adaptive_d2",
     "document_adaptive_d3",
+    "specialist_local",
+    "specialist_generic",
+    "specialist_table_join",
+    "specialist_table_reconcile",
+    "specialist_source_ast",
+    "specialist_source_config",
+    "specialist_recursive_table",
+    "specialist_recursive_source",
 ]
 InstructionLevel = Literal["standard", "guided"]
 PromptContract = Literal["historical_v1", "explicit_bidirectional_v2"]
@@ -85,6 +93,41 @@ ADAPTIVE_DOCUMENT_DEPTHS: dict[Family, int] = {
     "document_adaptive_d1": 1,
     "document_adaptive_d2": 2,
     "document_adaptive_d3": 3,
+}
+SPECIALIST_FAMILIES: tuple[Family, ...] = (
+    "specialist_local",
+    "specialist_generic",
+    "specialist_table_join",
+    "specialist_table_reconcile",
+    "specialist_source_ast",
+    "specialist_source_config",
+    "specialist_recursive_table",
+    "specialist_recursive_source",
+)
+SPECIALIST_TERMINAL_FAMILIES: tuple[Family, ...] = (
+    "specialist_generic",
+    "specialist_table_join",
+    "specialist_table_reconcile",
+    "specialist_source_ast",
+    "specialist_source_config",
+)
+SPECIALIST_RECURSIVE_FAMILIES: tuple[Family, ...] = (
+    "specialist_recursive_table",
+    "specialist_recursive_source",
+)
+SPECIALIST_EXPERTS = {
+    "generic_worker": {
+        "capability": "General terminal file reading and straightforward Python calculations.",
+        "limitations": "No specialization for multi-artifact reconciliation or source structure.",
+    },
+    "table_analyst": {
+        "capability": "CSV and JSON joins, filters, grouping, reconciliation, and exact integer arithmetic.",
+        "limitations": "Not specialized for Python AST or source-configuration inspection.",
+    },
+    "source_inspector": {
+        "capability": "Python AST and source/configuration inspection with exact structural calculations.",
+        "limitations": "Not specialized for tabular joins or ledger reconciliation.",
+    },
 }
 TRAIN_VARIANTS = (0, 1, 2, 3)
 EVAL_VARIANTS = (4, 5)
@@ -147,6 +190,7 @@ class SubagentCommunicationData(vf.TaskData):
     coordinator_demonstrations: dict[str, str | None] | None = None
     reward_post_fan_in_control: bool = False
     reward_bidirectional_control: bool = False
+    preferred_expert: str | None = None
 
 
 def _weighted(values: list[int]) -> int:
@@ -387,6 +431,260 @@ def _adaptive_document_request(
     )
 
 
+def _specialist_registry(expert_ids: tuple[str, ...]) -> str:
+    unknown = set(expert_ids) - set(SPECIALIST_EXPERTS)
+    if unknown:
+        raise ValueError(f"unknown specialist registry entries: {sorted(unknown)}")
+    entries = []
+    for expert_id in expert_ids:
+        expert = SPECIALIST_EXPERTS[expert_id]
+        entries.append(
+            json.dumps(
+                {
+                    "expert_id": expert_id,
+                    "role": "terminal_worker",
+                    "capability": expert["capability"],
+                    "tools": ["ipython", "filesystem"],
+                    "limitations": expert["limitations"],
+                    "relative_cost": 1.0,
+                },
+                separators=(",", ":"),
+            )
+        )
+    return "[capability registry]\n" + "\n".join(entries)
+
+
+def _specialist_fixture(
+    family: Family,
+    variant: int,
+    instance: int,
+    seed: int,
+) -> tuple[dict[str, str], int, str, str | None, tuple[str, ...]]:
+    rng = random.Random(seed * 1_000_003 + variant * 10_007 + instance * 101)
+    base_family = {
+        "specialist_recursive_table": "specialist_table_join",
+        "specialist_recursive_source": "specialist_source_ast",
+    }.get(family, family)
+    root = f"/workspace/specialist-worker/v{variant}-i{instance}"
+    if base_family == "specialist_local":
+        values = [rng.randint(-20, 30) for _ in range(8 + variant % 3)]
+        return {}, _weighted(values), json.dumps(values), None, ()
+    if base_family == "specialist_generic":
+        values = [rng.randint(-30, 40) for _ in range(12 + variant % 3)]
+        path = f"{root}/values.json"
+        answer = _weighted(values)
+        files = {path: json.dumps(values)}
+        objective = (
+            f"Read {path} as a top-level JSON integer list. Compute "
+            f"{WEIGHTED_CHECKSUM_FORMULA}. Send exactly one compact JSON object "
+            "with integer key `value` to receiver_role='parent', then stop."
+        )
+        return files, answer, objective, "generic_worker", (path,)
+    if base_family == "specialist_table_join":
+        rates = {f"c{index}": rng.randint(1, 4) for index in range(4)}
+        rows = []
+        total = 0
+        for index in range(10 + variant):
+            customer = f"c{rng.randrange(4)}"
+            units = rng.randint(1, 8)
+            price = rng.randint(3, 17)
+            status = "posted" if (index + variant) % 3 else "void"
+            rows.append(f"t{index},{customer},{units},{price},{status}")
+            if status == "posted":
+                total += units * price * rates[customer]
+        csv_path = f"{root}/transactions.csv"
+        rate_path = f"{root}/rates.json"
+        files = {
+            csv_path: "transaction_id,customer,units,unit_price,status\n"
+            + "\n".join(rows)
+            + "\n",
+            rate_path: json.dumps(rates, sort_keys=True),
+        }
+        objective = (
+            f"Read {csv_path} and {rate_path}. Join each transaction to its customer multiplier, "
+            "keep only rows whose status is exactly `posted`, and sum "
+            "units * unit_price * multiplier. Send exactly one compact JSON object with integer "
+            "key `value` to receiver_role='parent', then stop."
+        )
+        return files, total, objective, "table_analyst", (csv_path, rate_path)
+    if base_family == "specialist_table_reconcile":
+        corrections: dict[str, int] = {}
+        rows = []
+        total = 0
+        for index in range(7 + variant % 2):
+            sku = f"sku-{index}"
+            opening = rng.randint(20, 80)
+            received = rng.randint(0, 25)
+            shipped = rng.randint(0, 30)
+            correction = rng.randint(-4, 6)
+            corrections[sku] = correction
+            rows.append(f"{sku},{opening},{received},{shipped}")
+            total += opening + received - shipped + correction
+        csv_path = f"{root}/inventory.csv"
+        correction_path = f"{root}/corrections.json"
+        files = {
+            csv_path: "sku,opening,received,shipped\n" + "\n".join(rows) + "\n",
+            correction_path: json.dumps(corrections, sort_keys=True),
+        }
+        objective = (
+            f"Read {csv_path} and {correction_path}. For every SKU compute opening + received "
+            "- shipped + its JSON correction, then sum the reconciled quantities across all SKUs. "
+            "Send exactly one compact JSON object with integer key `value` to "
+            "receiver_role='parent', then stop."
+        )
+        return files, total, objective, "table_analyst", (csv_path, correction_path)
+    if base_family == "specialist_source_ast":
+        function_counts = []
+        files = {}
+        for module_index, module in enumerate(("alpha", "beta")):
+            sync_count = 2 + (variant + module_index) % 3
+            async_count = 1 + (instance + module_index) % 2
+            decorated_count = 1 + module_index
+            lines = ["def trace(fn):\n    return fn\n"]
+            for index in range(sync_count):
+                decorator = "@trace\n" if index < decorated_count else ""
+                lines.append(
+                    f"{decorator}def sync_{index}(x):\n    return x + {index}\n"
+                )
+            for index in range(async_count):
+                lines.append(
+                    f"async def async_{index}(x):\n    return x * {index + 1}\n"
+                )
+            path = f"{root}/{module}.py"
+            files[path] = "\n".join(lines)
+            function_counts.append((sync_count + 1, async_count, decorated_count))
+        total = sum(
+            sync * 2 + async_count * 3 + decorated
+            for sync, async_count, decorated in function_counts
+        )
+        paths = tuple(sorted(files))
+        objective = (
+            f"Parse the complete Python files {paths[0]} and {paths[1]} with ast. Across both "
+            "files, count every FunctionDef (including helper functions), every AsyncFunctionDef, "
+            "and every function node with at least one decorator. Compute "
+            "2 * FunctionDef + 3 * AsyncFunctionDef + decorated_function_nodes. Send exactly one "
+            "compact JSON object with integer key `value` to receiver_role='parent', then stop."
+        )
+        return files, total, objective, "source_inspector", paths
+    if base_family == "specialist_source_config":
+        worker_count = rng.randint(2, 8)
+        timeout = rng.randint(10, 40)
+        enabled = [
+            name
+            for index, name in enumerate(("cache", "audit", "retry", "trace"))
+            if (variant + index) % 2
+        ]
+        toml_path = f"{root}/service.toml"
+        env_path = f"{root}/features.env"
+        files = {
+            toml_path: f"[runtime]\nworkers = {worker_count}\ntimeout_seconds = {timeout}\n",
+            env_path: "\n".join(
+                f"FEATURE_{name.upper()}={'true' if name in enabled else 'false'}"
+                for name in ("cache", "audit", "retry", "trace")
+            )
+            + "\n",
+        }
+        total = worker_count * timeout + len(enabled)
+        objective = (
+            f"Read {toml_path} with tomllib and {env_path} as KEY=value lines. Compute runtime "
+            "workers * timeout_seconds + the number of feature values exactly equal to `true`. "
+            "Send exactly one compact JSON object with integer key `value` to "
+            "receiver_role='parent', then stop."
+        )
+        return files, total, objective, "source_inspector", (toml_path, env_path)
+    raise ValueError(f"unsupported specialist family: {family}")
+
+
+def _specialist_assignment(objective: str, paths: tuple[str, ...]) -> str:
+    return "[terminal specialist assignment]\n" + json.dumps(
+        {"worker_name": "task-worker", "objective": objective, "paths": paths},
+        separators=(",", ":"),
+    )
+
+
+def _specialist_request(
+    family: Family,
+    objective: str,
+    paths: tuple[str, ...],
+    expert_ids: tuple[str, ...],
+) -> str:
+    registry = _specialist_registry(expert_ids)
+    assignment = _specialist_assignment(objective, paths)
+    recursive = family in SPECIALIST_RECURSIVE_FAMILIES
+    owns = family == "specialist_local"
+    manager_contract = (
+        "[recursive document coordinator session contract]\n"
+        "[recursive specialist coordinator session contract]\n"
+        "session_role=document_coordinator\n"
+        "is_root=false\n"
+        "has_parent=true\n"
+        "can_delegate=true\n"
+        "can_finalize_user=false\n"
+        "return_contract=exactly_one_parent_report\n"
+        "[local cognition facts]\n"
+        "owns_required_evidence=false\n"
+        "remaining_work_requires_decomposition=false\n"
+        "terminal_shards_ready=true\n"
+        f"{registry}\n"
+        f"{assignment}\n"
+        "Choose the terminal worker by public capability metadata. After its explicit report, "
+        "relay one JSON object with integer key `result` to receiver_role='parent', then stop.\n"
+        "specialist_recursive_contract_end=manager"
+    )
+    facts = (
+        "owns_required_evidence=true\n"
+        "remaining_work_requires_decomposition=false\n"
+        "terminal_shards_ready=false"
+        if owns
+        else (
+            "owns_required_evidence=false\n"
+            "remaining_work_requires_decomposition=true\n"
+            "terminal_shards_ready=false"
+            if recursive
+            else (
+                "owns_required_evidence=false\n"
+                "remaining_work_requires_decomposition=false\n"
+                "terminal_shards_ready=true"
+            )
+        )
+    )
+    if owns:
+        local_values = json.loads(objective)
+        if not isinstance(local_values, list) or not all(
+            isinstance(value, int) for value in local_values
+        ):
+            raise ValueError("specialist-local objective must be an integer list")
+        candidates = (
+            "[owned specialist-local values]\n"
+            f"{json.dumps(local_values, separators=(',', ':'))}\n"
+            "Candidate owned action: compute sum((index + 1) * value for index, value in "
+            "enumerate(values)) over the displayed integers."
+        )
+    elif recursive:
+        candidates = (
+            "Candidate decomposition action: admit exactly one coordinator named "
+            "specialist-manager and preserve this complete scoped contract:\n\n"
+            f"{manager_contract}"
+        )
+    else:
+        candidates = (
+            "Candidate terminal action: choose one registered terminal worker and delegate this "
+            "complete assignment without changing it:\n"
+            f"{assignment}"
+        )
+    return (
+        "[specialist worker routing contract]\n"
+        "Choose the cheapest sufficient local cognition from the public state and capability "
+        "registry. Author the generic local action and, only for terminal delegation, the "
+        "registered expert_id. The harness executes that exact choice and never replaces it.\n\n"
+        "[local cognition facts]\n"
+        f"{facts}\n"
+        f"{registry}\n\n"
+        f"{candidates}\n\n"
+        "When the selected work completes, return one JSON object with exactly integer key `result`."
+    )
+
+
 def _child_instruction(path: str) -> str:
     return (
         f"Read {path}. Its top-level JSON value is the integer list itself, not an object: bind "
@@ -446,7 +744,7 @@ def _expert_demonstration(
     child_paths: dict[str, str],
     followup_secret: int | None,
 ) -> str | None:
-    if family == "direct" or family in DOCUMENT_FAMILIES:
+    if family == "direct" or family in (*DOCUMENT_FAMILIES, *SPECIALIST_FAMILIES):
         return None
     if family == "followup":
         if followup_secret is None:
@@ -977,6 +1275,11 @@ def _completion_gate_source(
             "gamma-document-worker": 1,
         },
         "document_hierarchical": {"document-manager": 1},
+        **{family: {"task-worker": 1} for family in SPECIALIST_TERMINAL_FAMILIES},
+        **{
+            family: {"specialist-manager": 1}
+            for family in SPECIALIST_RECURSIVE_FAMILIES
+        },
     }.get(family, {})
     if required_child_messages is None:
         required_child_messages = default_child_messages
@@ -1018,6 +1321,8 @@ def _completion_gate_source(
         "parallel",
         "document_flat",
         "document_hierarchical",
+        *SPECIALIST_TERMINAL_FAMILIES,
+        *SPECIALIST_RECURSIVE_FAMILIES,
     }:
         gate_feedback = (
             "completion gate: final JSON is not ready. Preserve every existing delegation: do not "
@@ -1346,6 +1651,7 @@ def _task_prompt(
     instruction_level: InstructionLevel,
     prompt_contract: PromptContract = "historical_v1",
     utility_policy_profile: UtilityPolicyProfile = "historical_v1",
+    available_experts: tuple[str, ...] = tuple(SPECIALIST_EXPERTS),
 ) -> tuple[
     str,
     dict[str, int],
@@ -1353,13 +1659,17 @@ def _task_prompt(
     dict[str, str],
     dict[str, str],
     int | None,
+    str | None,
 ]:
     rng = random.Random(seed * 1_000_003 + variant * 10_007 + instance * 101)
-    prefix = "Return one JSON object with exactly the requested keys and integer values."
-    if family not in DOCUMENT_FAMILIES and (
+    prefix = (
+        "Return one JSON object with exactly the requested keys and integer values."
+    )
+    if family not in (*DOCUMENT_FAMILIES, *SPECIALIST_FAMILIES) and (
         prompt_contract == "historical_v1" or family in {"direct", "single", "parallel"}
     ):
         prefix = f"{prefix} A shard checksum is sum((index + 1) * value)."
+    preferred_expert = None
 
     if family == "direct":
         values = _values(rng, 8 + variant % 3)
@@ -1436,10 +1746,37 @@ def _task_prompt(
             "then stop calling tools for this turn. "
             f"{MESSAGE_DELIVERY_GUIDANCE}"
         )
+    elif family in SPECIALIST_FAMILIES:
+        files, result, objective, preferred_expert, paths = _specialist_fixture(
+            family, variant, instance, seed
+        )
+        answer = {"result": result}
+        secret = None
+        request = _specialist_request(family, objective, paths, available_experts)
+        if family == "specialist_local":
+            children = ()
+            child_paths = {}
+            guidance = (
+                "Keep the displayed computation local and do not activate a worker."
+            )
+        elif family in SPECIALIST_RECURSIVE_FAMILIES:
+            children = ("specialist-manager",)
+            child_paths = {"specialist-manager": paths[0].rsplit("/", 1)[0]}
+            guidance = (
+                "Delegate the still-decomposable objective to one coordinator. That coordinator "
+                "must choose a terminal worker from the same public registry."
+            )
+        else:
+            children = ("task-worker",)
+            child_paths = {"task-worker": paths[0]}
+            guidance = (
+                "Choose one registered terminal worker by its public capabilities, preserve the "
+                "complete assignment, and wait for its explicit report."
+            )
     elif family in DOCUMENT_FAMILIES:
         root, files, answer = _document_fixture(variant, instance, seed)
         secret = None
-        schema = "{" + ", ".join(f'\"{key}\": value' for key in answer) + "}"
+        schema = "{" + ", ".join(f'"{key}": value' for key in answer) + "}"
         if family == "document_direct":
             request = (
                 f"Inspect every Markdown file in {root} yourself using the CLI or IPython; do "
@@ -1716,6 +2053,7 @@ def _task_prompt(
         child_paths,
         files,
         secret,
+        preferred_expert,
     )
 
 
@@ -2327,9 +2665,21 @@ def _protocol_behavior(
             + float(repeated == 0)
         ) / 6
 
-    if family in {"direct", "document_direct"} or selected_free_topology == "direct":
+    if (
+        family in {"direct", "document_direct", "specialist_local"}
+        or selected_free_topology == "direct"
+    ):
         checks = [not spawns, not parent_messages, not child_messages, repeated == 0]
-    elif family in {"single", "document_hierarchical"} or selected_free_topology == "hierarchical":
+    elif (
+        family
+        in {
+            "single",
+            "document_hierarchical",
+            *SPECIALIST_TERMINAL_FAMILIES,
+            *SPECIALIST_RECURSIVE_FAMILIES,
+        }
+        or selected_free_topology == "hierarchical"
+    ):
         checks = [
             len(spawns) == 1,
             retained == len(expected_children),
@@ -2657,7 +3007,7 @@ class SubagentCommunicationTask(
         if not self._include_standard_rewards():
             return 0.0
         accuracy = _answer_score(trace.last_reply, self.data.answer)
-        if self.data.family in {"direct", "document_direct"}:
+        if self.data.family in {"direct", "document_direct", "specialist_local"}:
             return accuracy
         behavior = _protocol_behavior(
             trace,
@@ -2793,12 +3143,28 @@ class SubagentCommunicationConfig(vf.TasksetConfig):
     ownership_guided: bool = False
     reward_post_fan_in_control: bool = False
     reward_bidirectional_control: bool = False
+    available_experts: tuple[str, ...] = tuple(SPECIALIST_EXPERTS)
 
 
-class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, SubagentCommunicationConfig]):
+class SubagentCommunicationTaskset(
+    vf.Taskset[SubagentCommunicationTask, SubagentCommunicationConfig]
+):
     def load(self) -> list[SubagentCommunicationTask]:
         if self.config.teacher_conditioned and self.config.ownership_guided:
-            raise ValueError("teacher_conditioned and ownership_guided are mutually exclusive")
+            raise ValueError(
+                "teacher_conditioned and ownership_guided are mutually exclusive"
+            )
+        if not self.config.available_experts:
+            raise ValueError("available_experts must contain at least generic_worker")
+        unknown_experts = set(self.config.available_experts) - set(SPECIALIST_EXPERTS)
+        if unknown_experts:
+            raise ValueError(f"unknown available_experts: {sorted(unknown_experts)}")
+        if len(set(self.config.available_experts)) != len(
+            self.config.available_experts
+        ):
+            raise ValueError("available_experts must be unique")
+        if "generic_worker" not in self.config.available_experts:
+            raise ValueError("available_experts must retain generic_worker")
         variants = TRAIN_VARIANTS if self.config.split == "train" else EVAL_VARIANTS
         tasks = []
         instances = range(
@@ -2808,7 +3174,15 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
         for instance in instances:
             for variant in variants:
                 for family in self.config.families:
-                    prompt, answer, children, child_paths, files, secret = _task_prompt(
+                    (
+                        prompt,
+                        answer,
+                        children,
+                        child_paths,
+                        files,
+                        secret,
+                        preferred_expert,
+                    ) = _task_prompt(
                         family,
                         variant,
                         instance,
@@ -2816,6 +3190,7 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                         self.config.instruction_level,
                         self.config.prompt_contract,
                         self.config.utility_policy_profile,
+                        self.config.available_experts,
                     )
                     demonstration = _expert_demonstration(
                         family,
@@ -2889,6 +3264,7 @@ class SubagentCommunicationTaskset(vf.Taskset[SubagentCommunicationTask, Subagen
                                 coordinator_demonstrations=coordinator_demonstrations,
                                 reward_post_fan_in_control=self.config.reward_post_fan_in_control,
                                 reward_bidirectional_control=self.config.reward_bidirectional_control,
+                                preferred_expert=preferred_expert,
                             ),
                             self.config.task,
                         )
