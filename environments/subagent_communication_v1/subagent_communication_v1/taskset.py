@@ -313,6 +313,22 @@ def _document_depth3_manager_instruction(root: str) -> str:
     )
 
 
+def _without_adaptive_topology_labels(contract: str) -> str:
+    """Remove scorer-only topology labels from an adaptive live contract."""
+
+    replacements = {
+        "document_coordinator_level=top\n": "",
+        "document_coordinator_level=subgroup\n": "",
+        "maximum_descendant_depth=2\n": "",
+        "maximum_descendant_depth=1\n": "",
+        "depth3_contract_end=top": "adaptive_recursive_contract_end=coordinator",
+        "depth3_contract_end=subgroup": "adaptive_recursive_contract_end=group",
+    }
+    for old, new in replacements.items():
+        contract = contract.replace(old, new)
+    return contract
+
+
 def _adaptive_document_request(
     family: Family,
     root: str,
@@ -327,7 +343,7 @@ def _adaptive_document_request(
         f"- {child}: {_document_worker_instruction(path)}"
         for child, path in flat_paths.items()
     )
-    manager_prompt = (
+    manager_prompt = _without_adaptive_topology_labels(
         _document_depth3_manager_instruction(root)
         if required_depth == 3
         else _document_manager_instruction(root)

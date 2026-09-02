@@ -476,6 +476,9 @@ def test_adaptive_document_tasks_expose_local_facts_without_topology_labels(
     assert "document_topology" not in prompt
     assert "Legal topology" not in prompt
     assert "coordination level" not in prompt
+    assert "document_coordinator_level=" not in prompt
+    assert "maximum_descendant_depth=" not in prompt
+    assert "depth3_contract_end=" not in prompt
     assert task.data.expected_children == ()
     assert set(task.data.child_paths) == {
         "alpha-document-worker",
