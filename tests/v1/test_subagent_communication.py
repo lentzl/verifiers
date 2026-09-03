@@ -421,6 +421,49 @@ def test_specialist_control_registry_keeps_same_fixture_with_only_generic_worker
     assert population.prompt.count('"expert_id":"table_analyst"') == 1
 
 
+def test_specialist_registry_exposes_structured_affordances_and_public_costs() -> None:
+    task = SubagentCommunicationTaskset(
+        SubagentCommunicationConfig(
+            split="eval",
+            families=("specialist_generic",),
+            instances_per_template=1,
+            specialist_relative_costs={
+                "generic_worker": 0.5,
+                "table_analyst": 1.0,
+                "source_inspector": 1.0,
+            },
+        )
+    ).load()[0]
+
+    registry = [
+        json.loads(line)
+        for line in task.data.prompt.splitlines()
+        if line.startswith('{"expert_id"')
+    ]
+    assert {row["expert_id"]: row["relative_cost"] for row in registry} == {
+        "generic_worker": 0.5,
+        "table_analyst": 1.0,
+        "source_inspector": 1.0,
+    }
+    assert {
+        row["expert_id"]: row["affordances"] for row in registry
+    }["table_analyst"] == ["single_json_arithmetic", "multi_artifact_table"]
+
+
+def test_specialist_registry_rejects_incomplete_public_costs() -> None:
+    taskset = SubagentCommunicationTaskset(
+        SubagentCommunicationConfig(
+            split="eval",
+            families=("specialist_generic",),
+            instances_per_template=1,
+            specialist_relative_costs={"generic_worker": 0.5},
+        )
+    )
+
+    with pytest.raises(ValueError, match="specialist_relative_costs"):
+        taskset.load()
+
+
 @pytest.mark.parametrize(
     "available_experts",
     [(), ("table_analyst",), ("generic_worker", "not_registered")],

@@ -118,15 +118,18 @@ SPECIALIST_RECURSIVE_FAMILIES: tuple[Family, ...] = (
 SPECIALIST_EXPERTS = {
     "generic_worker": {
         "capability": "General terminal file reading and straightforward Python calculations.",
-        "limitations": "No specialization for multi-artifact reconciliation or source structure.",
+        "affordances": ["single_json_arithmetic"],
+        "limitations": "Single JSON artifact only; no multi-artifact reconciliation or source/config structure.",
     },
     "table_analyst": {
         "capability": "CSV and JSON joins, filters, grouping, reconciliation, and exact integer arithmetic.",
-        "limitations": "Not specialized for Python AST or source-configuration inspection.",
+        "affordances": ["single_json_arithmetic", "multi_artifact_table"],
+        "limitations": "No Python AST or source-configuration inspection.",
     },
     "source_inspector": {
         "capability": "Python AST and source/configuration inspection with exact structural calculations.",
-        "limitations": "Not specialized for tabular joins or ledger reconciliation.",
+        "affordances": ["source_config_inspection"],
+        "limitations": "No tabular joins, ledger reconciliation, or generic JSON-list arithmetic.",
     },
 }
 TRAIN_VARIANTS = (0, 1, 2, 3)
@@ -431,10 +434,21 @@ def _adaptive_document_request(
     )
 
 
-def _specialist_registry(expert_ids: tuple[str, ...]) -> str:
+def _specialist_registry(
+    expert_ids: tuple[str, ...],
+    relative_costs: dict[str, float] | None = None,
+) -> str:
     unknown = set(expert_ids) - set(SPECIALIST_EXPERTS)
     if unknown:
         raise ValueError(f"unknown specialist registry entries: {sorted(unknown)}")
+    costs = relative_costs or {expert_id: 1.0 for expert_id in expert_ids}
+    if set(costs) != set(expert_ids) or not all(
+        isinstance(cost, (int, float))
+        and not isinstance(cost, bool)
+        and cost > 0
+        for cost in costs.values()
+    ):
+        raise ValueError("specialist relative costs must cover the visible registry")
     entries = []
     for expert_id in expert_ids:
         expert = SPECIALIST_EXPERTS[expert_id]
@@ -444,9 +458,10 @@ def _specialist_registry(expert_ids: tuple[str, ...]) -> str:
                     "expert_id": expert_id,
                     "role": "terminal_worker",
                     "capability": expert["capability"],
+                    "affordances": expert["affordances"],
                     "tools": ["ipython", "filesystem"],
                     "limitations": expert["limitations"],
-                    "relative_cost": 1.0,
+                    "relative_cost": costs[expert_id],
                 },
                 separators=(",", ":"),
             )
@@ -607,8 +622,9 @@ def _specialist_request(
     objective: str,
     paths: tuple[str, ...],
     expert_ids: tuple[str, ...],
+    relative_costs: dict[str, float] | None = None,
 ) -> str:
-    registry = _specialist_registry(expert_ids)
+    registry = _specialist_registry(expert_ids, relative_costs)
     assignment = _specialist_assignment(objective, paths)
     recursive = family in SPECIALIST_RECURSIVE_FAMILIES
     owns = family == "specialist_local"
@@ -1652,6 +1668,7 @@ def _task_prompt(
     prompt_contract: PromptContract = "historical_v1",
     utility_policy_profile: UtilityPolicyProfile = "historical_v1",
     available_experts: tuple[str, ...] = tuple(SPECIALIST_EXPERTS),
+    specialist_relative_costs: dict[str, float] | None = None,
 ) -> tuple[
     str,
     dict[str, int],
@@ -1752,7 +1769,13 @@ def _task_prompt(
         )
         answer = {"result": result}
         secret = None
-        request = _specialist_request(family, objective, paths, available_experts)
+        request = _specialist_request(
+            family,
+            objective,
+            paths,
+            available_experts,
+            specialist_relative_costs,
+        )
         if family == "specialist_local":
             children = ()
             child_paths = {}
@@ -3144,6 +3167,11 @@ class SubagentCommunicationConfig(vf.TasksetConfig):
     reward_post_fan_in_control: bool = False
     reward_bidirectional_control: bool = False
     available_experts: tuple[str, ...] = tuple(SPECIALIST_EXPERTS)
+    specialist_relative_costs: dict[str, float] = Field(
+        default_factory=lambda: {
+            expert_id: 1.0 for expert_id in SPECIALIST_EXPERTS
+        }
+    )
 
 
 class SubagentCommunicationTaskset(
@@ -3165,6 +3193,23 @@ class SubagentCommunicationTaskset(
             raise ValueError("available_experts must be unique")
         if "generic_worker" not in self.config.available_experts:
             raise ValueError("available_experts must retain generic_worker")
+        if (
+            not set(self.config.available_experts).issubset(
+                self.config.specialist_relative_costs
+            )
+            or not set(self.config.specialist_relative_costs).issubset(
+                SPECIALIST_EXPERTS
+            )
+            or not all(
+                isinstance(cost, (int, float))
+                and not isinstance(cost, bool)
+                and cost > 0
+                for cost in self.config.specialist_relative_costs.values()
+            )
+        ):
+            raise ValueError(
+                "specialist_relative_costs must be positive and cover available_experts"
+            )
         variants = TRAIN_VARIANTS if self.config.split == "train" else EVAL_VARIANTS
         tasks = []
         instances = range(
@@ -3191,6 +3236,10 @@ class SubagentCommunicationTaskset(
                         self.config.prompt_contract,
                         self.config.utility_policy_profile,
                         self.config.available_experts,
+                        {
+                            expert_id: self.config.specialist_relative_costs[expert_id]
+                            for expert_id in self.config.available_experts
+                        },
                     )
                     demonstration = _expert_demonstration(
                         family,
