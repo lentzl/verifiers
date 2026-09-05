@@ -85,12 +85,12 @@ class SourceWorkerFirstCallConfig(SubagentCommunicationConfig):
     split: Literal["train"] = "train"
     families: tuple[
         Literal["specialist_source_ast", "specialist_source_config"], ...
-    ] = Field(SOURCE_FAMILIES, min_length=2, max_length=2)
+    ] = Field(min_length=1, max_length=1)
 
     @model_validator(mode="after")
     def validate_training_partition(self):
-        if tuple(self.families) != SOURCE_FAMILIES:
-            raise ValueError("source-worker GRPO requires balanced AST/config families")
+        if len(self.families) != 1 or self.families[0] not in SOURCE_FAMILIES:
+            raise ValueError("source-worker GRPO requires one explicit source family")
         if self.teacher_conditioned or self.ownership_guided:
             raise ValueError("source-worker GRPO may not inject demonstrations")
         return self
@@ -105,12 +105,11 @@ class SourceWorkerFirstCallTaskset(
             SourceWorkerFirstCallTask(task.data, self.config.task)
             for task in base_tasks
         ]
-        family_counts = {
-            family: sum(task.data.family == family for task in tasks)
-            for family in SOURCE_FAMILIES
-        }
-        if len(set(family_counts.values())) != 1:
-            raise ValueError(f"unbalanced source-worker taskset: {family_counts}")
+        expected_family = self.config.families[0]
+        if not tasks or any(task.data.family != expected_family for task in tasks):
+            raise ValueError(
+                f"source-worker taskset leaked outside {expected_family}"
+            )
         if any(task.data.template_variant not in {0, 1, 2, 3} for task in tasks):
             raise ValueError("source-worker training leaked an eval-only template variant")
         return tasks
