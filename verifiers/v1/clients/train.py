@@ -15,7 +15,12 @@ from renderers import RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus
 
 from verifiers.v1.clients.base import build_async_openai
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
+from verifiers.v1.clients.client import (
+    CLIENT_SESSION_ID_HEADER,
+    SESSION_ID_HEADER,
+    Client,
+    RelayReply,
+)
 from verifiers.v1.configs.client import TrainClientConfig
 from verifiers.v1.dialects import FINISH_REASONS, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
@@ -37,6 +42,16 @@ from verifiers.v1.types import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+def forwarded_session_headers(
+    session_id: str | None, headers: Mapping[str, str] | None
+) -> dict[str, str] | None:
+    forwarded = {SESSION_ID_HEADER: session_id} if session_id else {}
+    client_session_id = headers.get("session_id") if headers else None
+    if client_session_id:
+        forwarded[CLIENT_SESSION_ID_HEADER] = client_session_id
+    return forwarded or None
 
 
 def tool_to_wire(tool: Tool) -> dict:
@@ -380,9 +395,7 @@ class TrainClient(Client):
                     prompt_attribution=prompt_attribution,
                     tools=wire_tools,
                     sampling_params=sampling_params,
-                    extra_headers={SESSION_ID_HEADER: session_id}
-                    if session_id
-                    else None,
+                    extra_headers=forwarded_session_headers(session_id, headers),
                 )
             except RendererOverlongPromptError as e:
                 raise OverlongPromptError(str(e)) from e

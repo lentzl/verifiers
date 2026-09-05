@@ -3,7 +3,9 @@ from types import SimpleNamespace
 import pytest
 
 from verifiers.v1.clients import EvalClientConfig
+from verifiers.v1.clients.client import CLIENT_SESSION_ID_HEADER, SESSION_ID_HEADER
 from verifiers.v1.clients.eval import EvalClient
+from verifiers.v1.clients.train import forwarded_session_headers
 from verifiers.v1.dialects import ChatDialect
 from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.types import SamplingConfig
@@ -52,6 +54,18 @@ def test_record_call_preserves_client_session_id() -> None:
     )
 
     assert session.trace.calls[0].client_session_id == "prime-agent-child"
+
+
+def test_train_client_forwards_branch_id_separately_from_rollout_id() -> None:
+    headers = forwarded_session_headers(
+        session_id="rollout-trace",
+        headers={"session_id": "prime-agent-child"},
+    )
+
+    assert headers == {
+        SESSION_ID_HEADER: "rollout-trace",
+        CLIENT_SESSION_ID_HEADER: "prime-agent-child",
+    }
 
 
 def test_chat_eval_max_tokens_removes_competing_program_alias() -> None:

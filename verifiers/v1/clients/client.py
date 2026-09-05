@@ -17,6 +17,9 @@ SESSION_ID_HEADER = "X-Session-ID"
 """Per-rollout routing header (the trace id, same value every turn), so a session-affinity
 router pins a rollout's turns to one engine and its growing prefix stays KV-cached."""
 
+CLIENT_SESSION_ID_HEADER = "X-Client-Session-ID"
+"""Per-branch Prime Agent session id, forwarded separately from rollout affinity."""
+
 
 @dataclass
 class RelayReply:
