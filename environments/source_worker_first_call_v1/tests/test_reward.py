@@ -1,9 +1,18 @@
+import importlib.util
+import sys
+from pathlib import Path
+
 import pytest
-from source_worker_first_call_v1.reward import (
-    CellEvidence,
-    is_designated_source_inspector_task,
-    score_first_call,
-)
+
+REWARD_PATH = Path(__file__).parents[1] / "source_worker_first_call_v1/reward.py"
+SPEC = importlib.util.spec_from_file_location("source_worker_first_call_reward_test", REWARD_PATH)
+assert SPEC is not None and SPEC.loader is not None
+REWARD = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = REWARD
+SPEC.loader.exec_module(REWARD)
+CellEvidence = REWARD.CellEvidence
+is_designated_source_inspector_task = REWARD.is_designated_source_inspector_task
+score_first_call = REWARD.score_first_call
 
 AST_PATHS = ("/workspace/sample/alpha.py", "/workspace/sample/beta.py")
 CONFIG_PATHS = ("/workspace/sample/service.toml", "/workspace/sample/features.env")
