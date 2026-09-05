@@ -9,6 +9,13 @@ from typing import Literal
 
 Family = Literal["specialist_source_ast", "specialist_source_config"]
 
+SOURCE_INSPECTOR_TASK_MARKERS = (
+    "[task from parent]",
+    "[selected terminal capability]",
+    "expert_id=source_inspector",
+    "session_role=terminal_worker",
+)
+
 
 @dataclass(frozen=True)
 class CellEvidence:
@@ -84,18 +91,13 @@ def _string_literals(tree: ast.AST | None) -> set[str]:
 def _bound_iterable_paths(tree: ast.AST, variable: str) -> set[str]:
     paths: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
-            if node.target.id == variable:
-                paths.update(_string_literals(node.iter))
-                if isinstance(node.iter, ast.Name):
-                    paths.update(_assigned_paths(tree, node.iter.id))
-        elif isinstance(node, ast.comprehension) and isinstance(
+        is_bound_iterator = isinstance(node, (ast.For, ast.comprehension)) and isinstance(
             node.target, ast.Name
-        ):
-            if node.target.id == variable:
-                paths.update(_string_literals(node.iter))
-                if isinstance(node.iter, ast.Name):
-                    paths.update(_assigned_paths(tree, node.iter.id))
+        )
+        if is_bound_iterator and node.target.id == variable:
+            paths.update(_string_literals(node.iter))
+            if isinstance(node.iter, ast.Name):
+                paths.update(_assigned_paths(tree, node.iter.id))
     return paths
 
 
@@ -175,6 +177,72 @@ def _correct_api(family: Family, required_paths: tuple[str, ...], tree: ast.AST 
     raise ValueError(f"unsupported source-worker family: {family}")
 
 
+def _has_nonconstant_arithmetic(tree: ast.AST | None) -> bool:
+    if tree is None:
+        return False
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.BinOp)
+            and isinstance(node.op, (ast.Add, ast.Mult))
+            and not (
+                isinstance(node.left, ast.Constant)
+                and isinstance(node.right, ast.Constant)
+            )
+        ):
+            return True
+        if isinstance(node, ast.Call) and _call_name(node) in {"sum", "len"}:
+            return True
+    return False
+
+
+def _attempts_family_computation(family: Family, tree: ast.AST | None) -> bool:
+    """Require source-family work beyond merely opening or parsing files."""
+
+    calls = _calls(tree)
+    names = {_call_name(call) for call in calls}
+    attributes = {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    } if tree is not None else set()
+    if family == "specialist_source_ast":
+        structural_targets = {
+            "FunctionDef",
+            "AsyncFunctionDef",
+            "decorator_list",
+        }
+        return (
+            "ast.parse" in names
+            and "ast.walk" in names
+            and bool(attributes & structural_targets)
+            and _has_nonconstant_arithmetic(tree)
+        )
+    if family == "specialist_source_config":
+        has_true_comparison = any(
+            isinstance(node, ast.Compare)
+            and any(
+                isinstance(comparator, ast.Constant)
+                and comparator.value == "true"
+                for comparator in node.comparators
+            )
+            for node in ast.walk(tree)
+        ) if tree is not None else False
+        return (
+            ("tomllib.loads" in names or "tomllib.load" in names)
+            and any(_has_split_key_value(call) for call in calls)
+            and has_true_comparison
+            and _has_nonconstant_arithmetic(tree)
+        )
+    raise ValueError(f"unsupported source-worker family: {family}")
+
+
+def is_designated_source_inspector_task(text: str) -> bool:
+    """Recognize only the harness-authored terminal source-worker assignment."""
+
+    stripped = text.lstrip()
+    return stripped.startswith(SOURCE_INSPECTOR_TASK_MARKERS[0]) and all(
+        marker in stripped for marker in SOURCE_INSPECTOR_TASK_MARKERS[1:]
+    )
+
+
 def _parent_sends(tree: ast.AST | None) -> list[ast.Call]:
     return [
         call
@@ -206,7 +274,18 @@ def score_first_call(
     all_sends = [call for tree in all_trees for call in _parent_sends(tree)]
     first_sends = _parent_sends(first_tree)
 
-    exception_free = bool(first and first_tree is not None and not _failed(first.output))
+    # A syntactically valid, quiet cell is not useful source work.  The first
+    # call earns its smallest positive component only when its observed
+    # exception-free execution also reads every assigned path and attempts the
+    # requested family computation.  This keeps silence, early stopping, and
+    # roster/transcript/goal inspection at zero rather than above partial work.
+    exception_free = bool(
+        first
+        and first_tree is not None
+        and not _failed(first.output)
+        and set(required_paths).issubset(_read_path_coverage(first_tree))
+        and _attempts_family_computation(family, first_tree)
+    )
     correct_api = exception_free and _correct_api(family, required_paths, first_tree)
     compact = json.dumps({"value": expected_value}, separators=(",", ":"))
     # A later exact report earns bounded recovery credit, but never atomic credit.
