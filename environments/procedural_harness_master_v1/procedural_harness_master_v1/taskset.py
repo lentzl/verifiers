@@ -60,6 +60,8 @@ CurriculumRung = Literal[
     "natural_n1b",
     "natural_direct_control",
     "natural_n2",
+    "json_max_direct_raw",
+    "json_max_two_shard",
 ]
 COMPLETION_GATE_PATH = "/workspace/.procedural-harness-master/completion_gate.py"
 COMPLETION_GATE_FEEDBACK = (
@@ -734,8 +736,9 @@ def _contract_behavior(
                 ):
                     local_access_positions.append((path, position))
 
-    for _, position in local_access_positions:
+    for path, position in local_access_positions:
         mark("coordinator_read_local", position)
+        mark(f"coordinator_read_local:{path}", position)
     manifest_path = next((path for path in local_paths if "verification" in path), None)
     if manifest_path is not None:
         for path, position in local_access_positions:
@@ -1813,7 +1816,13 @@ class ProceduralHarnessMasterTask(
             if self.data.family in {"followup", "atomic_followup", "natural_n2"}
             else "single"
             if self.data.family
-            in {"natural_n1", "natural_n1a", "natural_n1a_local", "natural_n1b"}
+            in {
+                "natural_n1",
+                "natural_n1a",
+                "natural_n1a_local",
+                "natural_n1b",
+                "json_max_two_shard",
+            }
             else "direct"
         )
         final_answer = self.data.oracle["final_answer"]

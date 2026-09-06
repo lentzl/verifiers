@@ -239,6 +239,57 @@ def test_natural_direct_control_allows_local_compute_but_forbids_delegation() ->
     assert str(result) not in prompt
 
 
+def test_json_max_calibration_pairs_raw_direct_and_two_shard_evidence() -> None:
+    for split in ("train_gen", "valid_gen", "ood_gen"):
+        for index in range(18):
+            direct = MODULE.generate_curriculum_episode(
+                "json_max_direct_raw", split, index
+            )
+            composed = MODULE.generate_curriculum_episode(
+                "json_max_two_shard", split, index
+            )
+            MODULE.validate_row(direct)
+            MODULE.validate_row(composed)
+
+            direct_files = direct["public"]["workspace_files"]
+            composed_files = composed["public"]["workspace_files"]
+            private_files = composed["oracle"]["private_resources"]
+            assert direct["seed"] == composed["seed"]
+            assert direct["oracle"]["final_answer"] == composed["oracle"][
+                "final_answer"
+            ]
+            assert direct_files == composed_files | private_files
+            assert len(direct_files) == 2
+            assert len(composed_files) == len(private_files) == 1
+            assert direct["oracle"]["children"] == []
+            assert len(composed["oracle"]["children"]) == 1
+
+            shard_maxima = [max(json.loads(text).values()) for text in direct_files.values()]
+            answer = direct["oracle"]["final_answer"]
+            assert sorted((answer["remote_max"], answer["local_max"])) == sorted(
+                shard_maxima
+            )
+            assert answer["global_max"] == max(shard_maxima)
+            assert direct["generator_version"] == MODULE.JSON_MAX_CALIBRATION_VERSION
+            assert composed["generator_version"] == MODULE.JSON_MAX_CALIBRATION_VERSION
+            assert direct["metadata"]["semantic_family"] == "json_max"
+            assert composed["metadata"]["semantic_family"] == "json_max"
+
+            direct_required = set(
+                direct["oracle"]["trajectory_contract"]["required_atoms"]
+            )
+            composed_required = set(
+                composed["oracle"]["trajectory_contract"]["required_atoms"]
+            )
+            assert {
+                f"coordinator_read_local:{path}" for path in direct_files
+            } <= direct_required
+            local_path = next(iter(composed_files))
+            private_path = next(iter(private_files))
+            assert f"coordinator_read_local:{local_path}" in composed_required
+            assert f"coordinator_read_local:{private_path}" not in composed_required
+
+
 def test_natural_n2_holds_out_a_composition_graph_for_ood() -> None:
     train_variants = {
         MODULE.generate_curriculum_episode("natural_n2", "train_gen", index)[

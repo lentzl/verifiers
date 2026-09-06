@@ -33,9 +33,12 @@ CurriculumRung = Literal[
     "natural_n1b",
     "natural_direct_control",
     "natural_n2",
+    "json_max_direct_raw",
+    "json_max_two_shard",
 ]
 CURRICULUM_VERSION = "2026-08-18.harness-actions-v7"
 CAUSAL_N1_CURRICULUM_VERSION = "2026-08-21.causal-v3"
+JSON_MAX_CALIBRATION_VERSION = "2026-09-06.json-max-v1"
 # Keep episode assignments fixed when public contract wording is clarified.
 CURRICULUM_SEED_VERSION = "2026-08-16.harness-actions-v1"
 
@@ -114,6 +117,14 @@ SCHEMAS = {
     "natural_n1b": '{"finding": <integer>, "parameter": <integer>, "result": <integer>}',
     "natural_direct_control": '{"finding": <integer>, "parameter": <integer>, "result": <integer>}',
     "natural_n2": '{"finding": <integer>, "parameter": <integer>, "result": <integer>}',
+    "json_max_direct_raw": (
+        '{"remote_max": <integer>, "local_max": <integer>, '
+        '"global_max": <integer>}'
+    ),
+    "json_max_two_shard": (
+        '{"remote_max": <integer>, "local_max": <integer>, '
+        '"global_max": <integer>}'
+    ),
 }
 
 
@@ -425,6 +436,50 @@ def _pick_resource(
     return _resource(rng.choice(families), root, slot, rng)
 
 
+def _json_max_resource(
+    split: Split,
+    index: int,
+    root: str,
+    slot: str,
+    rng: random.Random,
+) -> Resource:
+    lengths = {
+        "train_gen": (4, 7, 10),
+        "valid_gen": (5, 9, 12),
+        "ood_gen": (6, 11, 15),
+    }[split]
+    prefixes = {
+        "train_gen": ("m", "score", "value"),
+        "valid_gen": ("metric", "reading"),
+        "ood_gen": ("signal", "measure"),
+    }[split]
+    length = lengths[(index + (0 if slot == "review" else 1)) % len(lengths)]
+    prefix = prefixes[(index + (0 if slot == "review" else 1)) % len(prefixes)]
+    values = [rng.randint(-200, 200) for _ in range(length)]
+    case = (index + (0 if slot == "review" else 3)) % 5
+    if case == 0:
+        values = [-rng.randint(1, 200) for _ in range(length)]
+    else:
+        high = max(values) + rng.randint(1, 50)
+        position = {1: 0, 2: length // 2, 3: length - 1}.get(case)
+        if position is None:
+            first = length // 3
+            second = max(first + 1, 2 * length // 3)
+            high = max(values) + rng.randint(1, 50)
+            values[first] = high
+            values[second] = high
+        else:
+            values[position] = high
+    mapping = {f"{prefix}{item}": value for item, value in enumerate(values)}
+    return Resource(
+        family="json_max",
+        path=f"{root}/{slot}.json",
+        content=json.dumps(mapping, sort_keys=True),
+        result=max(mapping.values()),
+        operation="return the largest JSON integer value",
+    )
+
+
 def _combine(values: list[int | str], offset: int) -> int | str:
     if all(isinstance(x, int) for x in values):
         return sum(int(x) for x in values) + offset
@@ -534,6 +589,175 @@ def _natural_control_boundary(
             "after answering it, the next valid event is the completed reviewer report."
         )
     return f" {invalidity} {next_event}"
+
+
+def _json_max_calibration_episode(
+    rung: Literal["json_max_direct_raw", "json_max_two_shard"],
+    split: Split,
+    index: int,
+    seed: int,
+    rng: random.Random,
+    style: str,
+    child_name: str,
+) -> dict[str, Any]:
+    scenario = NATURAL_SCENARIOS[split][index % len(NATURAL_SCENARIOS[split])]
+    root = _root(split, index, rng)
+    remote = _json_max_resource(split, index, root, "review", rng)
+    local = _json_max_resource(split, index, root, "coordinator", rng)
+    answer = {
+        "remote_max": int(remote.result),
+        "local_max": int(local.result),
+        "global_max": max(int(remote.result), int(local.result)),
+    }
+    intro = _natural_intro(style, scenario)
+    schema = SCHEMAS[rung]
+
+    if rung == "json_max_direct_raw":
+        prompt = (
+            f"{intro} The coordinator owns two raw JSON evidence shards at "
+            f"{remote.path} and {local.path}. For each shard, return the largest JSON "
+            "integer value, then publish the larger of those two maxima as global_max. "
+            f"Do not delegate. Return {schema}."
+        )
+        ownership = {
+            remote.path: {
+                "owner": "coordinator",
+                "family": remote.family,
+                "operation": remote.operation,
+            },
+            local.path: {
+                "owner": "coordinator",
+                "family": local.family,
+                "operation": local.operation,
+            },
+        }
+        files = {remote.path: remote.content, local.path: local.content}
+        private_resources: dict[str, str] = {}
+        children: list[dict[str, Any]] = []
+        expected_route = "direct"
+        contract = _contract(
+            [
+                f"coordinator_read_local:{remote.path}",
+                f"coordinator_read_local:{local.path}",
+                "final_answer",
+            ],
+            ["spawn_child", "poll", "discover_child"],
+            [
+                (f"coordinator_read_local:{remote.path}", "final_answer"),
+                (f"coordinator_read_local:{local.path}", "final_answer"),
+            ],
+            {"spawn_child": 0, "parent_to_child_message": 0},
+        )
+        graph_variant = "two_raw_shards_single_node"
+        atoms = ["raw_evidence", "two_shards", "direct", "global_reduction"]
+        timing = "single_node_two_shard_compute"
+        difficulty = 2
+    else:
+        prompt = (
+            f"{intro} {child_name} is the only party that receives the private JSON "
+            f"evidence shard identified as {remote.path}; the coordinator does not possess "
+            f"a copy. The reviewer must {remote.operation}. The coordinator separately "
+            f"owns {local.path} and must {local.operation} while that review proceeds. "
+            "After the delivered remote maximum arrives, publish the larger of the remote "
+            f"and local maxima as global_max. Return {schema}."
+        )
+        ownership = {
+            remote.path: {
+                "owner": f"child:{child_name}",
+                "family": remote.family,
+                "operation": remote.operation,
+            },
+            local.path: {
+                "owner": "coordinator",
+                "family": local.family,
+                "operation": local.operation,
+            },
+        }
+        files = {local.path: local.content}
+        private_resources = {remote.path: remote.content}
+        children = [_child(child_name, remote)]
+        expected_route = rung
+        contract = _contract(
+            [
+                f"spawn:{child_name}",
+                f"retain_handle:{child_name}",
+                f"coordinator_read_local:{local.path}",
+                "yield",
+                f"receive:{child_name}",
+                "final_answer",
+            ],
+            [
+                "coordinator_read_child_owned",
+                "poll",
+                "discover_child",
+                "delegate_coordinator_owned",
+            ],
+            [
+                (f"spawn:{child_name}", f"coordinator_read_local:{local.path}"),
+                (f"coordinator_read_local:{local.path}", "yield"),
+                (f"retain_handle:{child_name}", "yield"),
+                ("yield", f"receive:{child_name}"),
+                (f"receive:{child_name}", "final_answer"),
+            ],
+            {
+                "spawn_child": 1,
+                "child_result_message": 1,
+                "parent_to_child_message": 0,
+            },
+        )
+        graph_variant = "two_raw_shards_one_child"
+        atoms = [
+            "raw_evidence",
+            "two_shards",
+            "semantic_ownership",
+            "asynchronous_delegation",
+            "global_reduction",
+        ]
+        timing = "local_compute_then_one_causal_resume_cycle"
+        difficulty = 3
+
+    oracle = {
+        "expected_route": expected_route,
+        "final_answer": answer,
+        "coordinator_state": {},
+        "resource_ownership": ownership,
+        "private_resources": private_resources,
+        "children": children,
+        "fault_plan": {"type": "none"},
+        "trajectory_contract": contract,
+    }
+    row = _row(
+        split,
+        index,
+        seed,
+        rung,
+        style,
+        prompt,
+        files,
+        oracle,
+        atoms,
+        difficulty,
+        timing,
+    )
+    row["generator_version"] = JSON_MAX_CALIBRATION_VERSION
+    row["metadata"].update(
+        {
+            "curriculum_rung": rung,
+            "natural_stage": "json_max_calibration",
+            "semantic_family": "json_max",
+            "graph_variant": graph_variant,
+            "control_contract_variant": style,
+            "private_payload_mode": "raw_resource",
+            "shard_lengths": {
+                "remote": len(json.loads(remote.content)),
+                "local": len(json.loads(local.content)),
+            },
+        }
+    )
+    row["metadata"]["axis_signature"] = hashlib.sha256(
+        json.dumps(row["metadata"], sort_keys=True).encode()
+    ).hexdigest()[:16]
+    return row
 
 
 def _causal_n1_curriculum_episode(
@@ -1172,14 +1396,30 @@ def generate_curriculum_episode(
     master_seed: int = 20260816,
     private_payload_mode: Literal["raw_resource", "finding_card"] = "raw_resource",
 ) -> dict[str, Any]:
+    seed_rung = (
+        "json_max_matched"
+        if rung in {"json_max_direct_raw", "json_max_two_shard"}
+        else rung
+    )
     raw_seed = (
-        f"{CURRICULUM_SEED_VERSION}|{master_seed}|{rung}|{split}|{index}".encode()
+        f"{CURRICULUM_SEED_VERSION}|{master_seed}|{seed_rung}|{split}|{index}".encode()
     )
     seed = int.from_bytes(hashlib.sha256(raw_seed).digest()[:8], "big")
     rng = random.Random(seed)
     style = rng.choice(STYLES[split])
     names = rng.sample(list(CHILD_NAMES[split]), 2)
     children: list[dict[str, Any]] = []
+
+    if rung in {"json_max_direct_raw", "json_max_two_shard"}:
+        return _json_max_calibration_episode(
+            rung,
+            split,
+            index,
+            seed,
+            rng,
+            style,
+            names[0],
+        )
 
     if rung in {
         "natural_n1a",

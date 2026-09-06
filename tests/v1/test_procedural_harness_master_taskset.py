@@ -321,6 +321,53 @@ def test_natural_private_evidence_is_injected_only_into_child_context() -> None:
     assert task.inject_natural_private_evidence(rewritten) is None
 
 
+def test_json_max_two_shard_injects_only_remote_raw_evidence() -> None:
+    task = _curriculum_task("json_max_two_shard")
+    private = task.data.oracle["private_resources"]
+    local = task.data.workspace_files
+    request = vf.Request(messages=[UserMessage(content="Review the private JSON shard.")])
+
+    rewritten = task.inject_natural_private_evidence(request)
+
+    assert rewritten is not None
+    text = str(rewritten.messages[-1].content)
+    assert PRIVATE_EVIDENCE_HEADER in text
+    assert all(path in text and contents in text for path, contents in private.items())
+    assert all(path not in text and contents not in text for path, contents in local.items())
+
+
+def test_json_max_contract_scores_matched_direct_and_composed_routes() -> None:
+    direct = _curriculum_task("json_max_direct_raw")
+    direct_paths = list(direct.data.workspace_files)
+    direct_trace = _trace(
+        direct,
+        [("cell", f"open({path!r}).read()", "raw JSON") for path in direct_paths],
+    )
+    assert _contract_behavior(direct_trace, direct.data)["harness_score"] == 1.0
+
+    missing_trace = _trace(
+        direct,
+        [("cell", f"open({direct_paths[0]!r}).read()", "one raw JSON shard")],
+    )
+    assert _contract_behavior(missing_trace, direct.data)["harness_score"] == 0.0
+
+    composed = _curriculum_task("json_max_two_shard")
+    child = composed.data.oracle["children"][0]
+    local_path = next(iter(composed.data.workspace_files))
+    actions = [
+        (
+            "cell",
+            _spawn_code(composed),
+            f"RLMSpawnHandle(name='{child['name']}')",
+        ),
+        ("cell", f"open({local_path!r}).read()", "local raw JSON"),
+        ("incoming", child["name"], str(child["expected_result"])),
+    ]
+    assert _contract_behavior(_trace(composed, actions), composed.data)[
+        "harness_score"
+    ] == 1.0
+
+
 def test_recursive_coordinator_context_is_explicit_and_excludes_worker_marker() -> None:
     task = ProceduralHarnessMasterTaskset(
         ProceduralHarnessMasterConfig(
