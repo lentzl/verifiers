@@ -7,6 +7,7 @@ from document_summary_v1.fixture import build_fixture
 from document_summary_v1.taskset import (
     EMPTY_IPYTHON_FEEDBACK,
     GATE_PATH,
+    MISSING_WORKER_REPORT_RECOVERY_FEEDBACK,
     OUTPUT_PATH,
     REPEATED_IPYTHON_FAILURE_FEEDBACK,
     REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK,
@@ -23,6 +24,7 @@ from document_summary_v1.taskset import (
     _rewrite_repeated_ipython_no_progress,
     _strict_report,
     _worker_gate_source,
+    _worker_recovery_feedback,
 )
 
 import verifiers.v1 as vf
@@ -405,6 +407,47 @@ def test_first_failed_ipython_call_is_not_labeled_as_repeated() -> None:
 
     assert _rewrite_repeated_ipython_failure(request, trace) is None
     assert "repeated_ipython_failure_feedback_count" not in trace.info
+
+
+def test_missing_worker_report_recovery_does_not_tell_model_to_read_it() -> None:
+    request = vf.Request(
+        messages=[
+            vf.ToolMessage(
+                tool_call_id="missing-report",
+                name="ipython",
+                content=(
+                    "FileNotFoundError: [Errno 2] No such file or directory: "
+                    "'/logs/artifacts/document-summary-v1/worker-report.json'"
+                ),
+            )
+        ]
+    )
+
+    feedback = _worker_recovery_feedback(request)
+
+    assert feedback == MISSING_WORKER_REPORT_RECOVERY_FEEDBACK
+    assert "does not exist" in feedback
+    assert "do not try to read or patch it again" in feedback
+    assert "task_contract['bullet_ids']" in feedback
+    assert "never from enumerate" in feedback
+
+
+def test_other_worker_failure_uses_general_literal_id_recovery() -> None:
+    request = vf.Request(
+        messages=[
+            vf.ToolMessage(
+                tool_call_id="bad-index",
+                name="ipython",
+                content="IndexError: list index out of range",
+            )
+        ]
+    )
+
+    feedback = _worker_recovery_feedback(request)
+
+    assert feedback == TERMINAL_WORKER_RECOVERY_FEEDBACK
+    assert "task_contract['bullet_ids']" in feedback
+    assert "never enumerate IDs" in feedback
 
 
 def test_repeated_successful_ipython_call_with_same_result_gets_progress_feedback(

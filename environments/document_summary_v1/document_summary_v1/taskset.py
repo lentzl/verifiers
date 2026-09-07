@@ -46,9 +46,19 @@ REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK = (
 TERMINAL_WORKER_RECOVERY_FEEDBACK = (
     "Prime Agent terminal-worker recovery: this retry cannot repair the report. There is "
     "no parent receiver, so do not call agent_message. Do not edit the input job or parse "
-    "completion_gate.py. Read the original job and current report, preserve exactly the three "
-    "supplied bullet IDs, use paragraph IDs only inside source_ids, merge any missing paragraph "
-    "into one of those bullets, and update only worker-report.json in one write. Then stop."
+    "completion_gate.py. Re-read the original job, preserve exactly task_contract['bullet_ids'], "
+    "use paragraph IDs only inside source_ids by copying each paragraph's literal ['id'] string "
+    "(never enumerate IDs), "
+    "merge the closest related paragraph pair into exactly three bullet dictionaries, and update "
+    "only worker-report.json in one write. Then stop."
+)
+MISSING_WORKER_REPORT_RECOVERY_FEEDBACK = (
+    "Prime Agent terminal-worker recovery: worker-report.json does not exist, so do not try to "
+    "read or patch it again. Re-read only the original job, construct a fresh report in memory, "
+    "take bullet IDs from task_contract['bullet_ids'], and take source IDs from each paragraph's "
+    "literal ['id'] string (never from enumerate or list positions). Produce exactly three bullet "
+    "dictionaries, merge the closest related paragraph pair, write worker-report.json once, then "
+    "stop calling tools."
 )
 
 SYSTEM_PROMPT = (
@@ -499,6 +509,16 @@ def _scaffold_ipython_feedback(
     )
 
 
+def _worker_recovery_feedback(request: vf.Request) -> str:
+    """Select actionable worker recovery without assuming a report already exists."""
+
+    if request.messages and isinstance(request.messages[-1], vf.ToolMessage):
+        result = content_text(request.messages[-1].content).casefold()
+        if "filenotfounderror" in result and "worker-report.json" in result:
+            return MISSING_WORKER_REPORT_RECOVERY_FEEDBACK
+    return TERMINAL_WORKER_RECOVERY_FEEDBACK
+
+
 def _spawn_records(trace: vf.Trace) -> list[tuple[str | None, str | None, bool]]:
     records = []
     for node in trace.nodes:
@@ -661,7 +681,7 @@ class DocumentSummaryWorkerTask(vf.Task[DocumentSummaryWorkerData]):
         self, request: vf.Request, trace: vf.Trace
     ) -> vf.Request | None:
         return _scaffold_ipython_feedback(
-            request, trace, repeated_feedback=TERMINAL_WORKER_RECOVERY_FEEDBACK
+            request, trace, repeated_feedback=_worker_recovery_feedback(request)
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
