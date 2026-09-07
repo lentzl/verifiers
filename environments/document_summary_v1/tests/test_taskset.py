@@ -10,6 +10,7 @@ from document_summary_v1.taskset import (
     OUTPUT_PATH,
     REPEATED_IPYTHON_FAILURE_FEEDBACK,
     REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK,
+    TERMINAL_WORKER_RECOVERY_FEEDBACK,
     WORKER_OUTPUT_PATH,
     DocumentSummaryConfig,
     DocumentSummaryTaskset,
@@ -451,6 +452,53 @@ def test_repeated_ipython_call_with_changed_result_is_not_labeled_no_progress() 
 
     assert _rewrite_repeated_ipython_no_progress(request, trace) is None
     assert "repeated_ipython_no_progress_feedback_count" not in trace.info
+
+
+def test_worker_repeated_no_progress_gets_terminal_role_recovery() -> None:
+    task = _worker_task()
+    trace = vf.Trace(
+        id="worker-terminal-recovery",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="DocumentSummaryWorkerTask", data=vf.TaskData(idx=0)),
+        nodes=[],
+    )
+    code = "updated_bullets = [missing_source_id]\nupdated_bullets"
+    result = "['scope-p04']"
+    request = vf.Request(
+        messages=[
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="first-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": code}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(
+                tool_call_id="first-call", name="ipython", content=result
+            ),
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="second-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": code}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(
+                tool_call_id="second-call", name="ipython", content=result
+            ),
+        ]
+    )
+
+    rewritten = task.scaffold_empty_ipython(request, trace)
+
+    assert rewritten is not None
+    assert TERMINAL_WORKER_RECOVERY_FEEDBACK in rewritten.messages[-1].content
+    assert "no parent receiver" in rewritten.messages[-1].content
+    assert "paragraph IDs only inside source_ids" in rewritten.messages[-1].content
 
 
 def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling() -> None:

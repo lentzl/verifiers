@@ -43,6 +43,13 @@ REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK = (
     "concrete write or edit to advance the required artifact; if the artifact already "
     "exists, stop calling tools and return a concise final answer."
 )
+TERMINAL_WORKER_RECOVERY_FEEDBACK = (
+    "Prime Agent terminal-worker recovery: this retry cannot repair the report. There is "
+    "no parent receiver, so do not call agent_message. Do not edit the input job or parse "
+    "completion_gate.py. Read the original job and current report, preserve exactly the three "
+    "supplied bullet IDs, use paragraph IDs only inside source_ids, merge any missing paragraph "
+    "into one of those bullets, and update only worker-report.json in one write. Then stop."
+)
 
 SYSTEM_PROMPT = (
     "You are the document summary owner running inside Prime Agent. Use the persistent IPython "
@@ -329,7 +336,9 @@ def _tool_result_failed(message: vf.ToolMessage) -> bool:
 
 
 def _rewrite_repeated_ipython_failure(
-    request: vf.Request, trace: vf.Trace
+    request: vf.Request,
+    trace: vf.Trace,
+    feedback: str = REPEATED_IPYTHON_FAILURE_FEEDBACK,
 ) -> vf.Request | None:
     """Interrupt an unchanged retry after the same IPython code already failed."""
 
@@ -386,7 +395,7 @@ def _rewrite_repeated_ipython_failure(
     original = content_text(current_result.content).rstrip()
     messages[-1] = current_result.model_copy(
         update={
-            "content": f"{original}\n\n{REPEATED_IPYTHON_FAILURE_FEEDBACK}"
+            "content": f"{original}\n\n{feedback}"
         }
     )
     trace.info["repeated_ipython_failure_feedback_count"] = int(
@@ -396,7 +405,9 @@ def _rewrite_repeated_ipython_failure(
 
 
 def _rewrite_repeated_ipython_no_progress(
-    request: vf.Request, trace: vf.Trace
+    request: vf.Request,
+    trace: vf.Trace,
+    feedback: str = REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK,
 ) -> vf.Request | None:
     """Interrupt an unchanged successful call that returned the same result twice."""
 
@@ -457,7 +468,7 @@ def _rewrite_repeated_ipython_no_progress(
     messages[-1] = current_result.model_copy(
         update={
             "content": (
-                f"{original}{separator}{REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK}"
+                f"{original}{separator}{feedback}"
             )
         }
     )
@@ -468,15 +479,21 @@ def _rewrite_repeated_ipython_no_progress(
 
 
 def _scaffold_ipython_feedback(
-    request: vf.Request, trace: vf.Trace
+    request: vf.Request,
+    trace: vf.Trace,
+    repeated_feedback: str = REPEATED_IPYTHON_FAILURE_FEEDBACK,
 ) -> vf.Request | None:
     empty = _rewrite_empty_ipython_feedback(request, trace)
     if empty is not None:
         return empty
-    failure = _rewrite_repeated_ipython_failure(request, trace)
+    failure = _rewrite_repeated_ipython_failure(
+        request, trace, feedback=repeated_feedback
+    )
     if failure is not None:
         return failure
-    return _rewrite_repeated_ipython_no_progress(request, trace)
+    return _rewrite_repeated_ipython_no_progress(
+        request, trace, feedback=repeated_feedback
+    )
 
 
 def _spawn_records(trace: vf.Trace) -> list[tuple[str | None, str | None, bool]]:
@@ -640,7 +657,9 @@ class DocumentSummaryWorkerTask(vf.Task[DocumentSummaryWorkerData]):
     def scaffold_empty_ipython(
         self, request: vf.Request, trace: vf.Trace
     ) -> vf.Request | None:
-        return _scaffold_ipython_feedback(request, trace)
+        return _scaffold_ipython_feedback(
+            request, trace, repeated_feedback=TERMINAL_WORKER_RECOVERY_FEEDBACK
+        )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         result = await runtime.run(
