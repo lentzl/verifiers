@@ -7,6 +7,7 @@ from document_translation_v1.taskset import (
     GATE_PATH,
     OUTPUT_PATH,
     SCHEMA_VERSION,
+    WORKER_PROTOCOL,
     WORKERS,
     DocumentTranslationConfig,
     DocumentTranslationTaskset,
@@ -138,6 +139,24 @@ def test_fixture_has_stable_complete_units_and_hidden_reference() -> None:
     assert glossary["preserve"] == ["RC-17", "R-03", "R-04", "L-02", "DONE"]
     assert "Aster-Feldrekorder" not in task.data.prompt_text
     assert "Aster-Feldrekorder" not in _completion_gate_source(task.data)
+
+
+def test_prompt_disambiguates_native_worker_and_owner_protocols() -> None:
+    task = _task()
+    gate = _completion_gate_source(task.data)
+
+    assert "exactly one JSON object, not a list" in WORKER_PROTOCOL
+    assert "units = job['units']" in WORKER_PROTOCOL
+    assert "never use str.translate" in WORKER_PROTOCOL
+    assert "never copy the English source" in WORKER_PROTOCOL
+    assert "'translations': []" in WORKER_PROTOCOL
+    assert "agent_message.send" in WORKER_PROTOCOL
+    assert WORKER_PROTOCOL in task.data.prompt_text
+    assert "same first IPython call" in task.data.prompt_text
+    assert "There is no agent_observe API" in task.data.system_prompt
+    assert "/logs/agent-workflow-v1" in task.data.system_prompt
+    assert "agent_observe" in gate
+    assert "/logs/agent-workflow-v1" in gate
 
 
 def test_reference_artifact_passes_contract_and_scores_exactly() -> None:
