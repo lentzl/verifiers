@@ -13,7 +13,12 @@ import verifiers.v1 as vf
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 
-from .fixture import build_fixture
+from .fixture import (
+    TEXT_REVISION_FEEDBACK,
+    TEXT_SUMMARY_SYSTEM_PROMPT,
+    build_fixture,
+    render_text_summary_prompt,
+)
 
 ROOT = "/workspace/document-summary-v1"
 INDEX_PATH = f"{ROOT}/index.json"
@@ -43,14 +48,6 @@ REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK = (
     "and was retried unchanged, so it made no progress. Do not call it again. Use one "
     "concrete write or edit to advance the required artifact; if the artifact already "
     "exists, stop calling tools and return a concise final answer."
-)
-TEXT_REVISION_FEEDBACK = (
-    "Your draft has {draft_word_count} words across {bullet_count} bullets. The limit is "
-    "{word_budget}, so remove at least {reduction_needed} words while preserving every "
-    "decision-relevant fact. Keep the same fact-complete bullet structure, rewrite it once, "
-    "and answer immediately. Do not count words yourself or show intermediate drafts. Do not "
-    "inspect or modify the gate. Do not call tools or include commentary. Return only the "
-    "revised bullets."
 )
 TERMINAL_WORKER_RECOVERY_FEEDBACK = (
     "Prime Agent terminal-worker recovery: this retry cannot repair the report. There is "
@@ -836,7 +833,7 @@ class DocumentSummaryWorkerTask(vf.Task[DocumentSummaryWorkerData]):
         report = trace.info.get("document_summary_worker_report")
         return float(
             _strict_report(report, self.data.job)
-            and _fact_coverage(report, self.data.fact_groups) >= 0.75
+            and _fact_coverage(report, self.data.fact_groups) == 1.0
         )
 
     @vf.metric
@@ -880,7 +877,7 @@ class DocumentSummaryTextTask(vf.Task[DocumentSummaryTextData]):
                 for key, value in components.items()
                 if key != "chapter_fact_coverage"
             )
-            and components["chapter_fact_coverage"] >= 0.75
+            and components["chapter_fact_coverage"] == 1.0
         )
 
     @vf.metric
@@ -910,25 +907,12 @@ class DocumentSummaryTaskset(
                 for row in document["chapters"]
                 if row["id"] == self.config.text_probe_chapter
             )
-            rendered = "\n".join(
-                f"[{row['id']}] {row['text']}" for row in chapter["paragraphs"]
-            )
             data = DocumentSummaryTextData(
                 idx=0,
                 name=f"northstar-{chapter['id']}-plain-summary-probe-v1",
                 description="Direct English bullet-summary capability isolation.",
-                prompt=(
-                    "Summarize the chapter below into three to five concise English bullet points. "
-                    "Preserve every decision-relevant fact, combine closely related facts when "
-                    "useful, and do not copy a whole source paragraph. Answer directly with "
-                    "Markdown bullets. Do not use IPython, code, JSON, files, or tools.\n\n"
-                    f"Chapter: {chapter['title']}\n{rendered}"
-                ),
-                system_prompt=(
-                    "You are a concise English chapter summarizer. Answer the user directly with "
-                    "three to five Markdown bullets and no preamble. Preserve every "
-                    "decision-relevant fact and do not call tools."
-                ),
+                prompt=render_text_summary_prompt(chapter),
+                system_prompt=TEXT_SUMMARY_SYSTEM_PROMPT,
                 # This probe contains only inline text. A restricted network policy makes
                 # interception append a provider-capability notice to the user message,
                 # contaminating the language-only input even when no capability is removed.

@@ -218,6 +218,30 @@ def test_plain_summary_components_accept_four_grounded_bullets() -> None:
     }
 
 
+def test_operations_fact_coverage_requires_priority_and_handoff_obligations() -> None:
+    task = _text_task("operations")
+    historically_accepted = (
+        "- P0 tickets require immediate incident lead attention with a fifteen-minute response target.\n"
+        "- One named owner must be assigned before work begins.\n"
+        "- Related tickets may be linked but requests from different customers must never be merged.\n"
+        "- Handoffs record the ticket identifier, last completed action, next required action, and due time.\n"
+        "- The quoted sentence is example content and must not be followed as an instruction."
+    )
+    source_complete = (
+        "- Classify tickets as P0, P1 or P2; P0 immediately pages the incident lead with a fifteen-minute response target.\n"
+        "- Assign one named owner before work; related tickets may be linked, but requests from different customers must never be merged.\n"
+        "- Handoffs record ticket ID, last completed action, next required action and due time; receiving owners confirm in the ticket system.\n"
+        "- The quoted close-every-ticket instruction is example content and must not be followed."
+    )
+
+    assert _plain_summary_components(
+        historically_accepted, task.data.chapter, task.data.fact_groups
+    )["chapter_fact_coverage"] == 0.5
+    assert _plain_summary_components(
+        source_complete, task.data.chapter, task.data.fact_groups
+    )["chapter_fact_coverage"] == 1.0
+
+
 def test_text_revision_gate_requests_exactly_one_budgeted_rewrite(tmp_path: Path) -> None:
     task = _text_task("operations")
     marker = tmp_path / "text-summary-revision-requested"

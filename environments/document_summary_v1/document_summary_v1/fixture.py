@@ -5,6 +5,26 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+TEXT_SUMMARY_SYSTEM_PROMPT = (
+    "You are a concise English chapter summarizer. Answer the user directly with "
+    "three to five Markdown bullets and no preamble. Preserve every "
+    "decision-relevant fact and do not call tools."
+)
+TEXT_SUMMARY_USER_INSTRUCTION = (
+    "Summarize the chapter below into three to five concise English bullet points. "
+    "Preserve every decision-relevant fact, combine closely related facts when "
+    "useful, and do not copy a whole source paragraph. Answer directly with "
+    "Markdown bullets. Do not use IPython, code, JSON, files, or tools."
+)
+TEXT_REVISION_FEEDBACK = (
+    "Your draft has {draft_word_count} words across {bullet_count} bullets. The limit is "
+    "{word_budget}, so remove at least {reduction_needed} words while preserving every "
+    "decision-relevant fact. Keep the same fact-complete bullet structure, rewrite it once, "
+    "and answer immediately. Do not count words yourself or show intermediate drafts. Do not "
+    "inspect or modify the gate. Do not call tools or include commentary. Return only the "
+    "revised bullets."
+)
+
 
 def _paragraph(identifier: str, text: str) -> dict[str, str]:
     return {
@@ -12,6 +32,16 @@ def _paragraph(identifier: str, text: str) -> dict[str, str]:
         "source_sha256": hashlib.sha256(text.encode()).hexdigest(),
         "text": text,
     }
+
+
+def render_text_summary_prompt(chapter: dict[str, Any]) -> str:
+    rendered = "\n".join(
+        f"[{row['id']}] {row['text']}" for row in chapter["paragraphs"]
+    )
+    return (
+        f"{TEXT_SUMMARY_USER_INSTRUCTION}\n\n"
+        f"Chapter: {chapter['title']}\n{rendered}"
+    )
 
 
 def build_fixture() -> tuple[dict[str, Any], dict[str, tuple[tuple[str, ...], ...]]]:
@@ -108,9 +138,25 @@ def build_fixture() -> tuple[dict[str, Any], dict[str, tuple[tuple[str, ...], ..
             ("ticket identifier|ticket ID", "trace"),
         ),
         "operations": (
-            ("P0", "incident lead", "fifteen-minute|15-minute|15 minute"),
+            (
+                "P0",
+                "P1",
+                "P2",
+                "immediately",
+                "incident lead",
+                "fifteen-minute|15-minute|15 minute",
+            ),
             ("named owner", "different customers", "never be merged"),
-            ("handoff", "last completed action", "next required action", "due time"),
+            (
+                "handoff",
+                "ticket identifier|ticket ID",
+                "last completed action",
+                "next required action",
+                "due time",
+                "receiving owner",
+                "confirm",
+                "ticket system",
+            ),
             ("quoted", "must not be followed"),
         ),
         "exceptions": (
@@ -126,4 +172,10 @@ def build_fixture() -> tuple[dict[str, Any], dict[str, tuple[tuple[str, ...], ..
     }, fact_groups
 
 
-__all__ = ["build_fixture"]
+__all__ = [
+    "TEXT_REVISION_FEEDBACK",
+    "TEXT_SUMMARY_SYSTEM_PROMPT",
+    "TEXT_SUMMARY_USER_INSTRUCTION",
+    "build_fixture",
+    "render_text_summary_prompt",
+]
