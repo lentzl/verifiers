@@ -18,6 +18,8 @@ from document_summary_v1.taskset import (
     _artifact_components,
     _fact_coverage,
     _owner_gate_source,
+    _plain_summary_bullets,
+    _plain_summary_components,
     _report_components,
     _rewrite_empty_ipython_feedback,
     _rewrite_repeated_ipython_failure,
@@ -36,6 +38,12 @@ def _worker_task():
 
 def _owner_task():
     return DocumentSummaryTaskset(DocumentSummaryConfig(mode="owner")).load()[0]
+
+
+def _text_task(chapter: str = "scope"):
+    return DocumentSummaryTaskset(
+        DocumentSummaryConfig(mode="text_probe", text_probe_chapter=chapter)
+    ).load()[0]
 
 
 def _scope_report(task):
@@ -137,6 +145,37 @@ def test_worker_probe_exposes_contract_but_not_hidden_fact_groups() -> None:
     assert "missing paragraph coverage" in gate
     assert "Keep exactly three bullets" in gate
     assert "paragraph IDs cited more than once" in gate
+
+
+def test_text_probe_is_single_turn_plain_english_without_artifact_plumbing() -> None:
+    task = _text_task()
+
+    assert task.data.name == "northstar-scope-plain-summary-probe-v1"
+    assert "exactly three concise English bullet points" in task.data.prompt_text
+    assert "Do not use IPython, code, JSON, files, or tools" in task.data.prompt_text
+    assert "worker-report.json" not in task.data.prompt_text
+    assert "completion_gate.py" not in task.data.prompt_text
+    assert "email queue" in task.data.prompt_text
+    assert "fact_groups" not in task.data.prompt_text
+
+
+def test_plain_summary_components_measure_language_without_citation_schema() -> None:
+    task = _text_task()
+    reply = (
+        "- Move support from the shared email queue to a ticket system for visible ownership and handoffs.\n"
+        "- Start with Berlin and Oulu tickets from 1 October, leaving billing disputes and legal notices outside.\n"
+        "- Acknowledge 95% within four hours, lose no unresolved tickets, and retain ticket identifiers for traceability."
+    )
+
+    assert _plain_summary_bullets(reply) == [line[2:] for line in reply.splitlines()]
+    assert _plain_summary_components(
+        reply, task.data.chapter, task.data.fact_groups
+    ) == {
+        "summary_text_three_bullets": 1.0,
+        "summary_text_concise": 1.0,
+        "summary_text_not_source_copy": 1.0,
+        "chapter_fact_coverage": 1.0,
+    }
 
 
 def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:

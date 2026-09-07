@@ -84,6 +84,11 @@ class DocumentSummaryWorkerData(vf.TaskData):
     output_path: str = WORKER_OUTPUT_PATH
 
 
+class DocumentSummaryTextData(vf.TaskData):
+    chapter: dict[str, Any]
+    fact_groups: tuple[tuple[str, ...], ...]
+
+
 def _build_jobs(
     document: dict[str, Any], *, delivery: str
 ) -> dict[str, dict[str, Any]]:
@@ -218,6 +223,45 @@ def _fact_coverage(report: Any, groups: tuple[tuple[str, ...], ...]) -> float:
         ):
             matched += 1
     return matched / len(groups)
+
+
+def _plain_summary_bullets(reply: str) -> list[str]:
+    bullets = []
+    for line in reply.splitlines():
+        match = re.match(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$", line)
+        if match is not None:
+            bullets.append(match.group(1))
+    return bullets
+
+
+def _plain_summary_components(
+    reply: str,
+    chapter: dict[str, Any],
+    groups: tuple[tuple[str, ...], ...],
+) -> dict[str, float]:
+    bullets = _plain_summary_bullets(reply)
+    word_counts = [len(text.split()) for text in bullets]
+    source_word_count = sum(len(row["text"].split()) for row in chapter["paragraphs"])
+    normalized_sources = {
+        " ".join(row["text"].casefold().split()) for row in chapter["paragraphs"]
+    }
+    report = {"bullets": [{"text": text} for text in bullets]}
+    return {
+        "summary_text_three_bullets": float(len(bullets) == 3),
+        "summary_text_concise": float(
+            len(bullets) == 3
+            and all(5 <= count <= 45 for count in word_counts)
+            and sum(word_counts) <= int(source_word_count * 0.8)
+        ),
+        "summary_text_not_source_copy": float(
+            len(bullets) == 3
+            and all(
+                " ".join(text.casefold().split()) not in normalized_sources
+                for text in bullets
+            )
+        ),
+        "chapter_fact_coverage": _fact_coverage(report, groups),
+    }
 
 
 def _artifact_components(artifact: Any, data: DocumentSummaryData) -> dict[str, float]:
@@ -737,17 +781,75 @@ class DocumentSummaryWorkerTask(vf.Task[DocumentSummaryWorkerData]):
         )
 
 
+class DocumentSummaryTextTask(vf.Task[DocumentSummaryTextData]):
+    @vf.stop
+    async def single_turn(self, trace: vf.Trace) -> bool:
+        return trace.num_turns >= 1
+
+    @vf.reward(weight=1.0)
+    async def usable_plain_summary(self, trace: vf.Trace) -> float:
+        components = _plain_summary_components(
+            trace.last_reply or "", self.data.chapter, self.data.fact_groups
+        )
+        return float(
+            all(
+                value == 1.0
+                for key, value in components.items()
+                if key != "chapter_fact_coverage"
+            )
+            and components["chapter_fact_coverage"] >= 0.75
+        )
+
+    @vf.metric
+    async def plain_summary_contract(self, trace: vf.Trace) -> dict[str, float]:
+        return _plain_summary_components(
+            trace.last_reply or "", self.data.chapter, self.data.fact_groups
+        )
+
+
 class DocumentSummaryConfig(vf.TasksetConfig):
     split: Literal["development"] = "development"
     num_tasks: int = Field(1, ge=1, le=1)
-    mode: Literal["owner", "worker_probe"] = "worker_probe"
+    mode: Literal["owner", "worker_probe", "text_probe"] = "worker_probe"
+    text_probe_chapter: Literal["scope", "operations", "exceptions"] = "scope"
 
 
 class DocumentSummaryTaskset(
     vf.Taskset[DocumentSummaryWorkerTask, DocumentSummaryConfig]
 ):
-    def load(self) -> list[DocumentSummaryTask | DocumentSummaryWorkerTask]:
+    def load(
+        self,
+    ) -> list[DocumentSummaryTask | DocumentSummaryWorkerTask | DocumentSummaryTextTask]:
         document, fact_groups = build_fixture()
+        if self.config.mode == "text_probe":
+            chapter = next(
+                row
+                for row in document["chapters"]
+                if row["id"] == self.config.text_probe_chapter
+            )
+            rendered = "\n".join(
+                f"[{row['id']}] {row['text']}" for row in chapter["paragraphs"]
+            )
+            data = DocumentSummaryTextData(
+                idx=0,
+                name=f"northstar-{chapter['id']}-plain-summary-probe-v1",
+                description="Direct English bullet-summary capability isolation.",
+                prompt=(
+                    "Summarize the chapter below into exactly three concise English bullet "
+                    "points. Capture the decision-relevant facts, combine closely related facts "
+                    "when useful, and do not copy a whole source paragraph. Answer directly with "
+                    "three Markdown bullets. Do not use IPython, code, JSON, files, or tools.\n\n"
+                    f"Chapter: {chapter['title']}\n{rendered}"
+                ),
+                system_prompt=(
+                    "You are a concise English chapter summarizer. Answer the user directly with "
+                    "exactly three Markdown bullets and no preamble. Do not call tools."
+                ),
+                network_allow=[],
+                chapter=chapter,
+                fact_groups=fact_groups[chapter["id"]],
+            )
+            return [DocumentSummaryTextTask(data, self.config.task)]
         if self.config.mode == "worker_probe":
             worker, chapter_id = ASSIGNMENTS[0]
             job = _build_jobs(document, delivery=f"write_json:{WORKER_OUTPUT_PATH}")[
