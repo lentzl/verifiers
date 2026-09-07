@@ -809,8 +809,8 @@ class DocumentSummaryTextTask(vf.Task[DocumentSummaryTextData]):
         await runtime.write(GATE_PATH, _text_revision_gate_source(self.data.chapter).encode())
 
     @vf.stop
-    async def single_turn(self, trace: vf.Trace) -> bool:
-        return trace.num_turns >= 1
+    async def two_turn_limit(self, trace: vf.Trace) -> bool:
+        return trace.num_turns >= 2
 
     @vf.reward(weight=1.0)
     async def usable_plain_summary(self, trace: vf.Trace) -> float:

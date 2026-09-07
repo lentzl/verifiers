@@ -151,7 +151,7 @@ def test_worker_probe_exposes_contract_but_not_hidden_fact_groups() -> None:
     assert "paragraph IDs cited more than once" in gate
 
 
-def test_text_probe_is_single_turn_plain_english_without_artifact_plumbing() -> None:
+def test_text_probe_is_plain_english_without_artifact_plumbing() -> None:
     task = _text_task()
 
     assert task.data.name == "northstar-scope-plain-summary-probe-v1"
