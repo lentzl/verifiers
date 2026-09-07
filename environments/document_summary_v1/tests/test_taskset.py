@@ -8,6 +8,7 @@ from document_summary_v1.taskset import (
     EMPTY_IPYTHON_FEEDBACK,
     GATE_PATH,
     OUTPUT_PATH,
+    REPEATED_IPYTHON_FAILURE_FEEDBACK,
     WORKER_OUTPUT_PATH,
     DocumentSummaryConfig,
     DocumentSummaryTaskset,
@@ -16,6 +17,7 @@ from document_summary_v1.taskset import (
     _owner_gate_source,
     _report_components,
     _rewrite_empty_ipython_feedback,
+    _rewrite_repeated_ipython_failure,
     _strict_report,
     _worker_gate_source,
 )
@@ -216,6 +218,86 @@ def test_concrete_ipython_call_is_not_rewritten() -> None:
 
     assert _rewrite_empty_ipython_feedback(request, trace) is None
     assert "empty_ipython_feedback_count" not in trace.info
+
+
+def test_repeated_failed_ipython_call_gets_progress_feedback() -> None:
+    trace = vf.Trace(
+        id="repeated-ipython",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="DocumentSummaryWorkerTask", data=vf.TaskData(idx=0)),
+        nodes=[],
+    )
+    code = "raise TypeError('broken check')"
+    request = vf.Request(
+        messages=[
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="first-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": code}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(
+                tool_call_id="first-call",
+                name="ipython",
+                content="Traceback: TypeError: broken check",
+            ),
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="second-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": code}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(
+                tool_call_id="second-call",
+                name="ipython",
+                content="Traceback: TypeError: broken check",
+            ),
+        ]
+    )
+
+    rewritten = _rewrite_repeated_ipython_failure(request, trace)
+
+    assert rewritten is not None
+    assert "Traceback: TypeError: broken check" in rewritten.messages[-1].content
+    assert REPEATED_IPYTHON_FAILURE_FEEDBACK in rewritten.messages[-1].content
+    assert REPEATED_IPYTHON_FAILURE_FEEDBACK not in request.messages[-1].content
+    assert trace.info["repeated_ipython_failure_feedback_count"] == 1
+
+
+def test_first_failed_ipython_call_is_not_labeled_as_repeated() -> None:
+    trace = vf.Trace(
+        id="first-ipython-failure",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="DocumentSummaryWorkerTask", data=vf.TaskData(idx=0)),
+        nodes=[],
+    )
+    request = vf.Request(
+        messages=[
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="first-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": "raise ValueError('first')"}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(
+                tool_call_id="first-call",
+                name="ipython",
+                content="Traceback: ValueError: first",
+            ),
+        ]
+    )
+
+    assert _rewrite_repeated_ipython_failure(request, trace) is None
+    assert "repeated_ipython_failure_feedback_count" not in trace.info
 
 
 def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling() -> None:
