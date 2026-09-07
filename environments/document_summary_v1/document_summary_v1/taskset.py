@@ -60,14 +60,6 @@ MISSING_WORKER_REPORT_RECOVERY_FEEDBACK = (
     "dictionaries, merge the closest related paragraph pair, write worker-report.json once, then "
     "stop calling tools."
 )
-GATED_WORKER_REPORT_RECOVERY_FEEDBACK = (
-    "Prime Agent gate recovery: stop rereading the unchanged input job. The latest autonomous "
-    "quality-gate diagnostic already names the missing paragraph or invalid field. Apply that "
-    "diagnostic to worker-report.json now: read the current report at most once, revise the cited "
-    "bullet so its text actually contains the named paragraph's facts, include that paragraph's "
-    "literal source ID in the same bullet, preserve the three supplied bullet IDs and order, write "
-    "the report once, then stop calling tools."
-)
 
 SYSTEM_PROMPT = (
     "You are the document summary owner running inside Prime Agent. Use the persistent IPython "
@@ -524,13 +516,6 @@ def _worker_recovery_feedback(request: vf.Request) -> str:
         result = content_text(request.messages[-1].content).casefold()
         if "filenotfounderror" in result and "worker-report.json" in result:
             return MISSING_WORKER_REPORT_RECOVERY_FEEDBACK
-    if any(
-        isinstance(message, UserMessage)
-        and "autonomous quality gate failed" in content_text(message.content).casefold()
-        and "completion gate" in content_text(message.content).casefold()
-        for message in request.messages
-    ):
-        return GATED_WORKER_REPORT_RECOVERY_FEEDBACK
     return TERMINAL_WORKER_RECOVERY_FEEDBACK
 
 

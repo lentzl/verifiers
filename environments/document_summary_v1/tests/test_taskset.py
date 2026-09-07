@@ -7,7 +7,6 @@ from document_summary_v1.fixture import build_fixture
 from document_summary_v1.taskset import (
     EMPTY_IPYTHON_FEEDBACK,
     GATE_PATH,
-    GATED_WORKER_REPORT_RECOVERY_FEEDBACK,
     MISSING_WORKER_REPORT_RECOVERY_FEEDBACK,
     OUTPUT_PATH,
     REPEATED_IPYTHON_FAILURE_FEEDBACK,
@@ -449,31 +448,6 @@ def test_other_worker_failure_uses_general_literal_id_recovery() -> None:
     assert feedback == TERMINAL_WORKER_RECOVERY_FEEDBACK
     assert "task_contract['bullet_ids']" in feedback
     assert "never enumerate IDs" in feedback
-
-
-def test_post_gate_no_progress_tells_worker_to_rewrite_not_reread_job() -> None:
-    request = vf.Request(
-        messages=[
-            vf.UserMessage(
-                content=(
-                    "Autonomous quality gate failed (attempt 1/3): completion gate: "
-                    "missing paragraph coverage: ['scope-p02']. Continue working."
-                )
-            ),
-            vf.ToolMessage(
-                tool_call_id="reread-job",
-                name="ipython",
-                content="",
-            ),
-        ]
-    )
-
-    feedback = _worker_recovery_feedback(request)
-
-    assert feedback == GATED_WORKER_REPORT_RECOVERY_FEEDBACK
-    assert "stop rereading the unchanged input job" in feedback
-    assert "worker-report.json" in feedback
-    assert "latest autonomous quality-gate diagnostic" in feedback
 
 
 def test_repeated_successful_ipython_call_with_same_result_gets_progress_feedback(
