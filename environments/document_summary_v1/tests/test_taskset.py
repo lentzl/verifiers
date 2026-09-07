@@ -242,7 +242,7 @@ def test_text_revision_gate_requests_exactly_one_budgeted_rewrite(tmp_path: Path
 
 
 def test_text_revision_feedback_removes_generic_tool_seeking_language() -> None:
-    task = _text_task("operations")
+    task = _text_task("exceptions")
     trace = vf.Trace(
         id="text-revision",
         agent=vf.AgentInfo(config=vf.AgentConfig()),
@@ -258,15 +258,30 @@ def test_text_revision_feedback_removes_generic_tool_seeking_language() -> None:
     )
     request = vf.Request(messages=[vf.UserMessage(content=wrapped)])
 
-    rewritten = _rewrite_text_revision_feedback(request, trace, task.data.chapter)
+    draft = (
+        "- During a ticket-system outage, agents maintain an offline log with identifiers and "
+        "timestamps, importing it after recovery without overwriting newer activity.\n"
+        "- Suspected duplicates are marked as related and both records are retained until a "
+        "reviewer decides whether a safe merge is possible.\n"
+        "- The weekly review compares ticket-system counts with offline-log counts; any "
+        "difference remains unresolved until its cause is documented.\n"
+        "- Routine corrections require the support lead's approval, while deleting a record or "
+        "changing a customer-visible deadline also needs operations manager approval."
+    )
+    rewritten = _rewrite_text_revision_feedback(
+        request, trace, task.data.chapter, draft=draft
+    )
 
     assert rewritten is not None
     assert rewritten.messages[-1].content == TEXT_REVISION_FEEDBACK.format(
-        word_budget=77
+        draft_word_count=81,
+        bullet_count=4,
+        word_budget=68,
+        reduction_needed=13,
     )
     assert "Fix the failure" not in str(rewritten.messages[-1].content)
     assert "terminal evidence" not in str(rewritten.messages[-1].content)
-    assert "do not call tools" in str(rewritten.messages[-1].content)
+    assert "do not call tools" in str(rewritten.messages[-1].content).casefold()
     assert request.messages[-1].content == wrapped
     assert trace.info["text_revision_feedback_count"] == 1
 

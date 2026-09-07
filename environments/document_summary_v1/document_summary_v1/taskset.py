@@ -45,10 +45,12 @@ REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK = (
     "exists, stop calling tools and return a concise final answer."
 )
 TEXT_REVISION_FEEDBACK = (
-    "Your draft exceeded the summary word budget. Return only a revised three-to-five-bullet "
-    "English summary using at most {word_budget} total words while preserving every "
-    "decision-relevant fact. Do not inspect or modify the gate, do not call tools, and do not "
-    "include commentary. Answer with the bullets and nothing else."
+    "Your draft has {draft_word_count} words across {bullet_count} bullets. The limit is "
+    "{word_budget}, so remove at least {reduction_needed} words while preserving every "
+    "decision-relevant fact. Keep the same fact-complete bullet structure, rewrite it once, "
+    "and answer immediately. Do not count words yourself or show intermediate drafts. Do not "
+    "inspect or modify the gate. Do not call tools or include commentary. Return only the "
+    "revised bullets."
 )
 TERMINAL_WORKER_RECOVERY_FEEDBACK = (
     "Prime Agent terminal-worker recovery: this retry cannot repair the report. There is "
@@ -265,7 +267,10 @@ def _text_word_budget(chapter: dict[str, Any]) -> int:
 
 
 def _rewrite_text_revision_feedback(
-    request: vf.Request, trace: vf.Trace, chapter: dict[str, Any]
+    request: vf.Request,
+    trace: vf.Trace,
+    chapter: dict[str, Any],
+    draft: str | None = None,
 ) -> vf.Request | None:
     """Replace Prime Agent's generic gate wrapper with direct text-only feedback."""
 
@@ -279,11 +284,18 @@ def _rewrite_text_revision_feedback(
         or "completion gate: compress the draft" not in content
     ):
         return None
+    prior_draft = trace.last_reply or "" if draft is None else draft
+    bullets = _plain_summary_bullets(prior_draft)
+    draft_word_count = sum(len(bullet.split()) for bullet in bullets)
+    word_budget = _text_word_budget(chapter)
     messages = list(request.messages)
     messages[-1] = message.model_copy(
         update={
             "content": TEXT_REVISION_FEEDBACK.format(
-                word_budget=_text_word_budget(chapter)
+                draft_word_count=draft_word_count,
+                bullet_count=len(bullets),
+                word_budget=word_budget,
+                reduction_needed=max(0, draft_word_count - word_budget),
             )
         }
     )
