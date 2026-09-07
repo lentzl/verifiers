@@ -7,6 +7,8 @@ from document_translation_v1.taskset import (
     GATE_PATH,
     OUTPUT_PATH,
     SCHEMA_VERSION,
+    WORKER_FILE_PROTOCOL,
+    WORKER_OUTPUT_PATH,
     WORKER_PROTOCOL,
     WORKERS,
     DocumentTranslationConfig,
@@ -15,6 +17,8 @@ from document_translation_v1.taskset import (
     _delegation_components,
     _reference_score,
     _strict_artifact,
+    _strict_worker_report,
+    _worker_completion_gate_source,
 )
 
 import verifiers.v1 as vf
@@ -24,6 +28,12 @@ from verifiers.v1.types import AssistantMessage, ToolCall, UserMessage
 
 def _task():
     return DocumentTranslationTaskset(DocumentTranslationConfig()).load()[0]
+
+
+def _worker_task():
+    return DocumentTranslationTaskset(
+        DocumentTranslationConfig(mode="worker_probe")
+    ).load()[0]
 
 
 def _reference_artifact(task):
@@ -157,6 +167,40 @@ def test_prompt_disambiguates_native_worker_and_owner_protocols() -> None:
     assert "/logs/agent-workflow-v1" in task.data.system_prompt
     assert "agent_observe" in gate
     assert "/logs/agent-workflow-v1" in gate
+
+
+def test_worker_probe_is_direct_small_and_reference_hidden() -> None:
+    task = _worker_task()
+    gate = _worker_completion_gate_source(task.data)
+
+    assert task.data.job["worker"] == "definitions-translator"
+    assert len(task.data.job["units"]) == 5
+    assert task.data.output_path == WORKER_OUTPUT_PATH
+    assert WORKER_FILE_PROTOCOL in task.data.prompt_text
+    assert "Do not spawn a child" in task.data.prompt_text
+    assert "agent_message" in task.data.prompt_text
+    assert "Aster-Feldrekorder" not in task.data.prompt_text
+    assert "Aster-Feldrekorder" not in gate
+
+
+def test_reference_worker_report_passes_probe_contract() -> None:
+    task = _worker_task()
+    references = {row["id"]: row for row in task.data.references}
+    report = {
+        "worker": task.data.job["worker"],
+        "translations": [
+            {
+                **references[unit["id"]],
+                "issues": [],
+            }
+            for unit in task.data.job["units"]
+        ],
+    }
+
+    complete, components = _strict_worker_report(report, task.data)
+
+    assert complete is True
+    assert set(components.values()) == {1.0}
 
 
 def test_reference_artifact_passes_contract_and_scores_exactly() -> None:
