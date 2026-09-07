@@ -44,6 +44,12 @@ REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK = (
     "concrete write or edit to advance the required artifact; if the artifact already "
     "exists, stop calling tools and return a concise final answer."
 )
+TEXT_REVISION_FEEDBACK = (
+    "Your draft exceeded the summary word budget. Return only a revised three-to-five-bullet "
+    "English summary using at most {word_budget} total words while preserving every "
+    "decision-relevant fact. Do not inspect or modify the gate, do not call tools, and do not "
+    "include commentary. Answer with the bullets and nothing else."
+)
 TERMINAL_WORKER_RECOVERY_FEEDBACK = (
     "Prime Agent terminal-worker recovery: this retry cannot repair the report. There is "
     "no parent receiver, so do not call agent_message. Do not edit the input job or parse "
@@ -236,8 +242,7 @@ def _plain_summary_bullets(reply: str) -> list[str]:
 
 
 def _text_revision_gate_source(chapter: dict[str, Any]) -> str:
-    source_word_count = sum(len(row["text"].split()) for row in chapter["paragraphs"])
-    word_budget = int(source_word_count * 0.8)
+    word_budget = _text_word_budget(chapter)
     return f'''from pathlib import Path
 import sys
 
@@ -252,6 +257,40 @@ print(
 )
 raise SystemExit(1)
 '''
+
+
+def _text_word_budget(chapter: dict[str, Any]) -> int:
+    source_word_count = sum(len(row["text"].split()) for row in chapter["paragraphs"])
+    return int(source_word_count * 0.8)
+
+
+def _rewrite_text_revision_feedback(
+    request: vf.Request, trace: vf.Trace, chapter: dict[str, Any]
+) -> vf.Request | None:
+    """Replace Prime Agent's generic gate wrapper with direct text-only feedback."""
+
+    if not request.messages or not isinstance(request.messages[-1], UserMessage):
+        return None
+    message = request.messages[-1]
+    content = content_text(message.content)
+    if (
+        "Autonomous quality gate failed" not in content
+        or GATE_PATH not in content
+        or "completion gate: compress the draft" not in content
+    ):
+        return None
+    messages = list(request.messages)
+    messages[-1] = message.model_copy(
+        update={
+            "content": TEXT_REVISION_FEEDBACK.format(
+                word_budget=_text_word_budget(chapter)
+            )
+        }
+    )
+    trace.info["text_revision_feedback_count"] = int(
+        trace.info.get("text_revision_feedback_count", 0)
+    ) + 1
+    return request.model_copy(update={"messages": messages})
 
 
 def _plain_summary_components(
@@ -802,6 +841,12 @@ class DocumentSummaryWorkerTask(vf.Task[DocumentSummaryWorkerData]):
 
 
 class DocumentSummaryTextTask(vf.Task[DocumentSummaryTextData]):
+    @vf.intercept
+    def scaffold_revision_feedback(
+        self, request: vf.Request, trace: vf.Trace
+    ) -> vf.Request | None:
+        return _rewrite_text_revision_feedback(request, trace, self.data.chapter)
+
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         result = await runtime.run(["mkdir", "-p", ROOT], {})
         if result.exit_code != 0:

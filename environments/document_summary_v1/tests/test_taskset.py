@@ -14,6 +14,7 @@ from document_summary_v1.taskset import (
     REPEATED_IPYTHON_FAILURE_FEEDBACK,
     REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK,
     TERMINAL_WORKER_RECOVERY_FEEDBACK,
+    TEXT_REVISION_FEEDBACK,
     TEXT_REVISION_MARKER,
     WORKER_OUTPUT_PATH,
     DocumentSummaryConfig,
@@ -27,6 +28,7 @@ from document_summary_v1.taskset import (
     _rewrite_empty_ipython_feedback,
     _rewrite_repeated_ipython_failure,
     _rewrite_repeated_ipython_no_progress,
+    _rewrite_text_revision_feedback,
     _strict_report,
     _text_revision_gate_source,
     _worker_gate_source,
@@ -237,6 +239,36 @@ def test_text_revision_gate_requests_exactly_one_budgeted_rewrite(tmp_path: Path
     assert second.stderr == ""
     assert "P0" not in source
     assert "incident lead" not in source
+
+
+def test_text_revision_feedback_removes_generic_tool_seeking_language() -> None:
+    task = _text_task("operations")
+    trace = vf.Trace(
+        id="text-revision",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="DocumentSummaryTextTask", data=vf.TaskData(idx=0)),
+        nodes=[],
+    )
+    wrapped = (
+        "Autonomous quality gate failed (attempt 1/3): "
+        f"`python {GATE_PATH}` exited 1.\n\n"
+        "Output:\ncompletion gate: compress the draft while preserving every "
+        "decision-relevant fact.\n\nContinue working. Fix the failure, then produce "
+        "terminal evidence."
+    )
+    request = vf.Request(messages=[vf.UserMessage(content=wrapped)])
+
+    rewritten = _rewrite_text_revision_feedback(request, trace, task.data.chapter)
+
+    assert rewritten is not None
+    assert rewritten.messages[-1].content == TEXT_REVISION_FEEDBACK.format(
+        word_budget=77
+    )
+    assert "Fix the failure" not in str(rewritten.messages[-1].content)
+    assert "terminal evidence" not in str(rewritten.messages[-1].content)
+    assert "do not call tools" in str(rewritten.messages[-1].content)
+    assert request.messages[-1].content == wrapped
+    assert trace.info["text_revision_feedback_count"] == 1
 
 
 def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:
