@@ -105,6 +105,17 @@ def test_source_paragraph_copy_is_not_a_valid_summary() -> None:
     assert _strict_report(report, task.data.job) is False
 
 
+def test_duplicate_cross_bullet_citations_are_not_grounded() -> None:
+    task = _worker_task()
+    report = _scope_report(task)
+    report["bullets"][0]["source_ids"].append("scope-p02")
+
+    components = _report_components(report, task.data.job)
+
+    assert components["summary_source_grounding"] == 0.0
+    assert _strict_report(report, task.data.job) is False
+
+
 def test_worker_probe_exposes_contract_but_not_hidden_fact_groups() -> None:
     task = _worker_task()
     gate = _worker_gate_source(task.data)
@@ -123,6 +134,7 @@ def test_worker_probe_exposes_contract_but_not_hidden_fact_groups() -> None:
     assert "paraphrase" in gate
     assert "missing paragraph coverage" in gate
     assert "Keep exactly three bullets" in gate
+    assert "paragraph IDs cited more than once" in gate
 
 
 def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:
@@ -197,6 +209,30 @@ def test_worker_gate_reports_identity_shape_and_coverage_in_one_attempt(
     assert "each bullet text must contain 5 to 45 words" in diagnostic
     assert "each bullet needs one or more valid paragraph source_ids" in diagnostic
     assert "missing paragraph coverage" in diagnostic
+
+
+def test_worker_gate_rejects_duplicate_cross_bullet_citations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    task = _worker_task()
+    job_path = tmp_path / "job.json"
+    output_path = tmp_path / "report.json"
+    job = {**task.data.job, "path": str(job_path)}
+    report = _scope_report(task)
+    report["bullets"][0]["source_ids"].append("scope-p02")
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+    output_path.write_text(json.dumps(report), encoding="utf-8")
+    data = task.data.model_copy(update={"job": job, "output_path": str(output_path)})
+
+    with pytest.raises(SystemExit) as error:
+        exec(  # noqa: S102 - execute the generated gate exactly as Prime Agent will
+            compile(_worker_gate_source(data), "completion_gate.py", "exec"), {}
+        )
+
+    assert error.value.code == 1
+    diagnostic = capsys.readouterr().err
+    assert "paragraph IDs cited more than once: ['scope-p02']" in diagnostic
+    assert "Cite each paragraph exactly once" in diagnostic
 
 
 def test_empty_ipython_result_gets_clear_model_facing_feedback() -> None:
