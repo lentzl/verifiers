@@ -179,6 +179,19 @@ def test_plain_summary_components_measure_language_without_citation_schema() -> 
     }
 
 
+def test_plain_summary_fact_coverage_accepts_clear_scope_paraphrases() -> None:
+    task = _text_task()
+    reply = (
+        "- Move support from email to a ticket system for Berlin and Oulu tickets from 1 October.\n"
+        "- Billing disputes and legal notices are excluded; acknowledge 95% within four hours.\n"
+        "- Lose no unresolved tickets and retain ticket identifiers so every item remains traceable."
+    )
+
+    assert _plain_summary_components(
+        reply, task.data.chapter, task.data.fact_groups
+    )["chapter_fact_coverage"] == 1.0
+
+
 def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:
     task = _worker_task()
     gate = _worker_gate_source(task.data)

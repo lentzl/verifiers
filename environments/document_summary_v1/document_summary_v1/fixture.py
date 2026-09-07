@@ -101,9 +101,9 @@ def build_fixture() -> tuple[dict[str, Any], dict[str, tuple[tuple[str, ...], ..
     ]
     fact_groups = {
         "scope": (
-            ("email queue", "ticket system"),
+            ("email queue|email", "ticket system"),
             ("Berlin", "Oulu", "1 October|October 1"),
-            ("billing disputes", "legal notices", "outside"),
+            ("billing disputes", "legal notices", "outside|exclude|excluded"),
             ("95 percent|95%", "four hours|4 hours", "unresolved"),
             ("ticket identifier|ticket ID", "trace"),
         ),
