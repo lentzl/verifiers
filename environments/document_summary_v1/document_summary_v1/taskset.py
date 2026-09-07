@@ -811,6 +811,22 @@ if not isinstance(gate_bullets, list) or len(gate_bullets) != 3:
     checkable_bullets = []
 else:
     checkable_bullets = gate_bullets
+    diagnostic_bullets = []
+    serialized_bullet_indexes = []
+    for index, row in enumerate(gate_bullets):
+        if isinstance(row, str):
+            try:
+                decoded_row = json.loads(row)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                decoded_row = None
+            if isinstance(decoded_row, dict):
+                serialized_bullet_indexes.append(index)
+                diagnostic_bullets.append(decoded_row)
+            continue
+        if isinstance(row, dict):
+            diagnostic_bullets.append(row)
+    if serialized_bullet_indexes:
+        diagnostics.append(f"bullets at indexes {{serialized_bullet_indexes!r}} are JSON strings, not objects. Keep each bullet as a Python dict; do not call json.dumps on individual bullets, and serialize only the complete outer report once")
     if [row.get("id") if isinstance(row, dict) else None for row in gate_bullets] != {job["task_contract"]["bullet_ids"]!r}:
         diagnostics.append("use the three supplied bullet IDs once each and in order")
     if not all(isinstance(row, dict) and set(row) == expected_bullet_keys for row in gate_bullets):
@@ -820,6 +836,15 @@ else:
             diagnostics.append("each bullet text must contain 5 to 45 words")
         if not all(isinstance(row["source_ids"], list) and row["source_ids"] and all(item in valid_source_ids for item in row["source_ids"]) for row in gate_bullets):
             diagnostics.append("each bullet needs one or more valid paragraph source_ids")
+    invalid_source_values = sorted({{
+        repr(item)
+        for row in diagnostic_bullets
+        if isinstance(row.get("source_ids"), list)
+        for item in row["source_ids"]
+        if item not in valid_source_ids
+    }})
+    if invalid_source_values:
+        diagnostics.append(f"invalid source_ids values: {{invalid_source_values!r}}. Use the literal paragraph ID strings from job['paragraphs'][...]['id'], never numeric list positions")
 if not isinstance(gate_issues, list) or not all(isinstance(item, str) for item in gate_issues):
     diagnostics.append("issues must be a JSON list of strings")
 covered_source_ids = {{item for row in checkable_bullets if isinstance(row, dict) and isinstance(row.get("source_ids"), list) for item in row["source_ids"] if item in valid_source_ids}}

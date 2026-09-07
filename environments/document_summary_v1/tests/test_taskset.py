@@ -211,6 +211,40 @@ def test_worker_gate_reports_identity_shape_and_coverage_in_one_attempt(
     assert "missing paragraph coverage" in diagnostic
 
 
+def test_worker_gate_explains_stringified_bullets_and_numeric_source_positions(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    task = _worker_task()
+    job_path = tmp_path / "job.json"
+    output_path = tmp_path / "report.json"
+    job = {**task.data.job, "path": str(job_path)}
+    report = _scope_report(task)
+    report["bullets"] = [
+        json.dumps(
+            {
+                **bullet,
+                "source_ids": [index],
+            }
+        )
+        for index, bullet in enumerate(report["bullets"])
+    ]
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+    output_path.write_text(json.dumps(report), encoding="utf-8")
+    data = task.data.model_copy(update={"job": job, "output_path": str(output_path)})
+
+    with pytest.raises(SystemExit) as error:
+        exec(  # noqa: S102 - execute the generated gate exactly as Prime Agent will
+            compile(_worker_gate_source(data), "completion_gate.py", "exec"), {}
+        )
+
+    assert error.value.code == 1
+    diagnostic = capsys.readouterr().err
+    assert "bullets at indexes [0, 1, 2] are JSON strings, not objects" in diagnostic
+    assert "do not call json.dumps on individual bullets" in diagnostic
+    assert "invalid source_ids values: ['0', '1', '2']" in diagnostic
+    assert "never numeric list positions" in diagnostic
+
+
 def test_worker_gate_rejects_duplicate_cross_bullet_citations(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
