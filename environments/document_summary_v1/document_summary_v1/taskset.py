@@ -767,19 +767,54 @@ class DocumentSummaryTaskset(
 
 def _gate_report_lines(job: dict[str, Any], variable: str) -> str:
     expected = {row["id"]: row["source_sha256"] for row in job["paragraphs"]}
-    return f"""assert set({variable}) == {{"worker", "chapter_id", "bullets", "issues"}}, "report must have exactly worker, chapter_id, bullets, and issues"
-assert {variable}["worker"] == {job["worker"]!r}, "worker identity differs from the job"
-assert {variable}["chapter_id"] == {job["chapter_id"]!r}, "chapter identity differs from the job"
-assert [{variable}_row["id"] for {variable}_row in {variable}["bullets"]] == {job["task_contract"]["bullet_ids"]!r}, "use the three supplied bullet IDs once each and in order"
-assert all(set({variable}_row) == {{"id", "text", "source_ids"}} for {variable}_row in {variable}["bullets"]), "each bullet must have exactly id, text, and source_ids"
-assert all(isinstance({variable}_row["text"], str) and 5 <= len({variable}_row["text"].split()) <= 45 for {variable}_row in {variable}["bullets"]), "each bullet text must contain 5 to 45 words"
-assert all({variable}_row["source_ids"] and all(item in {set(expected)!r} for item in {variable}_row["source_ids"]) for {variable}_row in {variable}["bullets"]), "each bullet needs one or more valid paragraph source_ids"
-assert isinstance({variable}["issues"], list) and all(isinstance(item, str) for item in {variable}["issues"]), "issues must be a JSON list of strings"
-covered_source_ids = set(item for {variable}_row in {variable}["bullets"] for item in {variable}_row["source_ids"])
-missing_source_ids = sorted({set(expected)!r} - covered_source_ids)
-diagnostics = []
+    return f"""diagnostics = []
+expected_report_keys = {{"worker", "chapter_id", "bullets", "issues"}}
+expected_bullet_keys = {{"id", "text", "source_ids"}}
+valid_source_ids = {set(expected)!r}
+if not isinstance({variable}, dict):
+    diagnostics.append("report must be a JSON object")
+    gate_bullets = []
+    gate_issues = None
+else:
+    if set({variable}) != expected_report_keys:
+        diagnostics.append("report must have exactly worker, chapter_id, bullets, and issues")
+    if {variable}.get("worker") != {job["worker"]!r}:
+        diagnostics.append("worker identity differs from the job")
+    if {variable}.get("chapter_id") != {job["chapter_id"]!r}:
+        diagnostics.append("chapter identity differs from the job")
+    gate_bullets = {variable}.get("bullets")
+    gate_issues = {variable}.get("issues")
+if not isinstance(gate_bullets, list) or len(gate_bullets) != 3:
+    diagnostics.append("report must contain exactly three bullet objects")
+    checkable_bullets = []
+else:
+    checkable_bullets = gate_bullets
+    if [row.get("id") if isinstance(row, dict) else None for row in gate_bullets] != {job["task_contract"]["bullet_ids"]!r}:
+        diagnostics.append("use the three supplied bullet IDs once each and in order")
+    if not all(isinstance(row, dict) and set(row) == expected_bullet_keys for row in gate_bullets):
+        diagnostics.append("each bullet must have exactly id, text, and source_ids")
+    else:
+        if not all(isinstance(row["text"], str) and 5 <= len(row["text"].split()) <= 45 for row in gate_bullets):
+            diagnostics.append("each bullet text must contain 5 to 45 words")
+        if not all(isinstance(row["source_ids"], list) and row["source_ids"] and all(item in valid_source_ids for item in row["source_ids"]) for row in gate_bullets):
+            diagnostics.append("each bullet needs one or more valid paragraph source_ids")
+if not isinstance(gate_issues, list) or not all(isinstance(item, str) for item in gate_issues):
+    diagnostics.append("issues must be a JSON list of strings")
+covered_source_ids = {{item for row in checkable_bullets if isinstance(row, dict) and isinstance(row.get("source_ids"), list) for item in row["source_ids"] if item in valid_source_ids}}
+missing_source_ids = sorted(valid_source_ids - covered_source_ids)
 if missing_source_ids:
-    diagnostics.append(f"missing paragraph coverage: {{missing_source_ids!r}}. Keep exactly three bullets; revise one bullet's text to summarize the missing paragraph together with its existing source, and cite both source IDs")"""
+    diagnostics.append(f"missing paragraph coverage: {{missing_source_ids!r}}. Keep exactly three bullets; revise one bullet's text to summarize the missing paragraph together with its existing source, and cite both source IDs")
+normalized_sources = {{" ".join(row["text"].casefold().split()) for row in job["paragraphs"]}}
+copied_bullet_ids = [
+    row["id"]
+    for row in checkable_bullets
+    if isinstance(row, dict)
+    and isinstance(row.get("id"), str)
+    and isinstance(row.get("text"), str)
+    and " ".join(row["text"].casefold().split()) in normalized_sources
+]
+if copied_bullet_ids:
+    diagnostics.append(f"verbatim source copying in bullets {{copied_bullet_ids!r}}; paraphrase each complete source sentence in shorter wording")"""
 
 
 def _worker_gate_source(data: DocumentSummaryWorkerData) -> str:
@@ -794,17 +829,6 @@ try:
     job = json.loads(JOB.read_text(encoding="utf-8"))
     report = json.loads(OUTPUT.read_text(encoding="utf-8"))
     {checks.replace(chr(10), chr(10) + "    ")}
-    normalized_sources = {{" ".join(row["text"].casefold().split()) for row in job["paragraphs"]}}
-    copied_bullet_ids = [
-        row["id"]
-        for row in report["bullets"]
-        if " ".join(row["text"].casefold().split()) in normalized_sources
-    ]
-    if copied_bullet_ids:
-        diagnostics.append(
-            f"verbatim source copying in bullets {{copied_bullet_ids!r}}; paraphrase each "
-            "complete source sentence in shorter wording"
-        )
     assert not diagnostics, " | ".join(diagnostics)
 except (AssertionError, KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
     print(f"completion gate: write the exact grounded three-bullet chapter report at {{OUTPUT}}. Diagnostic: {{type(error).__name__}}: {{error}}", file=sys.stderr)

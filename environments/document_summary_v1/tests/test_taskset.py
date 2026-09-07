@@ -164,6 +164,40 @@ def test_worker_gate_reports_all_actionable_summary_defects(
     assert "verbatim source copying in bullets ['scope-b01']" in diagnostic
 
 
+def test_worker_gate_reports_identity_shape_and_coverage_in_one_attempt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    task = _worker_task()
+    job_path = tmp_path / "job.json"
+    output_path = tmp_path / "report.json"
+    job = {**task.data.job, "path": str(job_path)}
+    report = {
+        "worker": job["document_id"],
+        "chapter_id": job["chapter_title"],
+        "bullets": [
+            {"id": bullet_id, "text": "", "source_ids": []}
+            for bullet_id in job["task_contract"]["bullet_ids"]
+        ],
+        "issues": [],
+    }
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+    output_path.write_text(json.dumps(report), encoding="utf-8")
+    data = task.data.model_copy(update={"job": job, "output_path": str(output_path)})
+
+    with pytest.raises(SystemExit) as error:
+        exec(  # noqa: S102 - execute the generated gate exactly as Prime Agent will
+            compile(_worker_gate_source(data), "completion_gate.py", "exec"), {}
+        )
+
+    assert error.value.code == 1
+    diagnostic = capsys.readouterr().err
+    assert "worker identity differs from the job" in diagnostic
+    assert "chapter identity differs from the job" in diagnostic
+    assert "each bullet text must contain 5 to 45 words" in diagnostic
+    assert "each bullet needs one or more valid paragraph source_ids" in diagnostic
+    assert "missing paragraph coverage" in diagnostic
+
+
 def test_empty_ipython_result_gets_clear_model_facing_feedback() -> None:
     trace = vf.Trace(
         id="empty-ipython",
