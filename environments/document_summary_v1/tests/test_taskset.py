@@ -111,6 +111,17 @@ def test_worker_probe_exposes_contract_but_not_hidden_fact_groups() -> None:
     )
     assert "email queue" not in gate
     assert "95 percent" not in gate
+    assert "normalized_sources" in gate
+    assert "paraphrase the source" in gate
+
+
+def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:
+    task = _worker_task()
+    gate = _worker_gate_source(task.data)
+
+    assert repr(task.data.job["path"]) in gate
+    assert task.data.job["paragraphs"][0]["text"] not in gate
+    assert 'job["paragraphs"]' in gate
 
 
 def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling() -> None:

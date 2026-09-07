@@ -529,9 +529,16 @@ import sys
 from pathlib import Path
 
 OUTPUT = Path({data.output_path!r})
+JOB = Path({data.job["path"]!r})
 try:
+    job = json.loads(JOB.read_text(encoding="utf-8"))
     report = json.loads(OUTPUT.read_text(encoding="utf-8"))
     {checks.replace(chr(10), chr(10) + "    ")}
+    normalized_sources = {{" ".join(row["text"].casefold().split()) for row in job["paragraphs"]}}
+    assert all(
+        " ".join(row["text"].casefold().split()) not in normalized_sources
+        for row in report["bullets"]
+    ), "paraphrase the source instead of copying a complete paragraph"
 except (AssertionError, KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
     print(f"completion gate: write the exact grounded three-bullet chapter report at {{OUTPUT}}. Diagnostic: {{type(error).__name__}}: {{error}}", file=sys.stderr)
     raise SystemExit(1)
