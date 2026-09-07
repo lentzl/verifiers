@@ -588,7 +588,7 @@ assert all(set({variable}_row) == {{"id", "text", "source_ids"}} for {variable}_
 assert all(isinstance({variable}_row["text"], str) and 5 <= len({variable}_row["text"].split()) <= 45 for {variable}_row in {variable}["bullets"]), "each bullet text must contain 5 to 45 words"
 assert all({variable}_row["source_ids"] and all(item in {set(expected)!r} for item in {variable}_row["source_ids"]) for {variable}_row in {variable}["bullets"]), "each bullet needs one or more valid paragraph source_ids"
 assert set(item for {variable}_row in {variable}["bullets"] for item in {variable}_row["source_ids"]) == {set(expected)!r}, "source_ids must collectively cover every paragraph ID"
-assert isinstance({variable}["issues"], list) and all(isinstance(item, str) for item in {variable}["issues"]), "issues must be a JSON list of strings"""
+assert isinstance({variable}["issues"], list) and all(isinstance(item, str) for item in {variable}["issues"]), 'issues must be a JSON list of strings'"""
 
 
 def _worker_gate_source(data: DocumentSummaryWorkerData) -> str:

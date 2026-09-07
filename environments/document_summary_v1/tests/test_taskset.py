@@ -122,9 +122,14 @@ def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts()
     task = _worker_task()
     gate = _worker_gate_source(task.data)
 
+    compile(gate, "completion_gate.py", "exec")
     assert repr(task.data.job["path"]) in gate
     assert task.data.job["paragraphs"][0]["text"] not in gate
     assert 'job["paragraphs"]' in gate
+
+
+def test_owner_gate_is_valid_python() -> None:
+    compile(_owner_gate_source(_owner_task().data), "completion_gate.py", "exec")
 
 
 def test_empty_ipython_result_gets_clear_model_facing_feedback() -> None:
