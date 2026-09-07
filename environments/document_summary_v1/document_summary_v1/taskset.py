@@ -845,7 +845,10 @@ class DocumentSummaryTaskset(
                     "You are a concise English chapter summarizer. Answer the user directly with "
                     "exactly three Markdown bullets and no preamble. Do not call tools."
                 ),
-                network_allow=[],
+                # This probe contains only inline text. A restricted network policy makes
+                # interception append a provider-capability notice to the user message,
+                # contaminating the language-only input even when no capability is removed.
+                network_allow=["*"],
                 chapter=chapter,
                 fact_groups=fact_groups[chapter["id"]],
             )

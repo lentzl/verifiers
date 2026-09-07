@@ -157,6 +157,7 @@ def test_text_probe_is_single_turn_plain_english_without_artifact_plumbing() -> 
     assert "completion_gate.py" not in task.data.prompt_text
     assert "email queue" in task.data.prompt_text
     assert "fact_groups" not in task.data.prompt_text
+    assert task.data.network_allow == ["*"]
 
 
 def test_plain_summary_components_measure_language_without_citation_schema() -> None:
