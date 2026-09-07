@@ -587,8 +587,12 @@ assert [{variable}_row["id"] for {variable}_row in {variable}["bullets"]] == {jo
 assert all(set({variable}_row) == {{"id", "text", "source_ids"}} for {variable}_row in {variable}["bullets"]), "each bullet must have exactly id, text, and source_ids"
 assert all(isinstance({variable}_row["text"], str) and 5 <= len({variable}_row["text"].split()) <= 45 for {variable}_row in {variable}["bullets"]), "each bullet text must contain 5 to 45 words"
 assert all({variable}_row["source_ids"] and all(item in {set(expected)!r} for item in {variable}_row["source_ids"]) for {variable}_row in {variable}["bullets"]), "each bullet needs one or more valid paragraph source_ids"
-assert set(item for {variable}_row in {variable}["bullets"] for item in {variable}_row["source_ids"]) == {set(expected)!r}, "source_ids must collectively cover every paragraph ID"
-assert isinstance({variable}["issues"], list) and all(isinstance(item, str) for item in {variable}["issues"]), 'issues must be a JSON list of strings'"""
+assert isinstance({variable}["issues"], list) and all(isinstance(item, str) for item in {variable}["issues"]), "issues must be a JSON list of strings"
+covered_source_ids = set(item for {variable}_row in {variable}["bullets"] for item in {variable}_row["source_ids"])
+missing_source_ids = sorted({set(expected)!r} - covered_source_ids)
+diagnostics = []
+if missing_source_ids:
+    diagnostics.append(f"missing paragraph coverage: {{missing_source_ids!r}}. Keep exactly three bullets; revise one bullet's text to summarize the missing paragraph together with its existing source, and cite both source IDs")"""
 
 
 def _worker_gate_source(data: DocumentSummaryWorkerData) -> str:
@@ -604,10 +608,17 @@ try:
     report = json.loads(OUTPUT.read_text(encoding="utf-8"))
     {checks.replace(chr(10), chr(10) + "    ")}
     normalized_sources = {{" ".join(row["text"].casefold().split()) for row in job["paragraphs"]}}
-    assert all(
-        " ".join(row["text"].casefold().split()) not in normalized_sources
+    copied_bullet_ids = [
+        row["id"]
         for row in report["bullets"]
-    ), "paraphrase the source instead of copying a complete paragraph"
+        if " ".join(row["text"].casefold().split()) in normalized_sources
+    ]
+    if copied_bullet_ids:
+        diagnostics.append(
+            f"verbatim source copying in bullets {{copied_bullet_ids!r}}; paraphrase each "
+            "complete source sentence in shorter wording"
+        )
+    assert not diagnostics, " | ".join(diagnostics)
 except (AssertionError, KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
     print(f"completion gate: write the exact grounded three-bullet chapter report at {{OUTPUT}}. Diagnostic: {{type(error).__name__}}: {{error}}", file=sys.stderr)
     raise SystemExit(1)

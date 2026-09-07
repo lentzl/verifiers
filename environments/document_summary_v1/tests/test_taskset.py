@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -114,8 +115,9 @@ def test_worker_probe_exposes_contract_but_not_hidden_fact_groups() -> None:
     assert "email queue" not in gate
     assert "95 percent" not in gate
     assert "normalized_sources" in gate
-    assert "paraphrase the source" in gate
-    assert "source_ids must collectively cover every paragraph ID" in gate
+    assert "paraphrase" in gate
+    assert "missing paragraph coverage" in gate
+    assert "Keep exactly three bullets" in gate
 
 
 def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:
@@ -130,6 +132,32 @@ def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts()
 
 def test_owner_gate_is_valid_python() -> None:
     compile(_owner_gate_source(_owner_task().data), "completion_gate.py", "exec")
+
+
+def test_worker_gate_reports_all_actionable_summary_defects(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    task = _worker_task()
+    job_path = tmp_path / "job.json"
+    output_path = tmp_path / "report.json"
+    job = {**task.data.job, "path": str(job_path)}
+    report = _scope_report(task)
+    report["bullets"][0]["text"] = task.data.job["paragraphs"][0]["text"]
+    report["bullets"][2]["source_ids"] = ["scope-p04"]
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+    output_path.write_text(json.dumps(report), encoding="utf-8")
+    data = task.data.model_copy(update={"job": job, "output_path": str(output_path)})
+
+    with pytest.raises(SystemExit) as error:
+        exec(  # noqa: S102 - execute the generated gate exactly as Prime Agent will
+            compile(_worker_gate_source(data), "completion_gate.py", "exec"), {}
+        )
+
+    assert error.value.code == 1
+    diagnostic = capsys.readouterr().err
+    assert "missing paragraph coverage: ['scope-p03']" in diagnostic
+    assert "Keep exactly three bullets" in diagnostic
+    assert "verbatim source copying in bullets ['scope-b01']" in diagnostic
 
 
 def test_empty_ipython_result_gets_clear_model_facing_feedback() -> None:
