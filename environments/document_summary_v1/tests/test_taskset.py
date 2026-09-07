@@ -151,7 +151,8 @@ def test_text_probe_is_single_turn_plain_english_without_artifact_plumbing() -> 
     task = _text_task()
 
     assert task.data.name == "northstar-scope-plain-summary-probe-v1"
-    assert "exactly three concise English bullet points" in task.data.prompt_text
+    assert "three to five concise English bullet points" in task.data.prompt_text
+    assert "Preserve every decision-relevant fact" in task.data.prompt_text
     assert "Do not use IPython, code, JSON, files, or tools" in task.data.prompt_text
     assert "worker-report.json" not in task.data.prompt_text
     assert "completion_gate.py" not in task.data.prompt_text
@@ -172,7 +173,7 @@ def test_plain_summary_components_measure_language_without_citation_schema() -> 
     assert _plain_summary_components(
         reply, task.data.chapter, task.data.fact_groups
     ) == {
-        "summary_text_three_bullets": 1.0,
+        "summary_text_bullet_count": 1.0,
         "summary_text_concise": 1.0,
         "summary_text_not_source_copy": 1.0,
         "chapter_fact_coverage": 1.0,
@@ -190,6 +191,25 @@ def test_plain_summary_fact_coverage_accepts_clear_scope_paraphrases() -> None:
     assert _plain_summary_components(
         reply, task.data.chapter, task.data.fact_groups
     )["chapter_fact_coverage"] == 1.0
+
+
+def test_plain_summary_components_accept_four_grounded_bullets() -> None:
+    task = _text_task("exceptions")
+    reply = (
+        "- During an outage, keep an offline log with ticket identifiers and timestamps without overwriting newer activity.\n"
+        "- Mark suspected duplicates as related and retain both records until a reviewer decides whether to merge.\n"
+        "- In the weekly review, keep count differences unresolved until their cause is documented.\n"
+        "- The support lead approves routine fixes; deletions or deadline changes also need the operations manager."
+    )
+
+    assert _plain_summary_components(
+        reply, task.data.chapter, task.data.fact_groups
+    ) == {
+        "summary_text_bullet_count": 1.0,
+        "summary_text_concise": 1.0,
+        "summary_text_not_source_copy": 1.0,
+        "chapter_fact_coverage": 1.0,
+    }
 
 
 def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:

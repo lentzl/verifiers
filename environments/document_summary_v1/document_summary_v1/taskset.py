@@ -247,14 +247,14 @@ def _plain_summary_components(
     }
     report = {"bullets": [{"text": text} for text in bullets]}
     return {
-        "summary_text_three_bullets": float(len(bullets) == 3),
+        "summary_text_bullet_count": float(3 <= len(bullets) <= 5),
         "summary_text_concise": float(
-            len(bullets) == 3
+            3 <= len(bullets) <= 5
             and all(5 <= count <= 45 for count in word_counts)
             and sum(word_counts) <= int(source_word_count * 0.8)
         ),
         "summary_text_not_source_copy": float(
-            len(bullets) == 3
+            3 <= len(bullets) <= 5
             and all(
                 " ".join(text.casefold().split()) not in normalized_sources
                 for text in bullets
@@ -835,15 +835,16 @@ class DocumentSummaryTaskset(
                 name=f"northstar-{chapter['id']}-plain-summary-probe-v1",
                 description="Direct English bullet-summary capability isolation.",
                 prompt=(
-                    "Summarize the chapter below into exactly three concise English bullet "
-                    "points. Capture the decision-relevant facts, combine closely related facts "
-                    "when useful, and do not copy a whole source paragraph. Answer directly with "
-                    "three Markdown bullets. Do not use IPython, code, JSON, files, or tools.\n\n"
+                    "Summarize the chapter below into three to five concise English bullet points. "
+                    "Preserve every decision-relevant fact, combine closely related facts when "
+                    "useful, and do not copy a whole source paragraph. Answer directly with "
+                    "Markdown bullets. Do not use IPython, code, JSON, files, or tools.\n\n"
                     f"Chapter: {chapter['title']}\n{rendered}"
                 ),
                 system_prompt=(
                     "You are a concise English chapter summarizer. Answer the user directly with "
-                    "exactly three Markdown bullets and no preamble. Do not call tools."
+                    "three to five Markdown bullets and no preamble. Preserve every "
+                    "decision-relevant fact and do not call tools."
                 ),
                 # This probe contains only inline text. A restricted network policy makes
                 # interception append a provider-capability notice to the user message,
