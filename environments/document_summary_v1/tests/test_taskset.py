@@ -104,6 +104,11 @@ def test_worker_probe_exposes_contract_but_not_hidden_fact_groups() -> None:
     assert task.data.output_path == WORKER_OUTPUT_PATH
     assert task.data.job["task_contract"]["bullet_count"] == 3
     assert "Do not spawn a child" in task.data.prompt_text
+    assert "json.dump requires an open file handle" in task.data.system_prompt
+    assert any(
+        "empty JSON list for issues" in requirement
+        for requirement in task.data.job["task_contract"]["requirements"]
+    )
     assert "email queue" not in gate
     assert "95 percent" not in gate
 
