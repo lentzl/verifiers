@@ -99,6 +99,7 @@ def _strict_worker_report(
         "worker_report_order": 0.0,
         "worker_report_source_binding": 0.0,
         "worker_report_nonempty": 0.0,
+        "worker_report_source_changed": 0.0,
         "worker_report_issue_schema": 0.0,
         "worker_report_identifier_preservation": 0.0,
     }
@@ -137,6 +138,20 @@ def _strict_worker_report(
             for unit_id in expected
         )
     )
+    preserve = set(data.job["glossary"]["preserve"])
+    translation_required = [
+        unit_id
+        for unit_id, unit in expected.items()
+        if unit["text"].strip() not in preserve
+        and re.search(r"[A-Za-z]{3,}", unit["text"])
+    ]
+    components["worker_report_source_changed"] = float(
+        set(by_id) == set(expected)
+        and all(
+            by_id[unit_id].get("text", "").strip() != expected[unit_id]["text"].strip()
+            for unit_id in translation_required
+        )
+    )
     components["worker_report_issue_schema"] = float(
         set(by_id) == set(expected)
         and all(
@@ -151,11 +166,11 @@ def _strict_worker_report(
     target_text = "\n".join(
         row.get("text", "") for row in rows if isinstance(row, dict)
     )
-    preserve = data.job["glossary"]["preserve"]
+    preserved_tokens = data.job["glossary"]["preserve"]
     components["worker_report_identifier_preservation"] = float(
         all(
             target_text.count(token) >= source_text.count(token)
-            for token in preserve
+            for token in preserved_tokens
             if token in source_text
         )
     )

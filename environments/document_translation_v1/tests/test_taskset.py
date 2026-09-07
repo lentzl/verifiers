@@ -203,6 +203,25 @@ def test_reference_worker_report_passes_probe_contract() -> None:
     assert set(components.values()) == {1.0}
 
 
+def test_worker_probe_rejects_english_source_copy() -> None:
+    task = _worker_task()
+    report = {
+        "worker": task.data.job["worker"],
+        "translations": [
+            {
+                **unit,
+                "issues": [],
+            }
+            for unit in task.data.job["units"]
+        ],
+    }
+
+    complete, components = _strict_worker_report(report, task.data)
+
+    assert complete is False
+    assert components["worker_report_source_changed"] == 0.0
+
+
 def test_reference_artifact_passes_contract_and_scores_exactly() -> None:
     task = _task()
     artifact = _reference_artifact(task)
