@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +14,7 @@ from document_summary_v1.taskset import (
     REPEATED_IPYTHON_FAILURE_FEEDBACK,
     REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK,
     TERMINAL_WORKER_RECOVERY_FEEDBACK,
+    TEXT_REVISION_MARKER,
     WORKER_OUTPUT_PATH,
     DocumentSummaryConfig,
     DocumentSummaryTaskset,
@@ -25,6 +28,7 @@ from document_summary_v1.taskset import (
     _rewrite_repeated_ipython_failure,
     _rewrite_repeated_ipython_no_progress,
     _strict_report,
+    _text_revision_gate_source,
     _worker_gate_source,
     _worker_recovery_feedback,
 )
@@ -210,6 +214,29 @@ def test_plain_summary_components_accept_four_grounded_bullets() -> None:
         "summary_text_not_source_copy": 1.0,
         "chapter_fact_coverage": 1.0,
     }
+
+
+def test_text_revision_gate_requests_exactly_one_budgeted_rewrite(tmp_path: Path) -> None:
+    task = _text_task("operations")
+    marker = tmp_path / "text-summary-revision-requested"
+    source = _text_revision_gate_source(task.data.chapter).replace(
+        repr(TEXT_REVISION_MARKER), repr(str(marker))
+    )
+
+    first = subprocess.run(
+        [sys.executable, "-c", source], text=True, capture_output=True, check=False
+    )
+    second = subprocess.run(
+        [sys.executable, "-c", source], text=True, capture_output=True, check=False
+    )
+
+    assert first.returncode == 1
+    assert "at most 77 total words" in first.stderr
+    assert "preserving every decision-relevant fact" in first.stderr
+    assert second.returncode == 0
+    assert second.stderr == ""
+    assert "P0" not in source
+    assert "incident lead" not in source
 
 
 def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:

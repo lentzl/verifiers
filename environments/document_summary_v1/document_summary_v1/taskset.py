@@ -18,6 +18,7 @@ from .fixture import build_fixture
 ROOT = "/workspace/document-summary-v1"
 INDEX_PATH = f"{ROOT}/index.json"
 GATE_PATH = f"{ROOT}/completion_gate.py"
+TEXT_REVISION_MARKER = f"{ROOT}/text-summary-revision-requested"
 OUTPUT_PATH = "/logs/artifacts/document-summary-v1/summary.json"
 WORKER_OUTPUT_PATH = "/logs/artifacts/document-summary-v1/worker-report.json"
 SCHEMA_VERSION = "prime-rl/document-chapter-summary/v1"
@@ -232,6 +233,25 @@ def _plain_summary_bullets(reply: str) -> list[str]:
         if match is not None:
             bullets.append(match.group(1))
     return bullets
+
+
+def _text_revision_gate_source(chapter: dict[str, Any]) -> str:
+    source_word_count = sum(len(row["text"].split()) for row in chapter["paragraphs"])
+    word_budget = int(source_word_count * 0.8)
+    return f'''from pathlib import Path
+import sys
+
+marker = Path({TEXT_REVISION_MARKER!r})
+if marker.exists():
+    raise SystemExit(0)
+marker.write_text("revision requested\\n", encoding="utf-8")
+print(
+    "completion gate: compress the draft while preserving every decision-relevant fact. "
+    "Return only 3-5 Markdown bullets using at most {word_budget} total words; do not call tools.",
+    file=sys.stderr,
+)
+raise SystemExit(1)
+'''
 
 
 def _plain_summary_components(
@@ -782,6 +802,12 @@ class DocumentSummaryWorkerTask(vf.Task[DocumentSummaryWorkerData]):
 
 
 class DocumentSummaryTextTask(vf.Task[DocumentSummaryTextData]):
+    async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        result = await runtime.run(["mkdir", "-p", ROOT], {})
+        if result.exit_code != 0:
+            raise RuntimeError(f"summary text setup failed: {result.stderr[-500:]}")
+        await runtime.write(GATE_PATH, _text_revision_gate_source(self.data.chapter).encode())
+
     @vf.stop
     async def single_turn(self, trace: vf.Trace) -> bool:
         return trace.num_turns >= 1
