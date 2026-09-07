@@ -115,6 +115,7 @@ def test_worker_probe_exposes_contract_but_not_hidden_fact_groups() -> None:
     assert "95 percent" not in gate
     assert "normalized_sources" in gate
     assert "paraphrase the source" in gate
+    assert "source_ids must collectively cover every paragraph ID" in gate
 
 
 def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:

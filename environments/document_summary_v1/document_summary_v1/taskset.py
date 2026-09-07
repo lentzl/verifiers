@@ -580,15 +580,15 @@ class DocumentSummaryTaskset(
 
 def _gate_report_lines(job: dict[str, Any], variable: str) -> str:
     expected = {row["id"]: row["source_sha256"] for row in job["paragraphs"]}
-    return f"""assert set({variable}) == {{"worker", "chapter_id", "bullets", "issues"}}
-assert {variable}["worker"] == {job["worker"]!r}
-assert {variable}["chapter_id"] == {job["chapter_id"]!r}
-assert [{variable}_row["id"] for {variable}_row in {variable}["bullets"]] == {job["task_contract"]["bullet_ids"]!r}
-assert all(set({variable}_row) == {{"id", "text", "source_ids"}} for {variable}_row in {variable}["bullets"])
-assert all(isinstance({variable}_row["text"], str) and 5 <= len({variable}_row["text"].split()) <= 45 for {variable}_row in {variable}["bullets"])
-assert all({variable}_row["source_ids"] and all(item in {set(expected)!r} for item in {variable}_row["source_ids"]) for {variable}_row in {variable}["bullets"])
-assert set(item for {variable}_row in {variable}["bullets"] for item in {variable}_row["source_ids"]) == {set(expected)!r}
-assert isinstance({variable}["issues"], list) and all(isinstance(item, str) for item in {variable}["issues"])"""
+    return f"""assert set({variable}) == {{"worker", "chapter_id", "bullets", "issues"}}, "report must have exactly worker, chapter_id, bullets, and issues"
+assert {variable}["worker"] == {job["worker"]!r}, "worker identity differs from the job"
+assert {variable}["chapter_id"] == {job["chapter_id"]!r}, "chapter identity differs from the job"
+assert [{variable}_row["id"] for {variable}_row in {variable}["bullets"]] == {job["task_contract"]["bullet_ids"]!r}, "use the three supplied bullet IDs once each and in order"
+assert all(set({variable}_row) == {{"id", "text", "source_ids"}} for {variable}_row in {variable}["bullets"]), "each bullet must have exactly id, text, and source_ids"
+assert all(isinstance({variable}_row["text"], str) and 5 <= len({variable}_row["text"].split()) <= 45 for {variable}_row in {variable}["bullets"]), "each bullet text must contain 5 to 45 words"
+assert all({variable}_row["source_ids"] and all(item in {set(expected)!r} for item in {variable}_row["source_ids"]) for {variable}_row in {variable}["bullets"]), "each bullet needs one or more valid paragraph source_ids"
+assert set(item for {variable}_row in {variable}["bullets"] for item in {variable}_row["source_ids"]) == {set(expected)!r}, "source_ids must collectively cover every paragraph ID"
+assert isinstance({variable}["issues"], list) and all(isinstance(item, str) for item in {variable}["issues"]), "issues must be a JSON list of strings"""
 
 
 def _worker_gate_source(data: DocumentSummaryWorkerData) -> str:
