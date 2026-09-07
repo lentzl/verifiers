@@ -9,6 +9,7 @@ from document_summary_v1.taskset import (
     GATE_PATH,
     OUTPUT_PATH,
     REPEATED_IPYTHON_FAILURE_FEEDBACK,
+    REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK,
     WORKER_OUTPUT_PATH,
     DocumentSummaryConfig,
     DocumentSummaryTaskset,
@@ -18,6 +19,7 @@ from document_summary_v1.taskset import (
     _report_components,
     _rewrite_empty_ipython_feedback,
     _rewrite_repeated_ipython_failure,
+    _rewrite_repeated_ipython_no_progress,
     _strict_report,
     _worker_gate_source,
 )
@@ -298,6 +300,123 @@ def test_first_failed_ipython_call_is_not_labeled_as_repeated() -> None:
 
     assert _rewrite_repeated_ipython_failure(request, trace) is None
     assert "repeated_ipython_failure_feedback_count" not in trace.info
+
+
+def test_repeated_successful_ipython_call_with_same_result_gets_progress_feedback(
+) -> None:
+    trace = vf.Trace(
+        id="repeated-successful-ipython",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="DocumentSummaryWorkerTask", data=vf.TaskData(idx=0)),
+        nodes=[],
+    )
+    code = "document_bullets = ['scope-b01', 'scope-b02', 'scope-b03']\ndocument_bullets"
+    result = "['scope-b01', 'scope-b02', 'scope-b03']"
+    request = vf.Request(
+        messages=[
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="first-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": code}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(
+                tool_call_id="first-call", name="ipython", content=result
+            ),
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="second-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": code}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(
+                tool_call_id="second-call", name="ipython", content=result
+            ),
+        ]
+    )
+
+    rewritten = _rewrite_repeated_ipython_no_progress(request, trace)
+
+    assert rewritten is not None
+    assert result in rewritten.messages[-1].content
+    assert REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK in rewritten.messages[-1].content
+    assert REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK not in request.messages[-1].content
+    assert trace.info["repeated_ipython_no_progress_feedback_count"] == 1
+
+
+def test_first_successful_ipython_call_is_not_labeled_as_no_progress() -> None:
+    trace = vf.Trace(
+        id="first-successful-ipython",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="DocumentSummaryWorkerTask", data=vf.TaskData(idx=0)),
+        nodes=[],
+    )
+    request = vf.Request(
+        messages=[
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="first-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": "artifact.exists()"}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(
+                tool_call_id="first-call", name="ipython", content="False"
+            ),
+        ]
+    )
+
+    assert _rewrite_repeated_ipython_no_progress(request, trace) is None
+    assert "repeated_ipython_no_progress_feedback_count" not in trace.info
+
+
+def test_repeated_ipython_call_with_changed_result_is_not_labeled_no_progress() -> None:
+    trace = vf.Trace(
+        id="changed-ipython-result",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="DocumentSummaryWorkerTask", data=vf.TaskData(idx=0)),
+        nodes=[],
+    )
+    code = "artifact.exists()"
+    request = vf.Request(
+        messages=[
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="first-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": code}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(
+                tool_call_id="first-call", name="ipython", content="False"
+            ),
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="second-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": code}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(
+                tool_call_id="second-call", name="ipython", content="True"
+            ),
+        ]
+    )
+
+    assert _rewrite_repeated_ipython_no_progress(request, trace) is None
+    assert "repeated_ipython_no_progress_feedback_count" not in trace.info
 
 
 def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling() -> None:

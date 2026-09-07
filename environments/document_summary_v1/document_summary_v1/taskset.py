@@ -37,6 +37,12 @@ REPEATED_IPYTHON_FAILURE_FEEDBACK = (
     "directly update the required artifact from the completion-gate diagnostic, then "
     "stop when the gate passes."
 )
+REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK = (
+    "Prime Agent scaffold: this exact IPython code already returned the same result "
+    "and was retried unchanged, so it made no progress. Do not call it again. Use one "
+    "concrete write or edit to advance the required artifact; if the artifact already "
+    "exists, stop calling tools and return a concise final answer."
+)
 
 SYSTEM_PROMPT = (
     "You are the document summary owner running inside Prime Agent. Use the persistent IPython "
@@ -389,13 +395,88 @@ def _rewrite_repeated_ipython_failure(
     return request.model_copy(update={"messages": messages})
 
 
+def _rewrite_repeated_ipython_no_progress(
+    request: vf.Request, trace: vf.Trace
+) -> vf.Request | None:
+    """Interrupt an unchanged successful call that returned the same result twice."""
+
+    if not request.messages or not isinstance(request.messages[-1], vf.ToolMessage):
+        return None
+    current_result = request.messages[-1]
+    if _tool_result_failed(current_result):
+        return None
+    current_assistant_position = next(
+        (
+            position
+            for position in range(len(request.messages) - 2, -1, -1)
+            if isinstance(request.messages[position], AssistantMessage)
+        ),
+        None,
+    )
+    if current_assistant_position is None:
+        return None
+    current_assistant = request.messages[current_assistant_position]
+    current_call = next(
+        (
+            call
+            for call in current_assistant.tool_calls or []
+            if call.id == current_result.tool_call_id
+        ),
+        None,
+    )
+    if current_call is None:
+        return None
+    current_code = _ipython_code(current_call)
+    if current_code is None or not current_code.strip():
+        return None
+
+    prior_calls: dict[str, str] = {}
+    for message in request.messages[:current_assistant_position]:
+        if not isinstance(message, AssistantMessage):
+            continue
+        for call in message.tool_calls or []:
+            code = _ipython_code(call)
+            if code is not None:
+                prior_calls[call.id] = code
+    current_content = content_text(current_result.content)
+    repeated_prior_ids = {
+        call_id for call_id, code in prior_calls.items() if code == current_code
+    }
+    if not any(
+        isinstance(message, vf.ToolMessage)
+        and message.tool_call_id in repeated_prior_ids
+        and not _tool_result_failed(message)
+        and content_text(message.content) == current_content
+        for message in request.messages[:current_assistant_position]
+    ):
+        return None
+
+    messages = list(request.messages)
+    original = current_content.rstrip()
+    separator = "\n\n" if original else ""
+    messages[-1] = current_result.model_copy(
+        update={
+            "content": (
+                f"{original}{separator}{REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK}"
+            )
+        }
+    )
+    trace.info["repeated_ipython_no_progress_feedback_count"] = int(
+        trace.info.get("repeated_ipython_no_progress_feedback_count", 0)
+    ) + 1
+    return request.model_copy(update={"messages": messages})
+
+
 def _scaffold_ipython_feedback(
     request: vf.Request, trace: vf.Trace
 ) -> vf.Request | None:
     empty = _rewrite_empty_ipython_feedback(request, trace)
     if empty is not None:
         return empty
-    return _rewrite_repeated_ipython_failure(request, trace)
+    failure = _rewrite_repeated_ipython_failure(request, trace)
+    if failure is not None:
+        return failure
+    return _rewrite_repeated_ipython_no_progress(request, trace)
 
 
 def _spawn_records(trace: vf.Trace) -> list[tuple[str | None, str | None, bool]]:
