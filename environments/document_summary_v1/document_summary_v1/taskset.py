@@ -26,6 +26,11 @@ ASSIGNMENTS = (
     ("operations-summarizer", "operations"),
     ("exceptions-summarizer", "exceptions"),
 )
+EMPTY_IPYTHON_FEEDBACK = (
+    "Prime Agent scaffold: this IPython call contained no executable code and made "
+    "no progress. If the required artifact already exists, stop calling tools and "
+    "return a concise final answer. Otherwise issue one concrete corrective tool call."
+)
 
 SYSTEM_PROMPT = (
     "You are the document summary owner running inside Prime Agent. Use the persistent IPython "
@@ -235,6 +240,58 @@ def _call_name(call: ast.Call) -> str | None:
     return None
 
 
+def _rewrite_empty_ipython_feedback(
+    request: vf.Request, trace: vf.Trace
+) -> vf.Request | None:
+    """Turn a trailing empty IPython result into actionable model-facing feedback."""
+
+    trailing_tools: list[tuple[int, vf.ToolMessage]] = []
+    for position in range(len(request.messages) - 1, -1, -1):
+        message = request.messages[position]
+        if not isinstance(message, vf.ToolMessage):
+            break
+        trailing_tools.append((position, message))
+    if not trailing_tools:
+        return None
+
+    assistant = next(
+        (
+            message
+            for message in reversed(
+                request.messages[: min(position for position, _ in trailing_tools)]
+            )
+            if isinstance(message, AssistantMessage)
+        ),
+        None,
+    )
+    if assistant is None:
+        return None
+    calls = {call.id: call for call in assistant.tool_calls or []}
+    messages = list(request.messages)
+    rewritten = 0
+    for position, message in trailing_tools:
+        call = calls.get(message.tool_call_id)
+        if call is None or call.name != "ipython":
+            continue
+        try:
+            arguments = json.loads(call.arguments)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        code = arguments.get("code") if isinstance(arguments, dict) else None
+        if not isinstance(code, str) or code.strip():
+            continue
+        messages[position] = message.model_copy(
+            update={"content": EMPTY_IPYTHON_FEEDBACK}
+        )
+        rewritten += 1
+    if not rewritten:
+        return None
+    trace.info["empty_ipython_feedback_count"] = (
+        int(trace.info.get("empty_ipython_feedback_count", 0)) + rewritten
+    )
+    return request.model_copy(update={"messages": messages})
+
+
 def _spawn_records(trace: vf.Trace) -> list[tuple[str | None, str | None, bool]]:
     records = []
     for node in trace.nodes:
@@ -298,6 +355,12 @@ def _child_reports(trace: vf.Trace) -> dict[str, Any]:
 
 
 class DocumentSummaryTask(vf.Task[DocumentSummaryData]):
+    @vf.intercept
+    def scaffold_empty_ipython(
+        self, request: vf.Request, trace: vf.Trace
+    ) -> vf.Request | None:
+        return _rewrite_empty_ipython_feedback(request, trace)
+
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         result = await runtime.run(
             ["mkdir", "-p", f"{ROOT}/jobs", self.data.output_path.rsplit("/", 1)[0]], {}
@@ -386,6 +449,12 @@ class DocumentSummaryTask(vf.Task[DocumentSummaryData]):
 
 
 class DocumentSummaryWorkerTask(vf.Task[DocumentSummaryWorkerData]):
+    @vf.intercept
+    def scaffold_empty_ipython(
+        self, request: vf.Request, trace: vf.Trace
+    ) -> vf.Request | None:
+        return _rewrite_empty_ipython_feedback(request, trace)
+
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         result = await runtime.run(
             [

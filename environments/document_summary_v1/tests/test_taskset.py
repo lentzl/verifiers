@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from document_summary_v1.fixture import build_fixture
 from document_summary_v1.taskset import (
+    EMPTY_IPYTHON_FEEDBACK,
     GATE_PATH,
     OUTPUT_PATH,
     WORKER_OUTPUT_PATH,
@@ -13,6 +14,7 @@ from document_summary_v1.taskset import (
     _fact_coverage,
     _owner_gate_source,
     _report_components,
+    _rewrite_empty_ipython_feedback,
     _strict_report,
     _worker_gate_source,
 )
@@ -122,6 +124,64 @@ def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts()
     assert repr(task.data.job["path"]) in gate
     assert task.data.job["paragraphs"][0]["text"] not in gate
     assert 'job["paragraphs"]' in gate
+
+
+def test_empty_ipython_result_gets_clear_model_facing_feedback() -> None:
+    trace = vf.Trace(
+        id="empty-ipython",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="DocumentSummaryWorkerTask", data=vf.TaskData(idx=0)),
+        nodes=[],
+    )
+    request = vf.Request(
+        messages=[
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="empty-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": "  \n"}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(tool_call_id="empty-call", name="ipython", content=""),
+        ]
+    )
+
+    rewritten = _rewrite_empty_ipython_feedback(request, trace)
+
+    assert rewritten is not None
+    assert rewritten.messages[-1].content == EMPTY_IPYTHON_FEEDBACK
+    assert request.messages[-1].content == ""
+    assert trace.info["empty_ipython_feedback_count"] == 1
+
+
+def test_concrete_ipython_call_is_not_rewritten() -> None:
+    trace = vf.Trace(
+        id="concrete-ipython",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="DocumentSummaryWorkerTask", data=vf.TaskData(idx=0)),
+        nodes=[],
+    )
+    request = vf.Request(
+        messages=[
+            vf.AssistantMessage(
+                tool_calls=[
+                    vf.ToolCall(
+                        id="real-call",
+                        name="ipython",
+                        arguments=json.dumps({"code": "artifact.exists()"}),
+                    )
+                ]
+            ),
+            vf.ToolMessage(
+                tool_call_id="real-call", name="ipython", content="True"
+            ),
+        ]
+    )
+
+    assert _rewrite_empty_ipython_feedback(request, trace) is None
+    assert "empty_ipython_feedback_count" not in trace.info
 
 
 def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling() -> None:
