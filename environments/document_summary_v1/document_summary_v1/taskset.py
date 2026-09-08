@@ -19,6 +19,7 @@ from .fixture import (
     TEXT_REVISION_FEEDBACK,
     TEXT_REVISION_SAFETY_MARGIN_REQUIREMENT,
     TEXT_SUMMARY_SYSTEM_PROMPT,
+    build_confirmation_fixture,
     build_fixture,
     render_text_summary_prompt,
 )
@@ -968,10 +969,12 @@ class DocumentSummaryTextTask(vf.Task[DocumentSummaryTextData]):
 
 
 class DocumentSummaryConfig(vf.TasksetConfig):
-    split: Literal["development"] = "development"
+    split: Literal["development", "confirmation"] = "development"
     num_tasks: int = Field(1, ge=1, le=1)
     mode: Literal["owner", "worker_probe", "text_probe"] = "worker_probe"
-    text_probe_chapter: Literal["scope", "operations", "exceptions"] = "scope"
+    text_probe_chapter: Literal[
+        "scope", "operations", "exceptions", "intake", "completion", "audit"
+    ] = "scope"
 
 
 class DocumentSummaryTaskset(
@@ -980,7 +983,12 @@ class DocumentSummaryTaskset(
     def load(
         self,
     ) -> list[DocumentSummaryTask | DocumentSummaryWorkerTask | DocumentSummaryTextTask]:
-        document, fact_groups = build_fixture()
+        if self.config.split == "confirmation":
+            if self.config.mode != "text_probe":
+                raise ValueError("confirmation split supports text_probe only")
+            document, fact_groups = build_confirmation_fixture()
+        else:
+            document, fact_groups = build_fixture()
         if self.config.mode == "text_probe":
             _install_text_revision_commit_scaffold()
             chapter = next(
@@ -990,8 +998,16 @@ class DocumentSummaryTaskset(
             )
             data = DocumentSummaryTextData(
                 idx=0,
-                name=f"northstar-{chapter['id']}-plain-summary-probe-v1",
-                description="Direct English bullet-summary capability isolation.",
+                name=(
+                    f"{document['document_id']}-{chapter['id']}-plain-summary-probe-v1"
+                    if self.config.split == "confirmation"
+                    else f"northstar-{chapter['id']}-plain-summary-probe-v1"
+                ),
+                description=(
+                    "Fresh English bullet-summary utility confirmation."
+                    if self.config.split == "confirmation"
+                    else "Direct English bullet-summary capability isolation."
+                ),
                 prompt=render_text_summary_prompt(chapter),
                 system_prompt=TEXT_SUMMARY_SYSTEM_PROMPT,
                 # This probe contains only inline text. A restricted network policy makes

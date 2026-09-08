@@ -12,3 +12,8 @@ coordinator cannot accidentally paraphrase away critical worker instructions.
 The runtime includes source paragraphs, stable IDs, and output contracts only.
 Hidden fact groups are used by the evaluator to measure decision-relevant coverage;
 they are never written into the sandbox.
+
+The `confirmation` split contains a separate facilities handbook reserved for
+post-training text probes. Its chapters never enter the development SFT exporter,
+so they measure transfer through the same Prime Agent revision scaffold without
+feeding confirmation text back into training.

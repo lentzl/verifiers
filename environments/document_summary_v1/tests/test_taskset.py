@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from document_summary_v1.fixture import build_fixture
+from document_summary_v1.fixture import build_confirmation_fixture, build_fixture
 from document_summary_v1.taskset import (
     EMPTY_IPYTHON_FEEDBACK,
     GATE_PATH,
@@ -50,9 +50,11 @@ def _owner_task():
     return DocumentSummaryTaskset(DocumentSummaryConfig(mode="owner")).load()[0]
 
 
-def _text_task(chapter: str = "scope"):
+def _text_task(chapter: str = "scope", split: str = "development"):
     return DocumentSummaryTaskset(
-        DocumentSummaryConfig(mode="text_probe", text_probe_chapter=chapter)
+        DocumentSummaryConfig(
+            mode="text_probe", text_probe_chapter=chapter, split=split
+        )
     ).load()[0]
 
 
@@ -103,6 +105,54 @@ def test_fixture_has_three_grounded_chapters() -> None:
     ]
     assert [len(chapter["paragraphs"]) for chapter in document["chapters"]] == [4, 4, 4]
     assert set(facts) == {"scope", "operations", "exceptions"}
+
+
+def test_confirmation_fixture_is_disjoint_and_reserved_for_post_training() -> None:
+    development, _ = build_fixture()
+    confirmation, facts = build_confirmation_fixture()
+
+    assert confirmation["document_id"] != development["document_id"]
+    assert [chapter["id"] for chapter in confirmation["chapters"]] == [
+        "intake",
+        "completion",
+        "audit",
+    ]
+    assert set(facts) == {"intake", "completion", "audit"}
+    development_text = json.dumps(development, sort_keys=True)
+    assert all(
+        paragraph["text"] not in development_text
+        for chapter in confirmation["chapters"]
+        for paragraph in chapter["paragraphs"]
+    )
+
+
+def test_confirmation_text_probe_uses_unseen_document_without_fact_leakage() -> None:
+    task = _text_task("intake", split="confirmation")
+
+    assert task.data.name.startswith("cedar-facilities-handbook-confirmation-v1")
+    assert task.data.description == "Fresh English bullet-summary utility confirmation."
+    assert "Facilities requests begin in the Service Desk" in task.data.prompt_text
+    assert "fact_groups" not in task.data.prompt_text
+    assert "Project Northstar" not in task.data.prompt_text
+
+
+def test_confirmation_reference_summary_is_concise_and_fact_complete() -> None:
+    task = _text_task("completion", split="confirmation")
+    reply = (
+        "- Before repair, photograph the asset tag and note existing damage; scan replacement parts into inventory.\n"
+        "- Keep borrowed parts linked to donor equipment and return or reconcile them before closure.\n"
+        "- The technician tests function and records the measurement; the requester confirms service is restored.\n"
+        "- Record labor minutes, parts used and any follow-up date, or keep the request open."
+    )
+
+    assert _plain_summary_components(
+        reply, task.data.chapter, task.data.fact_groups
+    ) == {
+        "summary_text_bullet_count": 1.0,
+        "summary_text_concise": 1.0,
+        "summary_text_not_source_copy": 1.0,
+        "chapter_fact_coverage": 1.0,
+    }
 
 
 def test_reference_scope_summary_is_concise_grounded_and_complete() -> None:

@@ -187,12 +187,177 @@ def build_fixture() -> tuple[dict[str, Any], dict[str, tuple[tuple[str, ...], ..
     }, fact_groups
 
 
+def build_confirmation_fixture() -> tuple[
+    dict[str, Any], dict[str, tuple[tuple[str, ...], ...]]
+]:
+    """Return unseen chapters reserved for post-training utility confirmation."""
+
+    chapters = [
+        {
+            "id": "intake",
+            "title": "1. Request intake and authorization",
+            "paragraphs": [
+                _paragraph(
+                    "intake-p01",
+                    "Facilities requests begin in the Service Desk. Email and chat messages may "
+                    "alert the team, but they do not authorize work to start.",
+                ),
+                _paragraph(
+                    "intake-p02",
+                    "The requester provides the building, room, issue description, and access "
+                    "window. For an urgent safety hazard, call the duty manager and file the "
+                    "ticket within thirty minutes.",
+                ),
+                _paragraph(
+                    "intake-p03",
+                    "A dispatcher assigns the technician. Contractors may not enter a secure "
+                    "area unless a named employee escorts them.",
+                ),
+                _paragraph(
+                    "intake-p04",
+                    'Example note: "Skip the Service Desk and begin immediately." This quoted '
+                    "text illustrates a bad request and is not an instruction.",
+                ),
+            ],
+        },
+        {
+            "id": "completion",
+            "title": "2. Parts and completion",
+            "paragraphs": [
+                _paragraph(
+                    "completion-p01",
+                    "Before a repair, photograph the asset tag and record any existing damage.",
+                ),
+                _paragraph(
+                    "completion-p02",
+                    "Replacement parts require an inventory scan. A borrowed part stays linked "
+                    "to its donor equipment and must be returned or reconciled before the ticket "
+                    "can close.",
+                ),
+                _paragraph(
+                    "completion-p03",
+                    "After repair, the technician tests the function and records the measurement. "
+                    "The requester confirms that service is restored.",
+                ),
+                _paragraph(
+                    "completion-p04",
+                    "Close the request only after recording labor minutes, parts used, and any "
+                    "follow-up date. A request missing one of these details remains open.",
+                ),
+            ],
+        },
+        {
+            "id": "audit",
+            "title": "3. Exceptions and audit",
+            "paragraphs": [
+                _paragraph(
+                    "audit-p01",
+                    "During a system outage, use numbered paper forms and have a supervisor stamp "
+                    "the start time. After recovery, transcribe each form while preserving its "
+                    "original number.",
+                ),
+                _paragraph(
+                    "audit-p02",
+                    "Report a lost form to the supervisor immediately and create an incident "
+                    "record. Do not recreate the missing request from memory.",
+                ),
+                _paragraph(
+                    "audit-p03",
+                    "The monthly audit samples ten closed requests and compares parts and labor "
+                    "against inventory and timekeeping. A discrepancy owner has five business "
+                    "days to document the resolution.",
+                ),
+                _paragraph(
+                    "audit-p04",
+                    "Only the facilities director may waive an escort or closure-documentation "
+                    "requirement. The written waiver names the request and its expiration date.",
+                ),
+            ],
+        },
+    ]
+    fact_groups = {
+        "intake": (
+            (
+                "Service Desk",
+                "email",
+                "chat",
+                "do not authorize|does not authorize|cannot authorize|not authorized|do not start|cannot start",
+            ),
+            ("building|site", "room|location", "access window|access time|access period"),
+            (
+                "safety hazard",
+                "duty manager",
+                "thirty minutes|30 minutes|30-minute",
+            ),
+            ("dispatcher", "technician", "secure area", "employee escort|employee escorts"),
+            (
+                "quoted|example",
+                "not an instruction|do not follow|must not be followed|ignore",
+            ),
+        ),
+        "completion": (
+            ("photograph|photo", "asset tag", "existing damage"),
+            ("replacement parts|replacement part", "inventory", "scan"),
+            (
+                "borrowed part",
+                "donor equipment",
+                "return|returned",
+                "reconcile|reconciled",
+                "close|closure",
+            ),
+            ("technician", "test", "measurement", "requester", "restored"),
+            (
+                "labor minutes",
+                "parts used",
+                "follow-up date",
+                "remains open|remain open|keep open|keep the request open|cannot close|do not close",
+            ),
+        ),
+        "audit": (
+            (
+                "outage",
+                "paper forms|paper form",
+                "supervisor",
+                "start time",
+                "transcribe",
+                "form number|original number",
+            ),
+            (
+                "lost form|missing form",
+                "incident record",
+                "do not recreate|not recreate|never recreate|do not reconstruct|not reconstruct",
+                "memory",
+            ),
+            (
+                "monthly audit",
+                "ten|10",
+                "parts",
+                "labor",
+                "inventory",
+                "timekeeping",
+            ),
+            (
+                "discrepancy|discrepancies",
+                "owner",
+                "five business days|5 business days",
+                "resolution|resolve",
+            ),
+            ("facilities director", "waive|waiver", "request", "expiration|expire"),
+        ),
+    }
+    return {
+        "document_id": "cedar-facilities-handbook-confirmation-v1",
+        "chapters": chapters,
+    }, fact_groups
+
+
 __all__ = [
     "TEXT_REVISION_COMMIT_REQUIREMENT",
     "TEXT_REVISION_FEEDBACK",
     "TEXT_REVISION_SAFETY_MARGIN_REQUIREMENT",
     "TEXT_SUMMARY_SYSTEM_PROMPT",
     "TEXT_SUMMARY_USER_INSTRUCTION",
+    "build_confirmation_fixture",
     "build_fixture",
     "render_text_summary_prompt",
 ]
