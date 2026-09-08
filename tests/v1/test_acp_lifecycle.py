@@ -1,8 +1,50 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
-from verifiers.v1.acp import ACPHarnessSession
+import verifiers.v1 as vf
+from verifiers.v1.acp import ACPHarnessSession, _record_acp_stop
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("visible", ["Done.", ""])
+@pytest.mark.parametrize("reason,condition,truncated", [
+    ("end_turn", None, False),
+    ("max_tokens", "acp_max_tokens", True),
+    ("max_turn_requests", "acp_max_turn_requests", True),
+    ("refusal", "refusal", False),
+    ("cancelled", "cancelled", False),
+])
+async def test_acp_stop_reason_survives_visible_reply(reason, condition, truncated, visible):
+    from verifiers.v1.acp.runner import VerifiersACPClient, prompt
+
+    client = VerifiersACPClient()
+
+    class Connection:
+        async def prompt(self, **kwargs):
+            client.visible_reply = visible
+            return SimpleNamespace(stop_reason=reason)
+
+    config = {"system_prompt": "", "user_contents": ["Summarize the chapter."]}
+    if reason == "end_turn" and not visible:
+        with pytest.raises(RuntimeError, match="no visible reply"):
+            await prompt(client, Connection(), None, "test", config, is_new=True)
+        return
+    response = await prompt(client, Connection(), None, "test", config, is_new=True)
+    assert response == {"reply": visible, "stop_reason": reason}
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0)),
+    )
+    _record_acp_stop(trace, response["stop_reason"])
+    assert trace.info["acp_stop_reasons"] == [reason]
+    assert trace.stop_condition == condition
+    assert trace.is_truncated == truncated
+    trace.stop("agent_completed")
+    assert trace.stop_condition == (condition or "agent_completed")
+    with pytest.raises(ValueError, match="unknown ACP stop reason"):
+        _record_acp_stop(trace, "unexpected")
 
 
 class _HungTerminateProcess:

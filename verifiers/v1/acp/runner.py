@@ -135,7 +135,7 @@ async def prompt(
     config: dict,
     *,
     is_new: bool,
-) -> str:
+) -> dict[str, str]:
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
     blocks = []
@@ -158,12 +158,12 @@ async def prompt(
         and bool(tool_statuses)
         and all(status in ("completed", "failed") for status in tool_statuses)
     )
-    if not client.visible_reply.strip() and not completed_tool_turn:
+    if response.stop_reason == "end_turn" and not client.visible_reply.strip() and not completed_tool_turn:
         raise RuntimeError(
             "ACP agent produced no visible reply "
             f"(stop_reason={response.stop_reason}, tool_statuses={tool_statuses})"
         )
-    return client.visible_reply
+    return {"reply": client.visible_reply, "stop_reason": response.stop_reason}
 
 
 class ACPSession:
@@ -211,7 +211,7 @@ class ACPSession:
         self.session_id = session.session_id
         self.is_new = True
 
-    async def run(self, config: dict) -> str:
+    async def run(self, config: dict) -> dict[str, str]:
         if self.connection is None:
             await self.start(config)
         assert self.session_id is not None
@@ -280,7 +280,7 @@ async def serve_stream() -> None:
                 if operation == "prompt":
                     response = {
                         "ok": True,
-                        "reply": await session.run(request["config"]),
+                        **await session.run(request["config"]),
                     }
                 elif operation == "shutdown":
                     await session.close()

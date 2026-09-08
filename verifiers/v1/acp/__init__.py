@@ -119,6 +119,21 @@ def _packet(value: JsonObject) -> bytes:
     return len(data).to_bytes(8, "big") + data
 
 
+def _record_acp_stop(trace: Trace, reason: str) -> None:
+    conditions = {
+        "end_turn": None,
+        "max_tokens": "acp_max_tokens",
+        "max_turn_requests": "acp_max_turn_requests",
+        "refusal": "refusal",
+        "cancelled": "cancelled",
+    }
+    if reason not in conditions:
+        raise ValueError(f"unknown ACP stop reason: {reason!r}")
+    trace.info.setdefault("acp_stop_reasons", []).append(reason)
+    if condition := conditions[reason]:
+        trace.stop(condition)
+
+
 def _require_model_turn(trace: Trace, calls_before: int, result: ProgramResult) -> None:
     if (
         result.exit_code
@@ -267,6 +282,7 @@ class ACPHarnessSession(HarnessSession):
             raise TypeError("ACP session reply must be a string")
         result = ProgramResult(exit_code=0, stdout=reply, stderr="")
         _require_model_turn(self.trace, calls_before, result)
+        _record_acp_stop(self.trace, response["stop_reason"])
         return result
 
     async def _stop(self, *, graceful: bool) -> None:

@@ -203,6 +203,13 @@ Classify outcomes:
 3. Truncated completion (budget outcome).
 4. Captured rollout error (provider, harness, tool, user, runtime, task, or interception).
 
+For ACP harnesses, retain the native stop reason across the runner boundary.
+Visible final text can coexist with `max_tokens` or `max_turn_requests`; it must
+not turn a limit-stopped run into `agent_completed`. Inspect `acp_stop_reasons`
+and the trace's truncation flag before interpreting missing corrections.
+Prime Agent's autonomous token allowance counts input, output and cache-write
+usage cumulatively, excluding cache-read usage. It is not a context-window size.
+
 Do not average these categories together without reporting failure rate.
 
 ## Metrics interpretation

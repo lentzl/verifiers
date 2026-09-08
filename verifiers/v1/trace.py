@@ -493,6 +493,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """True for framework limits or a length-finished final response."""
         if self.stop_condition in (
             "max_turns",
+            "acp_max_tokens",
+            "acp_max_turn_requests",
             "max_input_tokens",
             "max_output_tokens",
             "max_total_tokens",
