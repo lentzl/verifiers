@@ -635,6 +635,89 @@ def _tool_result_failed(message: vf.ToolMessage) -> bool:
     )
 
 
+def _evidence_literal_write_repair(code: str) -> tuple[str, str] | None:
+    """Recover only literal text and an explicit task-output destination; never execute code."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+    paths: dict[str, str] = {}
+    repairs = []
+    for statement in tree.body:
+        for node in ast.walk(statement):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                paths.pop(node.id, None)
+        value = statement.value if isinstance(statement, (ast.Assign, ast.Expr)) else None
+        if not isinstance(value, ast.Call):
+            continue
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and ast.unparse(value.func) in {"Path", "pathlib.Path"}
+            and len(value.args) == 1
+            and isinstance(value.args[0], ast.Constant)
+            and isinstance(value.args[0].value, str)
+            and not value.keywords
+        ):
+            paths[statement.targets[0].id] = value.args[0].value
+        if not (
+            isinstance(value.func, ast.Attribute)
+            and value.func.attr == "write_text"
+            and isinstance(value.func.value, ast.Constant)
+            and isinstance(value.func.value.value, str)
+            and all(keyword.arg in {"encoding", "path"} for keyword in value.keywords)
+        ):
+            continue
+        destinations = value.args + [item.value for item in value.keywords if item.arg == "path"]
+        if len(destinations) != 1:
+            continue
+        target = destinations[0]
+        destination = target.value if isinstance(target, ast.Constant) else (
+            paths.get(target.id) if isinstance(target, ast.Name) else None
+        )
+        if destination in (EVIDENCE_NOTES_PATH, EVIDENCE_SUMMARY_PATH):
+            repairs.append((destination, value.func.value.value))
+    return repairs[0] if len(repairs) == 1 else None
+
+
+def _rewrite_evidence_write_failure(request: vf.Request, trace: vf.Trace) -> vf.Request | None:
+    if not request.messages or not isinstance(request.messages[-1], vf.ToolMessage):
+        return None
+    result = request.messages[-1]
+    original = content_text(result.content)
+    if "AttributeError: 'str' object has no attribute 'write_text'" not in original:
+        return None
+    assistant = next((message for message in reversed(request.messages[:-1])
+                      if isinstance(message, AssistantMessage)), None)
+    call = next((call for call in assistant.tool_calls or []
+                 if call.id == result.tool_call_id), None) if assistant is not None else None
+    code = _ipython_code(call) if call is not None else None
+    repair = _evidence_literal_write_repair(code) if code is not None else None
+    if repair is None:
+        return None
+    destination, draft = repair
+    correction = (
+        f"from pathlib import Path\n"
+        f"Path({destination!r}).write_text({draft!r}, encoding='utf-8')"
+    )
+    feedback = (
+        "Prime Agent file-write repair: your drafted text was not saved. "
+        "The following cell fixes only the file API and preserves your exact text; "
+        "it does not check or improve its meaning. Execute this cell with ipython, "
+        "then reply Done. Do not switch tools or rewrite the draft to repair this error.\n"
+        f"```python\n{correction}\n```"
+    )
+    trace.info.setdefault("evidence_literal_write_repairs", []).append({
+        "tool_call_id": result.tool_call_id,
+        "destination": destination,
+        "draft_sha256": hashlib.sha256(draft.encode()).hexdigest(),
+        "mode": "suggested_code_only",
+    })
+    messages = [*request.messages[:-1], result.model_copy(update={"content": f"{original}\n\n{feedback}"})]
+    return request.model_copy(update={"messages": messages})
+
+
 def _rewrite_repeated_ipython_failure(
     request: vf.Request,
     trace: vf.Trace,
@@ -1068,6 +1151,8 @@ class DocumentSummaryEvidenceTask(vf.Task[DocumentSummaryTextData]):
         self, request: vf.Request, trace: vf.Trace
     ) -> vf.Request | None:
         rewritten = _rewrite_evidence_feedback(request, trace)
+        if rewritten is None:
+            rewritten = _rewrite_evidence_write_failure(request, trace)
         return rewritten if rewritten is not None else _scaffold_ipython_feedback(
             request, trace, repeated_feedback=EVIDENCE_FILE_WRITE_RECOVERY_FEEDBACK
         )

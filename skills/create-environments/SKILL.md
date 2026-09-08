@@ -158,6 +158,11 @@ task action without suggesting edits to the gate program itself.
 When a file write raises a Python error, do not call it a scratch check that can
 be bypassed. Explain the actual API contract and failed-assignment semantics;
 keep model-authored content separate from the structural repair instructions.
+For the evidence-summary workflow, a first string-literal `write_text` attribute
+error can receive corrected code as tool feedback. Parse only an unambiguous
+literal draft and explicit notes/summary destination; never execute the sampled
+cell or infer new wording. Preserve the original error, record the draft hash,
+and label the result as suggested syntax repair, not learned execution ability.
 
 ## Tools
 

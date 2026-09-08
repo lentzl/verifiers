@@ -27,6 +27,7 @@ from document_summary_v1.taskset import (
     _apply_text_revision_commit_sampling,
     _artifact_components,
     _evidence_gate_source,
+    _evidence_literal_write_repair,
     _fact_coverage,
     _owner_gate_source,
     _plain_summary_bullets,
@@ -788,6 +789,40 @@ def test_first_failed_ipython_call_is_not_labeled_as_repeated() -> None:
 
     assert _rewrite_repeated_ipython_failure(request, trace) is None
     assert "repeated_ipython_failure_feedback_count" not in trace.info
+
+    destination = "/workspace/document-summary-v1/notes.md"
+    draft = "[chapter-p001] Exact wording: also required.\nQuotes: ' and \"."
+    variants = [
+        f"notes = {draft!r}.write_text({destination!r}, encoding='utf-8')",
+        f"notes_path = pathlib.Path({destination!r})\nnotes = {draft!r}.write_text(path=notes_path, encoding='utf-8')",
+    ]
+    task = DocumentSummaryTaskset(DocumentSummaryConfig(mode="evidence_probe")).load()[0]
+    for code in variants:
+        assert _evidence_literal_write_repair(code) == (destination, draft)
+        failed = vf.Request(messages=[
+            vf.AssistantMessage(tool_calls=[vf.ToolCall(
+                id="literal-write", name="ipython", arguments=json.dumps({"code": code})
+            )]),
+            vf.ToolMessage(tool_call_id="literal-write", name="ipython",
+                           content="AttributeError: 'str' object has no attribute 'write_text'"),
+        ])
+        repaired = task.scaffold_empty_ipython(failed, trace)
+        assert repaired is not None
+        guidance = repaired.messages[-1].content
+        assert f"Path({destination!r}).write_text({draft!r}, encoding='utf-8')" in guidance
+        assert "preserves your exact text" in guidance
+        assert repaired.messages[0] == failed.messages[0]
+        assert "Prime Agent file-write repair" not in failed.messages[-1].content
+        assert trace.info["evidence_literal_write_repairs"][-1]["mode"] == "suggested_code_only"
+    for code in (
+        "'draft'.write_text('/etc/config')",
+        "text.write_text('/workspace/document-summary-v1/notes.md')",
+        "f'{value}'.write_text('/workspace/document-summary-v1/notes.md')",
+        "'draft'.write_text(path=unknown_path)",
+        f"path = Path({destination!r})\npath = '/etc/config'\n'draft'.write_text(path=path)",
+        "this is not valid python !!!",
+    ):
+        assert _evidence_literal_write_repair(code) is None
 
 
 def test_missing_worker_report_recovery_does_not_tell_model_to_read_it() -> None:
