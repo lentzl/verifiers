@@ -13,6 +13,7 @@ from document_summary_v1.taskset import (
     EVIDENCE_SOURCE_PATH,
     GATE_PATH,
     INDEX_PATH,
+    MARKDOWN_CHILD_FAILURE_FEEDBACK,
     MARKDOWN_CHILD_RECOVERY_FEEDBACK,
     MARKDOWN_OUTPUT_PATH,
     MARKDOWN_OWNER_RECOVERY_FEEDBACK,
@@ -820,7 +821,7 @@ def test_repeated_failed_ipython_call_gets_progress_feedback(mode: str) -> None:
     assert "bypass" not in guidance
     assert DIRECT_SUMMARY_NO_PROGRESS_FEEDBACK not in guidance
     for prompt, expected in (("Recursive agent depth: 0", MARKDOWN_OWNER_RECOVERY_FEEDBACK),
-                             ("Recursive agent depth: 1", MARKDOWN_CHILD_RECOVERY_FEEDBACK),
+                             ("Recursive agent depth: 1", MARKDOWN_CHILD_FAILURE_FEEDBACK),
                              ("Unscoped helper", MARKDOWN_UNSCOPED_RECOVERY_FEEDBACK)):
         scoped = request.model_copy(update={"messages": [
             vf.UserMessage(content=prompt), *request.messages,
@@ -830,6 +831,11 @@ def test_repeated_failed_ipython_call_gets_progress_feedback(mode: str) -> None:
         assert repaired.messages[-1].content == f"Traceback: TypeError: broken check\n\n{expected}"
         assert repaired.messages[:-1] == scoped.messages[:-1]
         assert "bypass" not in repaired.messages[-1].content
+        if "depth: 1" in prompt:
+            assert "operation FAILED" in repaired.messages[-1].content
+            assert "earlier operations in the cell may already have succeeded" in repaired.messages[-1].content
+            assert "not receipt JSON" in repaired.messages[-1].content
+            assert "counts characters written" not in repaired.messages[-1].content
 
 
 def test_first_failed_ipython_call_is_not_labeled_as_repeated() -> None:

@@ -89,6 +89,18 @@ MARKDOWN_CHILD_RECOVERY_FEEDBACK = (
     "then stop. If that send already succeeded, stop now. Do not spawn children, inspect "
     "the owner's index or files, or change the completion gate."
 )
+MARKDOWN_CHILD_FAILURE_FEEDBACK = (
+    "Prime Agent chapter-worker recovery: this repeated IPython operation FAILED. "
+    "Do not retry the same code unchanged. Read the traceback and repair the failed "
+    "step; earlier operations in the cell may already have succeeded. A string path "
+    "has no write_text method: use pathlib.Path(path).write_text(text, encoding='utf-8'). "
+    "Use only your assigned source and summary paths. Before reporting completion, "
+    "verify that the saved file is readable and contains the requested English key "
+    "bullets, not receipt JSON. A receipt does not create a summary or prove that a "
+    "write succeeded. Do not send a receipt again if the parent send already succeeded. "
+    "Once the assigned summary is saved and its matching receipt has been sent, stop. "
+    "Do not spawn children, inspect owner files or change the completion gate."
+)
 MARKDOWN_UNSCOPED_RECOVERY_FEEDBACK = (
     "Prime Agent recovery: this call made no progress. Do not repeat it unchanged. "
     "Use the actual tool result and your original assignment to choose the next "
@@ -1112,8 +1124,12 @@ class DocumentSummaryMarkdownTask(vf.Task[DocumentSummaryData]):
                 MARKDOWN_OWNER_RECOVERY_FEEDBACK if int(depth[1]) == 0
                 else MARKDOWN_CHILD_RECOVERY_FEEDBACK
             )
+        failure_feedback = (
+            MARKDOWN_CHILD_FAILURE_FEEDBACK if depth is not None and int(depth[1]) > 0
+            else feedback
+        )
         return _scaffold_ipython_feedback(
-            request, trace, repeated_feedback=feedback, no_progress_feedback=feedback,
+            request, trace, repeated_feedback=failure_feedback, no_progress_feedback=feedback,
             empty_feedback=f"This IPython call contained no executable code. {feedback}",
         )
 
