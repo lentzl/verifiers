@@ -13,7 +13,10 @@ from document_summary_v1.taskset import (
     EVIDENCE_SOURCE_PATH,
     GATE_PATH,
     INDEX_PATH,
+    MARKDOWN_CHILD_RECOVERY_FEEDBACK,
     MARKDOWN_OUTPUT_PATH,
+    MARKDOWN_OWNER_RECOVERY_FEEDBACK,
+    MARKDOWN_UNSCOPED_RECOVERY_FEEDBACK,
     MISSING_WORKER_REPORT_RECOVERY_FEEDBACK,
     OUTPUT_PATH,
     REPEATED_IPYTHON_FAILURE_FEEDBACK,
@@ -712,6 +715,16 @@ def test_empty_ipython_result_gets_clear_model_facing_feedback() -> None:
     assert rewritten.messages[-1].content == EMPTY_IPYTHON_FEEDBACK
     assert request.messages[-1].content == ""
     assert trace.info["empty_ipython_feedback_count"] == 1
+    for depth, expected in ((0, MARKDOWN_OWNER_RECOVERY_FEEDBACK),
+                            (1, MARKDOWN_CHILD_RECOVERY_FEEDBACK)):
+        scoped = request.model_copy(update={"messages": [
+            vf.UserMessage(content=f"Runtime\nRecursive agent depth: {depth}\n"),
+            *request.messages,
+        ]})
+        repaired = _owner_task("owner_direct").scaffold_empty_ipython(scoped, trace)
+        assert repaired is not None
+        assert "contained no executable code" in repaired.messages[-1].content
+        assert expected in repaired.messages[-1].content
 
 
 def test_concrete_ipython_call_is_not_rewritten() -> None:
@@ -802,6 +815,17 @@ def test_repeated_failed_ipython_call_gets_progress_feedback(mode: str) -> None:
     assert "did not define the variable" in guidance
     assert "bypass" not in guidance
     assert DIRECT_SUMMARY_NO_PROGRESS_FEEDBACK not in guidance
+    for prompt, expected in (("Recursive agent depth: 0", MARKDOWN_OWNER_RECOVERY_FEEDBACK),
+                             ("Recursive agent depth: 1", MARKDOWN_CHILD_RECOVERY_FEEDBACK),
+                             ("Unscoped helper", MARKDOWN_UNSCOPED_RECOVERY_FEEDBACK)):
+        scoped = request.model_copy(update={"messages": [
+            vf.UserMessage(content=prompt), *request.messages,
+        ]})
+        repaired = _owner_task("owner_direct").scaffold_empty_ipython(scoped, trace)
+        assert repaired is not None
+        assert repaired.messages[-1].content == f"Traceback: TypeError: broken check\n\n{expected}"
+        assert repaired.messages[:-1] == scoped.messages[:-1]
+        assert "bypass" not in repaired.messages[-1].content
 
 
 def test_first_failed_ipython_call_is_not_labeled_as_repeated() -> None:
@@ -959,6 +983,7 @@ def test_repeated_successful_ipython_call_with_same_result_gets_progress_feedbac
     for mode, expected in (
         ("direct_probe", DIRECT_SUMMARY_NO_PROGRESS_FEEDBACK),
         ("evidence_probe", EVIDENCE_FILE_WRITE_RECOVERY_FEEDBACK),
+        ("owner_direct", MARKDOWN_UNSCOPED_RECOVERY_FEEDBACK),
     ):
         task = DocumentSummaryTaskset(DocumentSummaryConfig(mode=mode)).load()[0]
         task_rewritten = task.scaffold_empty_ipython(request, trace)
@@ -966,6 +991,14 @@ def test_repeated_successful_ipython_call_with_same_result_gets_progress_feedbac
         assert task_rewritten.messages[:-1] == request.messages[:-1]
         assert task_rewritten.messages[-1].content == f"{result}\n\n{expected}"
         assert request.messages[-1].content == result
+    for depth, expected in ((0, MARKDOWN_OWNER_RECOVERY_FEEDBACK),
+                            (2, MARKDOWN_CHILD_RECOVERY_FEEDBACK)):
+        scoped = request.model_copy(update={"messages": [
+            vf.UserMessage(content=f"Recursive agent depth: {depth}"), *request.messages,
+        ]})
+        repaired = _owner_task("owner_direct").scaffold_empty_ipython(scoped, trace)
+        assert repaired is not None
+        assert repaired.messages[-1].content == f"{result}\n\n{expected}"
 
 
 def test_first_successful_ipython_call_is_not_labeled_as_no_progress() -> None:

@@ -62,6 +62,33 @@ REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK = (
     "concrete write or edit to advance the required artifact; if the artifact already "
     "exists, stop calling tools and return a concise final answer."
 )
+MARKDOWN_OWNER_RECOVERY_FEEDBACK = (
+    "Prime Agent owner recovery: this call made no progress. Do not repeat it unchanged. "
+    "Use the observed index structure: it is a dictionary; index['chapters'] is the "
+    "ordered list of jobs. Each job has worker, chapter_id, heading, source_path, "
+    "summary_path and prompt fields. Use those actual fields, not guessed entries or "
+    "chapter_title fields; do not sort independent lists. Retain one native rlm handle "
+    "per job using its worker name and complete prompt. Do not respawn a worker already "
+    "launched. Once all are launched, end the turn for their messages without polling. "
+    "Do not read chapter sources or write a substitute summary. Only after every "
+    "matching child receipt may you read the assigned summaries and assemble them "
+    "unchanged in index order. Keep the original task's completion boundary."
+)
+MARKDOWN_CHILD_RECOVERY_FEEDBACK = (
+    "Prime Agent chapter-worker recovery: this call made no progress. Do not repeat "
+    "it unchanged. Follow your original chapter assignment, using only its source "
+    "and summary paths. Author the requested source-grounded key bullets and save the "
+    "complete summary in one pathlib.Path.write_text operation. After a successful "
+    "write, send your assigned chapter_id and summary_path receipt to the parent once, "
+    "then stop. If that send already succeeded, stop now. Do not spawn children, inspect "
+    "the owner's index or files, or change the completion gate."
+)
+MARKDOWN_UNSCOPED_RECOVERY_FEEDBACK = (
+    "Prime Agent recovery: this call made no progress. Do not repeat it unchanged. "
+    "Use the actual tool result and your original assignment to choose the next "
+    "unfinished action. Keep your assigned role, file ownership, message requirements "
+    "and completion boundary; do not invent missing work or edit the completion gate."
+)
 EVIDENCE_FILE_WRITE_RECOVERY_FEEDBACK = (
     "Prime Agent file-write recovery: use the ipython tool, not bash or a goal helper. "
     "write_text is a method of pathlib.Path, not of a text string. In ONE cell, "
@@ -600,7 +627,7 @@ def _call_name(call: ast.Call) -> str | None:
 
 
 def _rewrite_empty_ipython_feedback(
-    request: vf.Request, trace: vf.Trace
+    request: vf.Request, trace: vf.Trace, feedback: str = EMPTY_IPYTHON_FEEDBACK
 ) -> vf.Request | None:
     """Turn a trailing empty IPython result into actionable model-facing feedback."""
 
@@ -640,7 +667,7 @@ def _rewrite_empty_ipython_feedback(
         if not isinstance(code, str) or code.strip():
             continue
         messages[position] = message.model_copy(
-            update={"content": EMPTY_IPYTHON_FEEDBACK}
+            update={"content": feedback}
         )
         rewritten += 1
     if not rewritten:
@@ -907,8 +934,9 @@ def _scaffold_ipython_feedback(
     repeated_feedback: str = REPEATED_IPYTHON_FAILURE_FEEDBACK,
     *,
     no_progress_feedback: str | None = None,
+    empty_feedback: str = EMPTY_IPYTHON_FEEDBACK,
 ) -> vf.Request | None:
-    empty = _rewrite_empty_ipython_feedback(request, trace)
+    empty = _rewrite_empty_ipython_feedback(request, trace, feedback=empty_feedback)
     if empty is not None:
         return empty
     failure = _rewrite_repeated_ipython_failure(
@@ -1068,8 +1096,17 @@ class DocumentSummaryMarkdownTask(vf.Task[DocumentSummaryData]):
     def scaffold_empty_ipython(
         self, request: vf.Request, trace: vf.Trace
     ) -> vf.Request | None:
+        runtime_prompt = content_text(request.messages[0].content) if request.messages else ""
+        depth = re.search(r"^Recursive agent depth: (\d+)$", runtime_prompt, flags=re.MULTILINE)
+        feedback = MARKDOWN_UNSCOPED_RECOVERY_FEEDBACK
+        if depth is not None:
+            feedback = (
+                MARKDOWN_OWNER_RECOVERY_FEEDBACK if int(depth[1]) == 0
+                else MARKDOWN_CHILD_RECOVERY_FEEDBACK
+            )
         return _scaffold_ipython_feedback(
-            request, trace, no_progress_feedback=REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK
+            request, trace, repeated_feedback=feedback, no_progress_feedback=feedback,
+            empty_feedback=f"This IPython call contained no executable code. {feedback}",
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
@@ -1502,7 +1539,10 @@ class DocumentSummaryTaskset(
                 description="Delegate chapter summaries and assemble their saved English Markdown.",
                 prompt=(
                     f"Create English key-point summaries of the chapters indexed at `{INDEX_PATH}`. "
-                    "Read only the index in the owner session, not the chapter sources. Spawn "
+                    "Read and display the index before constructing the delegation code. It is "
+                    "a JSON object with an ordered chapters list; each job contains worker, "
+                    "chapter_id, heading, source_path, summary_path and prompt. Read only the "
+                    "index in the owner session, not the chapter sources. Spawn "
                     "one named child for every index entry, using its exact worker name and "
                     "complete prompt field; retain all returned handles in a dictionary. "
                     "After spawning, end the turn for child messages. Do not poll files or agents. "

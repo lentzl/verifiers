@@ -181,6 +181,14 @@ assembled artifact as a completed handoff; a file-presence gate cannot establish
 message delivery. Preserve child text unchanged during assembly and review
 semantic quality separately. Inspect actual role routing: terminal-worker probes
 and owner-led runs must not silently use the same depth-zero checkpoint.
+Recovery feedback must preserve the executing role. In a delegated Markdown task,
+use the first runtime prompt's explicit recursive depth to distinguish owner and
+chapter worker; leave unscoped calls with role-neutral guidance. Repeated index
+inspection is not a reason to tell the owner to write a substitute summary. Name
+the actual index fields, keep receipt-before-assembly requirements, and do not
+send owner delegation instructions to a terminal child. Auxiliary /refine calls
+can use the worker route without any chapter child being spawned: inspect their
+graph roots and session IDs before claiming delegation.
 For a static lint check that needs no project imports, an isolated
 `uv run --no-project --with ruff ruff check <absolute-paths>` from a temporary
 directory avoids rebuilding the project. This is useful when editable-package
