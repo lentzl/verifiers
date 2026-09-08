@@ -1140,6 +1140,11 @@ def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling(mode: str) -> N
             assert "receiver_role='parent'" in job["prompt"]
             assert "No notes file or paragraph-ID checklist" in job["prompt"]
         assert "retain all returned handles in a dictionary" in task.data.prompt_text
+        assert "NO tool call" in task.data.prompt_text
+        assert "without resetting earlier receipts" in task.data.prompt_text
+        assert "matching stored receipts" in task.data.prompt_text
+        assert "NO tool call" in MARKDOWN_OWNER_RECOVERY_FEEDBACK
+        assert "preserve receipts already stored" in MARKDOWN_OWNER_RECOVERY_FEEDBACK
     assert "do not poll" in task.data.prompt_text.casefold()
     assert "fact_groups" not in gate
 
