@@ -163,6 +163,10 @@ error can receive corrected code as tool feedback. Parse only an unambiguous
 literal draft and explicit notes/summary destination; never execute the sampled
 cell or infer new wording. Preserve the original error, record the draft hash,
 and label the result as suggested syntax repair, not learned execution ability.
+For general prose, a mandatory per-paragraph obligation checklist may misfit the
+requested summary. The document-summary task also offers a direct source-to-bullets
+route with no notes stage. Keep such workflow alternatives explicit, preserve the
+comparison path, and distinguish structural completion from factual faithfulness.
 
 ## Tools
 

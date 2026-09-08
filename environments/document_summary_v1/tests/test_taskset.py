@@ -26,6 +26,7 @@ from document_summary_v1.taskset import (
     DocumentSummaryTaskset,
     _apply_text_revision_commit_sampling,
     _artifact_components,
+    _direct_summary_gate_source,
     _evidence_gate_source,
     _evidence_literal_write_repair,
     _fact_coverage,
@@ -1046,12 +1047,15 @@ def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["worker_probe", "evidence_probe", "evidence_file"])
+@pytest.mark.parametrize("mode", ["worker_probe", "evidence_probe", "evidence_file", "direct_file"])
 async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str, tmp_path: Path) -> None:
-    if mode == "evidence_file":
+    if mode in {"evidence_file", "direct_file"}:
         path = tmp_path / "chapter.md"
         path.write_text("The first source paragraph.\n\nThe second source paragraph.\n", encoding="utf-8")
-        config = DocumentSummaryConfig(mode="evidence_probe", chapter_path=str(path))
+        config = DocumentSummaryConfig(
+            mode="direct_probe" if mode == "direct_file" else "evidence_probe",
+            chapter_path=str(path),
+        )
     else:
         config = DocumentSummaryConfig(mode=mode)
     task = DocumentSummaryTaskset(config).load()[0]
@@ -1079,12 +1083,17 @@ async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str, t
             in runtime.writes[EVIDENCE_SOURCE_PATH].decode()
         )
     assert "fact_groups" not in b"\n".join(runtime.writes.values()).decode()
-    if mode == "evidence_file":
+    if mode in {"evidence_file", "direct_file"}:
         assert task.data.fact_groups == ()
         assert [p["id"] for p in task.data.chapter["paragraphs"]] == ["chapter-p001", "chapter-p002"]
         diagnostics = await task.evidence_diagnostics(SimpleNamespace(info={}))
         assert "summary_keyword_group_proxy" not in diagnostics
         assert "notes_keyword_group_proxy" not in diagnostics
+    if mode == "direct_file":
+        assert task.data.direct_summary
+        assert "No notes file" in task.data.prompt_text
+        assert "notes-extracted.md" not in runtime.writes[GATE_PATH].decode()
+        assert await task.evidence_artifact_completion(SimpleNamespace(info={})) == 0.0
 
 
 def test_evidence_gate_captures_notes_before_summary_without_judging_semantics(
@@ -1148,6 +1157,23 @@ def test_evidence_gate_captures_notes_before_summary_without_judging_semantics(
     assert completed.returncode == 0
     assert "semantic review is separate" in completed.stdout
     assert snapshot.read_bytes() == original
+
+    gate = _direct_summary_gate_source(task.data.chapter).replace(ROOT, str(tmp_path))
+    assert task.data.chapter["paragraphs"][0]["text"] not in gate
+    summary.unlink()
+    notes.unlink()
+    snapshot.unlink()
+    assert "No notes file is required" in run_gate().stderr
+    summary.write_text("An unmarked paragraph with no bullets.", encoding="utf-8")
+    assert "only 3-5 Markdown bullet lines" in run_gate().stderr
+    summary.write_text("- Too short\n- Too short\n- Too short\n", encoding="utf-8")
+    assert "5-45 words per bullet" in run_gate().stderr
+    summary.write_text("- This claim is structurally valid but semantically unverified.\n" * 3, encoding="utf-8")
+    assert run_gate().returncode == 0
+    assert "semantic review is separate" in run_gate().stdout
+    assert not snapshot.exists()
+    summary.write_text("# Heading\n" + summary.read_text(), encoding="utf-8")
+    assert run_gate().returncode == 1
 
 
 @pytest.mark.asyncio

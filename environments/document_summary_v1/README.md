@@ -28,7 +28,15 @@ meaning separately. Keyword-group proxies, paragraph-ID presence and word counts
 are diagnostics, not semantic certification. The captured file is retained by the
 workflow, not a security boundary against a worker rewriting its own sandbox.
 
-For an ordinary UTF-8 text or Markdown chapter, use `evidence_probe` with
+`direct_probe` uses the same native Prime Agent session and file-writing scaffold
+but asks the worker to read `source.md` and write 3–5 key English bullets directly
+to `summary.md`. There is no required notes file, paragraph checklist or extraction
+stage. Its gate checks only bullet structure and word limits; the completion
+reward is structural, not semantic. Review factual faithfulness separately.
+This is a joint prompt, stage and structural-feedback alternative, not an isolated
+ablation of notes alone. Both workflows remain available for comparison.
+
+For an ordinary UTF-8 text or Markdown chapter, use `evidence_probe` or `direct_probe` with
 `--env.taskset.chapter-path /absolute/path/to/chapter.md`. Blank-line-separated
 paragraphs receive stable in-document IDs and content hashes. The file is read by
 the evaluator and copied into the worker's isolated workspace. This path provides
