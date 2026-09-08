@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field
@@ -268,6 +270,8 @@ def _strict_report(report: Any, job: dict[str, Any]) -> bool:
 
 
 def _fact_coverage(report: Any, groups: tuple[tuple[str, ...], ...]) -> float:
+    if not groups:
+        return 0.0
     if not isinstance(report, dict) or not isinstance(report.get("bullets"), list):
         return 0.0
     text = " ".join(
@@ -1067,12 +1071,12 @@ class DocumentSummaryEvidenceTask(vf.Task[DocumentSummaryTextData]):
         components = _plain_summary_components(
             summary, self.data.chapter, self.data.fact_groups
         )
-        components["summary_keyword_group_proxy"] = components.pop(
-            "chapter_fact_coverage"
-        )
-        components["notes_keyword_group_proxy"] = _fact_coverage(
-            {"bullets": [{"text": notes}]}, self.data.fact_groups
-        )
+        keyword_proxy = components.pop("chapter_fact_coverage")
+        if self.data.fact_groups:
+            components["summary_keyword_group_proxy"] = keyword_proxy
+            components["notes_keyword_group_proxy"] = _fact_coverage(
+                {"bullets": [{"text": notes}]}, self.data.fact_groups
+            )
         components["notes_source_id_presence"] = sum(
             bool(re.search(rf"(?<![\w-]){re.escape(row['id'])}(?![\w-])", notes))
             for row in self.data.chapter["paragraphs"]
@@ -1087,6 +1091,7 @@ class DocumentSummaryEvidenceTask(vf.Task[DocumentSummaryTextData]):
 class DocumentSummaryConfig(vf.TasksetConfig):
     split: Literal["development", "confirmation"] = "development"
     num_tasks: int = Field(1, ge=1, le=1)
+    chapter_path: str | None = None
     mode: Literal["owner", "worker_probe", "text_probe", "evidence_probe"] = (
         "worker_probe"
     )
@@ -1106,7 +1111,27 @@ class DocumentSummaryTaskset(
         | DocumentSummaryTextTask
         | DocumentSummaryEvidenceTask
     ]:
-        if self.config.split == "confirmation":
+        if self.config.chapter_path is not None:
+            if self.config.mode != "evidence_probe" or self.config.split != "development":
+                raise ValueError("chapter_path requires development evidence_probe mode")
+            path = Path(self.config.chapter_path)
+            source = path.read_text(encoding="utf-8").strip()
+            if not source:
+                raise ValueError("chapter_path contains no source text")
+            source_sha = hashlib.sha256(source.encode()).hexdigest()
+            document = {
+                "document_id": f"chapter-file-{source_sha[:12]}",
+                "chapters": [{
+                    "id": "chapter", "title": path.stem,
+                    "paragraphs": [
+                        {"id": f"chapter-p{index:03d}", "text": paragraph,
+                         "source_sha256": hashlib.sha256(paragraph.encode()).hexdigest()}
+                        for index, paragraph in enumerate(re.split(r"\n\s*\n", source), 1)
+                    ],
+                }],
+            }
+            fact_groups = {"chapter": ()}
+        elif self.config.split == "confirmation":
             if self.config.mode != "text_probe":
                 raise ValueError("confirmation split supports text_probe only")
             document, fact_groups = build_confirmation_fixture()
@@ -1116,7 +1141,7 @@ class DocumentSummaryTaskset(
             chapter = next(
                 row
                 for row in document["chapters"]
-                if row["id"] == self.config.text_probe_chapter
+                if self.config.chapter_path is not None or row["id"] == self.config.text_probe_chapter
             )
             data = DocumentSummaryTextData(
                 idx=0,

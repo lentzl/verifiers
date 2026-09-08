@@ -24,6 +24,14 @@ meaning separately. Keyword-group proxies, paragraph-ID presence and word counts
 are diagnostics, not semantic certification. The captured file is retained by the
 workflow, not a security boundary against a worker rewriting its own sandbox.
 
+For an ordinary UTF-8 text or Markdown chapter, use `evidence_probe` with
+`--env.taskset.chapter-path /absolute/path/to/chapter.md`. Blank-line-separated
+paragraphs receive stable in-document IDs and content hashes. The file is read by
+the evaluator and copied into the worker's isolated workspace. This path provides
+no teacher notes or keyword reference groups: inspect the source, captured notes
+and summary for factual faithfulness. It is not an automatic semantic pass and
+does not turn a previously inspected document into fresh confirmation.
+
 The runtime includes source paragraphs, stable IDs, and output contracts only.
 Hidden fact groups are used by the evaluator as keyword-group proxies;
 they are never written into the sandbox.

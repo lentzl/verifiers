@@ -1000,9 +1000,15 @@ def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["worker_probe", "evidence_probe"])
-async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str) -> None:
-    task = DocumentSummaryTaskset(DocumentSummaryConfig(mode=mode)).load()[0]
+@pytest.mark.parametrize("mode", ["worker_probe", "evidence_probe", "evidence_file"])
+async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str, tmp_path: Path) -> None:
+    if mode == "evidence_file":
+        path = tmp_path / "chapter.md"
+        path.write_text("The first source paragraph.\n\nThe second source paragraph.\n", encoding="utf-8")
+        config = DocumentSummaryConfig(mode="evidence_probe", chapter_path=str(path))
+    else:
+        config = DocumentSummaryConfig(mode=mode)
+    task = DocumentSummaryTaskset(config).load()[0]
 
     class Runtime:
         def __init__(self):
@@ -1027,6 +1033,12 @@ async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str) -
             in runtime.writes[EVIDENCE_SOURCE_PATH].decode()
         )
     assert "fact_groups" not in b"\n".join(runtime.writes.values()).decode()
+    if mode == "evidence_file":
+        assert task.data.fact_groups == ()
+        assert [p["id"] for p in task.data.chapter["paragraphs"]] == ["chapter-p001", "chapter-p002"]
+        diagnostics = await task.evidence_diagnostics(SimpleNamespace(info={}))
+        assert "summary_keyword_group_proxy" not in diagnostics
+        assert "notes_keyword_group_proxy" not in diagnostics
 
 
 def test_evidence_gate_captures_notes_before_summary_without_judging_semantics(
