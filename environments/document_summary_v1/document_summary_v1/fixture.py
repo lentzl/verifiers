@@ -28,6 +28,9 @@ TEXT_REVISION_COMMIT_REQUIREMENT = (
     "Return exactly {bullet_count} bullets. Shorten wording inside every bullet; do not "
     "delete a bullet or fact, and do not return the over-budget draft unchanged. "
 )
+TEXT_REVISION_SAFETY_MARGIN_REQUIREMENT = (
+    "Leave a three-word safety margin: return no more than {target_word_count} words. "
+)
 
 
 def _paragraph(identifier: str, text: str) -> dict[str, str]:
@@ -177,8 +180,9 @@ def build_fixture() -> tuple[dict[str, Any], dict[str, tuple[tuple[str, ...], ..
 
 
 __all__ = [
-    "TEXT_REVISION_FEEDBACK",
     "TEXT_REVISION_COMMIT_REQUIREMENT",
+    "TEXT_REVISION_FEEDBACK",
+    "TEXT_REVISION_SAFETY_MARGIN_REQUIREMENT",
     "TEXT_SUMMARY_SYSTEM_PROMPT",
     "TEXT_SUMMARY_USER_INSTRUCTION",
     "build_fixture",

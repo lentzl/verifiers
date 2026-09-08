@@ -17,6 +17,7 @@ from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 from .fixture import (
     TEXT_REVISION_COMMIT_REQUIREMENT,
     TEXT_REVISION_FEEDBACK,
+    TEXT_REVISION_SAFETY_MARGIN_REQUIREMENT,
     TEXT_SUMMARY_SYSTEM_PROMPT,
     build_fixture,
     render_text_summary_prompt,
@@ -301,6 +302,9 @@ def _rewrite_text_revision_feedback(
     feedback = (
         feedback[: -len(final_instruction)]
         + TEXT_REVISION_COMMIT_REQUIREMENT.format(bullet_count=len(bullets))
+        + TEXT_REVISION_SAFETY_MARGIN_REQUIREMENT.format(
+            target_word_count=max(0, word_budget - 3)
+        )
         + final_instruction
     )
     messages = list(request.messages)

@@ -14,15 +14,16 @@ from document_summary_v1.taskset import (
     REPEATED_IPYTHON_FAILURE_FEEDBACK,
     REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK,
     TERMINAL_WORKER_RECOVERY_FEEDBACK,
+    TEXT_REVISION_COMMIT_MAX_TOKENS,
     TEXT_REVISION_COMMIT_REQUIREMENT,
     TEXT_REVISION_FEEDBACK,
-    TEXT_REVISION_COMMIT_MAX_TOKENS,
     TEXT_REVISION_MARKER,
+    TEXT_REVISION_SAFETY_MARGIN_REQUIREMENT,
     WORKER_OUTPUT_PATH,
     DocumentSummaryConfig,
     DocumentSummaryTaskset,
-    _artifact_components,
     _apply_text_revision_commit_sampling,
+    _artifact_components,
     _fact_coverage,
     _owner_gate_source,
     _plain_summary_bullets,
@@ -308,6 +309,7 @@ def test_text_revision_feedback_removes_generic_tool_seeking_language() -> None:
             reduction_needed=13,
         ).removesuffix("Return only the revised bullets.")
         + TEXT_REVISION_COMMIT_REQUIREMENT.format(bullet_count=4)
+        + TEXT_REVISION_SAFETY_MARGIN_REQUIREMENT.format(target_word_count=65)
         + "Return only the revised bullets."
     )
     assert "Return exactly 4 bullets" in str(rewritten.messages[-1].content)
