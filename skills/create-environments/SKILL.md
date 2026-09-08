@@ -171,6 +171,15 @@ Keep successful-but-repeated calls separate from Python execution failures. In
 the direct-summary route, repeat feedback should request an actual rewrite into
 source-grounded key bullets, not just teach the file-writing API. Preserve the
 model's original tool result and do not rewrite its summary on its behalf.
+When diagnosing verbatim source copying, check both bare paragraphs and their
+model-visible source-ID-prefixed form. Adding Markdown bullets or source IDs
+does not make a copied paragraph a summary. Keep this diagnostic separate from
+semantic fidelity and preserve original measurements when correcting it.
+For a static lint check that needs no project imports, an isolated
+`uv run --no-project --with ruff ruff check <absolute-paths>` from a temporary
+directory avoids rebuilding the project. This is useful when editable-package
+version discovery stalls in Git; keep runtime tests pointed at the actual
+checkout rather than changing package versions or editing the virtualenv.
 
 ## Tools
 

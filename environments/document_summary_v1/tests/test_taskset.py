@@ -182,6 +182,15 @@ def test_source_paragraph_copy_is_not_a_valid_summary() -> None:
     assert components["summary_not_source_copy"] == 0.0
     assert _strict_report(report, task.data.job) is False
 
+    for include_source_id in (False, True):
+        copied_bullets = "\n".join(
+            f"- {'[' + row['id'] + '] ' if include_source_id else ''}{row['text']}"
+            for row in task.data.job["paragraphs"]
+        )
+        assert _plain_summary_components(
+            copied_bullets, task.data.job, task.data.fact_groups
+        )["summary_text_not_source_copy"] == 0.0
+
 
 def test_duplicate_cross_bullet_citations_are_not_grounded() -> None:
     task = _worker_task()

@@ -523,7 +523,9 @@ def _plain_summary_components(
     word_counts = [len(text.split()) for text in bullets]
     source_word_count = sum(len(row["text"].split()) for row in chapter["paragraphs"])
     normalized_sources = {
-        " ".join(row["text"].casefold().split()) for row in chapter["paragraphs"]
+        " ".join(text.casefold().split())
+        for row in chapter["paragraphs"]
+        for text in (row["text"], f"[{row['id']}] {row['text']}")
     }
     report = {"bullets": [{"text": text} for text in bullets]}
     return {
