@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 import verifiers.v1 as vf
+from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 
@@ -24,6 +25,8 @@ ROOT = "/workspace/document-summary-v1"
 INDEX_PATH = f"{ROOT}/index.json"
 GATE_PATH = f"{ROOT}/completion_gate.py"
 TEXT_REVISION_MARKER = f"{ROOT}/text-summary-revision-requested"
+TEXT_REVISION_COMMIT_MAX_TOKENS = 256
+_TEXT_REVISION_CHAT_PATCH_MARKER = "_document_summary_revision_commit_scaffold_v1"
 OUTPUT_PATH = "/logs/artifacts/document-summary-v1/summary.json"
 WORKER_OUTPUT_PATH = "/logs/artifacts/document-summary-v1/worker-report.json"
 SCHEMA_VERSION = "prime-rl/document-chapter-summary/v1"
@@ -300,6 +303,58 @@ def _rewrite_text_revision_feedback(
         trace.info.get("text_revision_feedback_count", 0)
     ) + 1
     return request.model_copy(update={"messages": messages})
+
+
+def _is_text_revision_feedback(request: vf.Request) -> bool:
+    if not request.messages or not isinstance(request.messages[-1], UserMessage):
+        return False
+    content = content_text(request.messages[-1].content)
+    return (
+        content.startswith("Your draft has ")
+        and "while preserving every decision-relevant fact" in content
+        and content.endswith("Return only the revised bullets.")
+    )
+
+
+def _apply_text_revision_commit_sampling(
+    body: dict[str, Any], request: vf.Request
+) -> bool:
+    """Make the measured revision turn a short, non-deliberative commit."""
+
+    if not _is_text_revision_feedback(request):
+        return False
+    body.pop("max_completion_tokens", None)
+    body["max_tokens"] = TEXT_REVISION_COMMIT_MAX_TOKENS
+    body["temperature"] = 0.0
+    body["reasoning_effort"] = "none"
+    body["chat_template_kwargs"] = {"enable_thinking": False}
+    return True
+
+
+def _install_text_revision_commit_scaffold() -> bool:
+    """Install the exact revision-only native request rewrite once."""
+
+    if getattr(ChatDialect, _TEXT_REVISION_CHAT_PATCH_MARKER, False):
+        return False
+    current = ChatDialect.rewrite_request
+
+    def rewrite_request_with_text_revision_commit(
+        self: ChatDialect,
+        body: dict[str, Any],
+        before: vf.Request,
+        after: vf.Request,
+    ) -> None:
+        current(self, body, before, after)
+        _apply_text_revision_commit_sampling(body, after)
+
+    setattr(
+        rewrite_request_with_text_revision_commit,
+        _TEXT_REVISION_CHAT_PATCH_MARKER,
+        True,
+    )
+    ChatDialect.rewrite_request = rewrite_request_with_text_revision_commit
+    setattr(ChatDialect, _TEXT_REVISION_CHAT_PATCH_MARKER, True)
+    return True
 
 
 def _plain_summary_components(
@@ -902,6 +957,7 @@ class DocumentSummaryTaskset(
     ) -> list[DocumentSummaryTask | DocumentSummaryWorkerTask | DocumentSummaryTextTask]:
         document, fact_groups = build_fixture()
         if self.config.mode == "text_probe":
+            _install_text_revision_commit_scaffold()
             chapter = next(
                 row
                 for row in document["chapters"]

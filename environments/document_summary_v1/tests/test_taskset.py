@@ -15,11 +15,13 @@ from document_summary_v1.taskset import (
     REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK,
     TERMINAL_WORKER_RECOVERY_FEEDBACK,
     TEXT_REVISION_FEEDBACK,
+    TEXT_REVISION_COMMIT_MAX_TOKENS,
     TEXT_REVISION_MARKER,
     WORKER_OUTPUT_PATH,
     DocumentSummaryConfig,
     DocumentSummaryTaskset,
     _artifact_components,
+    _apply_text_revision_commit_sampling,
     _fact_coverage,
     _owner_gate_source,
     _plain_summary_bullets,
@@ -308,6 +310,48 @@ def test_text_revision_feedback_removes_generic_tool_seeking_language() -> None:
     assert "do not call tools" in str(rewritten.messages[-1].content).casefold()
     assert request.messages[-1].content == wrapped
     assert trace.info["text_revision_feedback_count"] == 1
+
+
+def test_text_revision_commit_sampling_disables_deliberation_only_for_feedback() -> None:
+    task = _text_task("operations")
+    revision = vf.Request(
+        messages=[
+            vf.UserMessage(
+                content=TEXT_REVISION_FEEDBACK.format(
+                    draft_word_count=86,
+                    bullet_count=4,
+                    word_budget=77,
+                    reduction_needed=9,
+                )
+            )
+        ]
+    )
+    body = {
+        "max_completion_tokens": 4096,
+        "temperature": 0.2,
+        "reasoning_effort": "high",
+    }
+
+    assert _apply_text_revision_commit_sampling(body, revision) is True
+    assert body == {
+        "max_tokens": TEXT_REVISION_COMMIT_MAX_TOKENS,
+        "temperature": 0.0,
+        "reasoning_effort": "none",
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+    initial = vf.Request(messages=[vf.UserMessage(content=task.data.prompt_text)])
+    unchanged = {
+        "max_tokens": 4096,
+        "temperature": 0.2,
+        "reasoning_effort": "high",
+    }
+    assert _apply_text_revision_commit_sampling(unchanged, initial) is False
+    assert unchanged == {
+        "max_tokens": 4096,
+        "temperature": 0.2,
+        "reasoning_effort": "high",
+    }
 
 
 def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:
