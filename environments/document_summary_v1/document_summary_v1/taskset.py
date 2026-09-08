@@ -72,6 +72,16 @@ EVIDENCE_FILE_WRITE_RECOVERY_FEEDBACK = (
     "Join multiple records into one string before writing once. "
     "After a successful write, reply Done."
 )
+DIRECT_SUMMARY_NO_PROGRESS_FEEDBACK = (
+    "Prime Agent summary recovery: this exact IPython call already returned the same "
+    "result. Do not repeat it. A successful file write does not fix the summary's "
+    "content or format. Follow the latest correction: use source.md to compose only "
+    "3-5 English key-point bullets, each starting with '- ' and containing 5-45 words. "
+    "Preserve essential conditions and qualifications. Rewrite the wording; merely "
+    "splitting or joining the old prose does not produce a key-point summary. "
+    "Write the complete bullet text to summary.md once with pathlib.Path, then reply "
+    "Done. If those requested bullets are already saved, stop calling tools now."
+)
 TERMINAL_WORKER_RECOVERY_FEEDBACK = (
     "Prime Agent terminal-worker recovery: this retry cannot repair the report. There is "
     "no parent receiver, so do not call agent_message. Do not edit the input job or parse "
@@ -892,6 +902,8 @@ def _scaffold_ipython_feedback(
     request: vf.Request,
     trace: vf.Trace,
     repeated_feedback: str = REPEATED_IPYTHON_FAILURE_FEEDBACK,
+    *,
+    no_progress_feedback: str | None = None,
 ) -> vf.Request | None:
     empty = _rewrite_empty_ipython_feedback(request, trace)
     if empty is not None:
@@ -902,7 +914,7 @@ def _scaffold_ipython_feedback(
     if failure is not None:
         return failure
     return _rewrite_repeated_ipython_no_progress(
-        request, trace, feedback=repeated_feedback
+        request, trace, feedback=no_progress_feedback or repeated_feedback
     )
 
 
@@ -1181,7 +1193,10 @@ class DocumentSummaryEvidenceTask(vf.Task[DocumentSummaryTextData]):
         if rewritten is None:
             rewritten = _rewrite_evidence_write_failure(request, trace)
         return rewritten if rewritten is not None else _scaffold_ipython_feedback(
-            request, trace, repeated_feedback=EVIDENCE_FILE_WRITE_RECOVERY_FEEDBACK
+            request, trace, repeated_feedback=EVIDENCE_FILE_WRITE_RECOVERY_FEEDBACK,
+            no_progress_feedback=(
+                DIRECT_SUMMARY_NO_PROGRESS_FEEDBACK if self.data.direct_summary else None
+            ),
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:

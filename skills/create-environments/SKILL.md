@@ -167,6 +167,10 @@ For general prose, a mandatory per-paragraph obligation checklist may misfit the
 requested summary. The document-summary task also offers a direct source-to-bullets
 route with no notes stage. Keep such workflow alternatives explicit, preserve the
 comparison path, and distinguish structural completion from factual faithfulness.
+Keep successful-but-repeated calls separate from Python execution failures. In
+the direct-summary route, repeat feedback should request an actual rewrite into
+source-grounded key bullets, not just teach the file-writing API. Preserve the
+model's original tool result and do not rewrite its summary on its behalf.
 
 ## Tools
 

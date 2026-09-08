@@ -7,7 +7,9 @@ from types import SimpleNamespace
 import pytest
 from document_summary_v1.fixture import build_confirmation_fixture, build_fixture
 from document_summary_v1.taskset import (
+    DIRECT_SUMMARY_NO_PROGRESS_FEEDBACK,
     EMPTY_IPYTHON_FEEDBACK,
+    EVIDENCE_FILE_WRITE_RECOVERY_FEEDBACK,
     EVIDENCE_SOURCE_PATH,
     GATE_PATH,
     MISSING_WORKER_REPORT_RECOVERY_FEEDBACK,
@@ -702,7 +704,8 @@ def test_concrete_ipython_call_is_not_rewritten() -> None:
     assert "empty_ipython_feedback_count" not in trace.info
 
 
-def test_repeated_failed_ipython_call_gets_progress_feedback() -> None:
+@pytest.mark.parametrize("mode", ["evidence_probe", "direct_probe"])
+def test_repeated_failed_ipython_call_gets_progress_feedback(mode: str) -> None:
     trace = vf.Trace(
         id="repeated-ipython",
         agent=vf.AgentInfo(config=vf.AgentConfig()),
@@ -752,7 +755,7 @@ def test_repeated_failed_ipython_call_gets_progress_feedback() -> None:
     assert trace.info["repeated_ipython_failure_feedback_count"] == 1
 
     evidence_task = DocumentSummaryTaskset(
-        DocumentSummaryConfig(mode="evidence_probe", split="development")
+        DocumentSummaryConfig(mode=mode, split="development")
     ).load()[0]
     evidence_rewritten = evidence_task.scaffold_empty_ipython(request, trace)
     assert evidence_rewritten is not None
@@ -760,6 +763,7 @@ def test_repeated_failed_ipython_call_gets_progress_feedback() -> None:
     assert "pathlib.Path(destination).write_text(text" in guidance
     assert "did not define the variable" in guidance
     assert "bypass" not in guidance
+    assert DIRECT_SUMMARY_NO_PROGRESS_FEEDBACK not in guidance
 
 
 def test_first_failed_ipython_call_is_not_labeled_as_repeated() -> None:
@@ -913,6 +917,17 @@ def test_repeated_successful_ipython_call_with_same_result_gets_progress_feedbac
     assert REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK in rewritten.messages[-1].content
     assert REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK not in request.messages[-1].content
     assert trace.info["repeated_ipython_no_progress_feedback_count"] == 1
+
+    for mode, expected in (
+        ("direct_probe", DIRECT_SUMMARY_NO_PROGRESS_FEEDBACK),
+        ("evidence_probe", EVIDENCE_FILE_WRITE_RECOVERY_FEEDBACK),
+    ):
+        task = DocumentSummaryTaskset(DocumentSummaryConfig(mode=mode)).load()[0]
+        task_rewritten = task.scaffold_empty_ipython(request, trace)
+        assert task_rewritten is not None
+        assert task_rewritten.messages[:-1] == request.messages[:-1]
+        assert task_rewritten.messages[-1].content == f"{result}\n\n{expected}"
+        assert request.messages[-1].content == result
 
 
 def test_first_successful_ipython_call_is_not_labeled_as_no_progress() -> None:
