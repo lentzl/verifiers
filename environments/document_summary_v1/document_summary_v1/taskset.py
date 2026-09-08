@@ -15,6 +15,7 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.types import AssistantMessage, UserMessage, content_text
 
 from .fixture import (
+    TEXT_REVISION_COMMIT_REQUIREMENT,
     TEXT_REVISION_FEEDBACK,
     TEXT_SUMMARY_SYSTEM_PROMPT,
     build_fixture,
@@ -26,10 +27,6 @@ INDEX_PATH = f"{ROOT}/index.json"
 GATE_PATH = f"{ROOT}/completion_gate.py"
 TEXT_REVISION_MARKER = f"{ROOT}/text-summary-revision-requested"
 TEXT_REVISION_COMMIT_MAX_TOKENS = 256
-TEXT_REVISION_COMMIT_REQUIREMENT = (
-    "Return exactly {bullet_count} bullets. Shorten wording inside every bullet; do not "
-    "delete a bullet or fact, and do not return the over-budget draft unchanged. "
-)
 _TEXT_REVISION_CHAT_PATCH_MARKER = "_document_summary_revision_commit_scaffold_v1"
 OUTPUT_PATH = "/logs/artifacts/document-summary-v1/summary.json"
 WORKER_OUTPUT_PATH = "/logs/artifacts/document-summary-v1/worker-report.json"
@@ -306,13 +303,26 @@ def _rewrite_text_revision_feedback(
         + TEXT_REVISION_COMMIT_REQUIREMENT.format(bullet_count=len(bullets))
         + final_instruction
     )
-    messages = list(request.messages)
+    messages = [
+        message.model_copy(
+            update={"reasoning_content": None, "provider_state": None}
+        )
+        if isinstance(message, AssistantMessage)
+        and (message.reasoning_content is not None or message.provider_state is not None)
+        else message
+        for message in request.messages
+    ]
     messages[-1] = message.model_copy(
         update={"content": feedback}
     )
     trace.info["text_revision_feedback_count"] = int(
         trace.info.get("text_revision_feedback_count", 0)
     ) + 1
+    trace.info["text_revision_history_reasoning_stripped"] = sum(
+        isinstance(message, AssistantMessage)
+        and (message.reasoning_content is not None or message.provider_state is not None)
+        for message in request.messages[:-1]
+    )
     return request.model_copy(update={"messages": messages})
 
 

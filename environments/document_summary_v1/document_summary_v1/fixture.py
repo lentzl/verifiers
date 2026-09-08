@@ -24,6 +24,10 @@ TEXT_REVISION_FEEDBACK = (
     "inspect or modify the gate. Do not call tools or include commentary. Return only the "
     "revised bullets."
 )
+TEXT_REVISION_COMMIT_REQUIREMENT = (
+    "Return exactly {bullet_count} bullets. Shorten wording inside every bullet; do not "
+    "delete a bullet or fact, and do not return the over-budget draft unchanged. "
+)
 
 
 def _paragraph(identifier: str, text: str) -> dict[str, str]:
@@ -174,6 +178,7 @@ def build_fixture() -> tuple[dict[str, Any], dict[str, tuple[tuple[str, ...], ..
 
 __all__ = [
     "TEXT_REVISION_FEEDBACK",
+    "TEXT_REVISION_COMMIT_REQUIREMENT",
     "TEXT_SUMMARY_SYSTEM_PROMPT",
     "TEXT_SUMMARY_USER_INSTRUCTION",
     "build_fixture",

@@ -363,6 +363,47 @@ def test_text_revision_commit_sampling_disables_deliberation_only_for_feedback()
     }
 
 
+def test_text_revision_feedback_strips_only_historical_assistant_reasoning() -> None:
+    task = _text_task("operations")
+    trace = vf.Trace(
+        id="text-revision-history",
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="DocumentSummaryTextTask", data=vf.TaskData(idx=0)),
+        nodes=[],
+    )
+    wrapped = (
+        "Autonomous quality gate failed (attempt 1/1): "
+        f"`python {GATE_PATH}` exited 1.\n\n"
+        "Output:\ncompletion gate: compress the draft while preserving every "
+        "decision-relevant fact."
+    )
+    draft = "\n".join(f"* concise fact {index}" for index in range(4))
+    assistant = vf.AssistantMessage(
+        content=draft,
+        reasoning_content="private first-turn deliberation",
+        provider_state=[{"type": "reasoning.text", "text": "opaque"}],
+    )
+    request = vf.Request(
+        messages=[
+            vf.UserMessage(content=task.data.prompt_text),
+            assistant,
+            vf.UserMessage(content=wrapped),
+        ]
+    )
+
+    rewritten = _rewrite_text_revision_feedback(
+        request, trace, task.data.chapter, draft=draft
+    )
+
+    assert rewritten is not None
+    assert rewritten.messages[0] == request.messages[0]
+    assert rewritten.messages[1].content == draft
+    assert rewritten.messages[1].reasoning_content is None
+    assert rewritten.messages[1].provider_state is None
+    assert request.messages[1] == assistant
+    assert trace.info["text_revision_history_reasoning_stripped"] == 1
+
+
 def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:
     task = _worker_task()
     gate = _worker_gate_source(task.data)
