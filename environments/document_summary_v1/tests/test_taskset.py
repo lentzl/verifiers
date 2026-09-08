@@ -12,6 +12,8 @@ from document_summary_v1.taskset import (
     EVIDENCE_FILE_WRITE_RECOVERY_FEEDBACK,
     EVIDENCE_SOURCE_PATH,
     GATE_PATH,
+    INDEX_PATH,
+    MARKDOWN_OUTPUT_PATH,
     MISSING_WORKER_REPORT_RECOVERY_FEEDBACK,
     OUTPUT_PATH,
     REPEATED_IPYTHON_FAILURE_FEEDBACK,
@@ -28,10 +30,12 @@ from document_summary_v1.taskset import (
     DocumentSummaryTaskset,
     _apply_text_revision_commit_sampling,
     _artifact_components,
+    _assembled_markdown,
     _direct_summary_gate_source,
     _evidence_gate_source,
     _evidence_literal_write_repair,
     _fact_coverage,
+    _markdown_owner_gate_source,
     _owner_gate_source,
     _plain_summary_bullets,
     _plain_summary_components,
@@ -54,8 +58,8 @@ def _worker_task():
     return DocumentSummaryTaskset(DocumentSummaryConfig(mode="worker_probe")).load()[0]
 
 
-def _owner_task():
-    return DocumentSummaryTaskset(DocumentSummaryConfig(mode="owner")).load()[0]
+def _owner_task(mode="owner"):
+    return DocumentSummaryTaskset(DocumentSummaryConfig(mode=mode)).load()[0]
 
 
 def _text_task(chapter: str = "scope", split: str = "development"):
@@ -533,8 +537,33 @@ def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts()
     assert 'job["paragraphs"]' in gate
 
 
-def test_owner_gate_is_valid_python() -> None:
+def test_owner_gate_is_valid_python(tmp_path: Path) -> None:
     compile(_owner_gate_source(_owner_task().data), "completion_gate.py", "exec")
+    task = _owner_task("owner_direct")
+    jobs = {
+        worker: {**job, "summary_path": str(tmp_path / f"{worker}.md")}
+        for worker, job in task.data.jobs.items()
+    }
+    output = tmp_path / "document.md"
+    data = task.data.model_copy(update={"jobs": jobs, "output_path": str(output)})
+    gate = _markdown_owner_gate_source(data)
+    compile(gate, "completion_gate.py", "exec")
+
+    def run_gate():
+        return subprocess.run([sys.executable, "-c", gate], capture_output=True, text=True, check=False)
+
+    assert run_gate().returncode == 1
+    summaries = {worker: f"Unchecked draft for {worker}.\n" for worker in jobs}
+    for worker, job in jobs.items():
+        Path(job["summary_path"]).write_text(summaries[worker], encoding="utf-8")
+    assert run_gate().returncode == 1
+    expected = _assembled_markdown(jobs, summaries)
+    for invalid in (expected.replace("Unchecked", "Changed", 1),
+                    _assembled_markdown(dict(reversed(list(jobs.items()))), summaries)):
+        output.write_text(invalid, encoding="utf-8")
+        assert run_gate().returncode == 1
+    output.write_text(expected, encoding="utf-8")
+    assert run_gate().returncode == 0  # Assembly is not a semantic or receipt check.
 
 
 def test_worker_gate_reports_all_actionable_summary_defects(
@@ -1055,25 +1084,42 @@ def test_worker_repeated_no_progress_gets_terminal_role_recovery() -> None:
     assert "paragraph IDs only inside source_ids" in rewritten.messages[-1].content
 
 
-def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling() -> None:
-    task = _owner_task()
-    gate = _owner_gate_source(task.data)
+@pytest.mark.parametrize("mode", ["owner", "owner_direct"])
+def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling(mode: str) -> None:
+    task = _owner_task(mode)
+    gate = (_owner_gate_source if mode == "owner" else _markdown_owner_gate_source)(task.data)
 
     assert len(task.data.jobs) == 3
-    assert OUTPUT_PATH in task.data.prompt_text
-    assert all(job["path"] in task.data.prompt_text for job in task.data.jobs.values())
-    assert all(
-        job["task_contract"]["delivery"] == "agent_message_parent_once"
-        for job in task.data.jobs.values()
-    )
+    if mode == "owner":
+        assert OUTPUT_PATH in task.data.prompt_text
+        assert all(job["path"] in task.data.prompt_text for job in task.data.jobs.values())
+        assert all(job["task_contract"]["delivery"] == "agent_message_parent_once"
+                   for job in task.data.jobs.values())
+    else:
+        assert MARKDOWN_OUTPUT_PATH in task.data.prompt_text
+        for job in task.data.jobs.values():
+            assert job["source_path"] in job["prompt"]
+            assert job["summary_path"] in job["prompt"]
+            assert "receiver_role='parent'" in job["prompt"]
+            assert "No notes file or paragraph-ID checklist" in job["prompt"]
+        assert "retain all returned handles in a dictionary" in task.data.prompt_text
     assert "do not poll" in task.data.prompt_text.casefold()
     assert "fact_groups" not in gate
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["worker_probe", "evidence_probe", "evidence_file", "direct_file"])
+@pytest.mark.parametrize("mode", ["worker_probe", "evidence_probe", "evidence_file", "direct_file", "owner_direct", "owner_files"])
 async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str, tmp_path: Path) -> None:
-    if mode in {"evidence_file", "direct_file"}:
+    if mode == "owner_files":
+        paths = [tmp_path / "Second.md", tmp_path / "First.md"]
+        for index, path in enumerate(paths):
+            path.write_text(f"Complete source {index}.\n\nDistinct final paragraph {index}.\n", encoding="utf-8")
+        config = DocumentSummaryConfig(mode="owner_direct", chapter_paths=[str(p) for p in paths])
+        for invalid in ({"mode": "direct_probe"}, {"split": "confirmation"},
+                        {"chapter_path": str(paths[0])}):
+            with pytest.raises(ValueError, match="chapter_paths requires"):
+                DocumentSummaryTaskset(config.model_copy(update=invalid)).load()
+    elif mode in {"evidence_file", "direct_file"}:
         path = tmp_path / "chapter.md"
         path.write_text("The first source paragraph.\n\nThe second source paragraph.\n", encoding="utf-8")
         config = DocumentSummaryConfig(
@@ -1087,12 +1133,18 @@ async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str, t
     class Runtime:
         def __init__(self):
             self.writes = {}
+            self.config = SimpleNamespace(workdir="/")
 
         async def run(self, args, env):
-            return SimpleNamespace(exit_code=0, stderr="")
+            return SimpleNamespace(exit_code=0 if args[0] == "mkdir" else 1, stderr="")
 
         async def write(self, path, contents):
             self.writes[path] = contents
+
+        async def read(self, path, max_bytes):
+            if path not in self.writes:
+                raise FileNotFoundError(path)
+            return self.writes[path][:max_bytes]
 
     runtime = Runtime()
     await task.setup(SimpleNamespace(), runtime)
@@ -1100,6 +1152,35 @@ async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str, t
     if mode == "worker_probe":
         assert set(runtime.writes) == {task.data.job["path"], GATE_PATH}
         assert json.loads(runtime.writes[task.data.job["path"]])["paragraphs"]
+    elif mode in {"owner_direct", "owner_files"}:
+        assert set(runtime.writes) == {INDEX_PATH, GATE_PATH} | {
+            job["source_path"] for job in task.data.jobs.values()
+        }
+        index = json.loads(runtime.writes[INDEX_PATH])
+        assert index["chapters"] == list(task.data.jobs.values())
+        assert index["output_path"] == MARKDOWN_OUTPUT_PATH
+        for chapter, job in zip(task.data.document["chapters"], index["chapters"], strict=True):
+            for paragraph in chapter["paragraphs"]:
+                assert paragraph["text"] in runtime.writes[job["source_path"]].decode()
+                assert paragraph["text"] not in runtime.writes[INDEX_PATH].decode()
+        if mode == "owner_files":
+            assert [chapter["heading"] for chapter in index["chapters"]] == ["## Second", "## First"]
+            assert all(groups == () for groups in task.data.fact_groups.values())
+            diagnostics = await task.chapter_diagnostics(SimpleNamespace(info={}, nodes=[]))
+            assert not any("keyword" in key for key in diagnostics)
+        trace = vf.Trace(task=vf.TraceTask(type=type(task).__name__, data=task.data),
+                         agent=vf.AgentInfo(config=vf.AgentConfig()), nodes=[])
+        await task.finalize(trace, runtime)
+        assert all(text is None for text in trace.info["chapter_summary_files"].values())
+        assert trace.info["document_summary_markdown"] is None
+        first_worker, first_job = next(iter(task.data.jobs.items()))
+        saved = "- A child-authored café summary.\r\n\n"
+        runtime.writes[first_job["summary_path"]] = saved.encode()
+        runtime.writes[task.data.output_path] = saved.encode()
+        await task.finalize(trace, runtime)
+        assert trace.info["chapter_summary_files"][first_worker] == saved
+        assert trace.info["document_summary_markdown"] == saved
+        assert trace.info["chapter_receipts"] == {}
     else:
         assert set(runtime.writes) == {EVIDENCE_SOURCE_PATH, GATE_PATH}
         assert (
@@ -1217,7 +1298,8 @@ async def test_worker_reference_report_earns_utility_reward() -> None:
     assert trace.metrics["chapter_fact_coverage"] == 1.0
 
 
-def test_artifact_requires_all_three_valid_chapter_reports() -> None:
+@pytest.mark.asyncio
+async def test_artifact_requires_all_three_valid_chapter_reports() -> None:
     task = _owner_task()
     scope_task = _worker_task()
     artifact = {
@@ -1232,3 +1314,28 @@ def test_artifact_requires_all_three_valid_chapter_reports() -> None:
     assert components["summary_artifact_schema"] == 1.0
     assert components["summary_chapter_order"] == 0.0
     assert components["summary_all_reports_valid"] == 0.0
+
+    task = _owner_task("owner_direct")
+    summaries = {worker: f"Unchecked draft from {worker}.\n" for worker in task.data.jobs}
+    artifact = _assembled_markdown(task.data.jobs, summaries)
+    trace = vf.Trace(task=vf.TraceTask(type=type(task).__name__, data=task.data),
+                     agent=vf.AgentInfo(config=vf.AgentConfig()), nodes=[])
+    trace.info.update(chapter_summary_files=summaries, document_summary_markdown=artifact)
+    assert await task.delegated_artifact_completion(trace) == 0.0
+    for worker, job in task.data.jobs.items():
+        receipt = {"chapter_id": job["chapter_id"], "summary_path": job["summary_path"]}
+        trace.nodes.append(vf.MessageNode(message=vf.UserMessage(content=(
+            f"[from child:{worker}]\nAgent-to-agent message received.\n\n{json.dumps(receipt)}"
+        ))))
+    assert await task.delegated_artifact_completion(trace) == 1.0
+    original = trace.nodes[-1].message
+    trace.nodes[-1].message = vf.UserMessage(content=original.content.replace("summary.md", "wrong.md"))
+    assert await task.delegated_artifact_completion(trace) == 0.0
+    trace.nodes[-1].message = original
+    for invalid in ("", artifact.replace("Unchecked", "Changed", 1),
+                    _assembled_markdown(dict(reversed(list(task.data.jobs.items()))), summaries)):
+        trace.info["document_summary_markdown"] = invalid
+        assert await task.delegated_artifact_completion(trace) == 0.0
+    trace.info["document_summary_markdown"] = artifact
+    trace.info["chapter_summary_files"] = {**summaries, next(iter(summaries)): None}
+    assert await task.delegated_artifact_completion(trace) == 0.0

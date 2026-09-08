@@ -175,6 +175,12 @@ When diagnosing verbatim source copying, check both bare paragraphs and their
 model-visible source-ID-prefixed form. Adding Markdown bullets or source IDs
 does not make a copied paragraph a summary. Keep this diagnostic separate from
 semantic fidelity and preserve original measurements when correcting it.
+For owner-led Markdown summaries, keep each child's source and output paths in
+an answer-free job index. Require native child receipts before counting the
+assembled artifact as a completed handoff; a file-presence gate cannot establish
+message delivery. Preserve child text unchanged during assembly and review
+semantic quality separately. Inspect actual role routing: terminal-worker probes
+and owner-led runs must not silently use the same depth-zero checkpoint.
 For a static lint check that needs no project imports, an isolated
 `uv run --no-project --with ruff ruff check <absolute-paths>` from a temporary
 directory avoids rebuilding the project. This is useful when editable-package

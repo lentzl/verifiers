@@ -9,6 +9,23 @@ summarized into concise, source-grounded bullet points.
 assembles their typed reports. Job files carry the full summarization contract so a
 coordinator cannot accidentally paraphrase away critical worker instructions.
 
+`owner_direct` delegates Markdown chapter summaries through the same native RLM
+children. The owner reads an answer-free index, retains named child handles and
+yields for messages. Each child reads its assigned source, authors and saves its
+own bullets, then sends one JSON receipt with `chapter_id` and `summary_path`.
+After all matching receipts, the owner reads those files and assembles their text
+unchanged under the index headings, in order. No per-paragraph notes or typed
+bullet reports are required. Use `chapter_paths` for an ordered list of UTF-8
+chapter files in development; without it, the selected fixture supplies chapters.
+
+The owner gate checks file presence and unchanged assembly, not messages or
+meaning. The completion reward additionally requires matching child receipts in
+the native trace. It does not certify semantic quality, exactly-once execution,
+retained handles or source-access discipline. Review the actual calls and routing
+audit for those behaviors. Per-chapter format, copying and keyword diagnostics
+remain separate. `trace.info` retains chapter sources, saved summaries, receipts,
+read errors and the assembled Markdown for inspection.
+
 `evidence_probe` uses two phases of the same terminal worker in its existing
 Prime Agent session. The worker reads `source.md`, writes its own source-linked
 `notes.md`, then stops. The workflow gate saves those bytes as `notes-extracted.md`
