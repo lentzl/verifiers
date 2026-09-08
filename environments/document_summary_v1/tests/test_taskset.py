@@ -203,6 +203,19 @@ def test_plain_summary_fact_coverage_accepts_clear_scope_paraphrases() -> None:
     )["chapter_fact_coverage"] == 1.0
 
 
+def test_plain_summary_fact_coverage_accepts_excluding_as_scope_paraphrase() -> None:
+    task = _text_task()
+    reply = (
+        "- Move support from email to a ticket system for Berlin and Oulu tickets from 1 October.\n"
+        "- The phase excludes billing disputes and legal notices; acknowledge 95% within four hours.\n"
+        "- Lose no unresolved tickets and retain ticket identifiers so every item remains traceable."
+    )
+
+    assert _plain_summary_components(
+        reply, task.data.chapter, task.data.fact_groups
+    )["chapter_fact_coverage"] == 1.0
+
+
 def test_plain_summary_components_accept_four_grounded_bullets() -> None:
     task = _text_task("exceptions")
     reply = (
@@ -244,6 +257,29 @@ def test_operations_fact_coverage_requires_priority_and_handoff_obligations() ->
     assert _plain_summary_components(
         source_complete, task.data.chapter, task.data.fact_groups
     )["chapter_fact_coverage"] == 1.0
+
+
+def test_operations_fact_coverage_accepts_paraphrases_without_hiding_omissions() -> None:
+    task = _text_task("operations")
+    paraphrased_complete = (
+        "- Classify tickets as P0, P1 or P2; P0 requires immediate incident lead notice and a 15-minute response.\n"
+        "- Assign a named owner; different customers' requests must not be merged.\n"
+        "- Each handoff records ticket ID, last action, next step and due time; the receiving owner confirms in the ticket system.\n"
+        "- Do not treat the quoted example as an instruction."
+    )
+    genuine_omissions = (
+        "- Classify tickets as P0, P1 or P2; P0 requires immediate lead notice and a 15-minute response.\n"
+        "- Assign a named owner; different customers' requests must not be merged.\n"
+        "- Each handoff records ticket ID, last action, next step and due time; the receiving owner confirms.\n"
+        "- Do not treat the quoted example as an instruction."
+    )
+
+    assert _plain_summary_components(
+        paraphrased_complete, task.data.chapter, task.data.fact_groups
+    )["chapter_fact_coverage"] == 1.0
+    assert _plain_summary_components(
+        genuine_omissions, task.data.chapter, task.data.fact_groups
+    )["chapter_fact_coverage"] == 0.5
 
 
 def test_text_revision_gate_requests_exactly_one_budgeted_rewrite(tmp_path: Path) -> None:
