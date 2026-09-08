@@ -8,11 +8,13 @@ import pytest
 from document_summary_v1.fixture import build_confirmation_fixture, build_fixture
 from document_summary_v1.taskset import (
     EMPTY_IPYTHON_FEEDBACK,
+    EVIDENCE_SOURCE_PATH,
     GATE_PATH,
     MISSING_WORKER_REPORT_RECOVERY_FEEDBACK,
     OUTPUT_PATH,
     REPEATED_IPYTHON_FAILURE_FEEDBACK,
     REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK,
+    ROOT,
     TERMINAL_WORKER_RECOVERY_FEEDBACK,
     TEXT_REVISION_COMMIT_MAX_TOKENS,
     TEXT_REVISION_COMMIT_REQUIREMENT,
@@ -24,6 +26,7 @@ from document_summary_v1.taskset import (
     DocumentSummaryTaskset,
     _apply_text_revision_commit_sampling,
     _artifact_components,
+    _evidence_gate_source,
     _fact_coverage,
     _owner_gate_source,
     _plain_summary_bullets,
@@ -997,8 +1000,9 @@ def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling() -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_setup_writes_only_runtime_source_and_contract() -> None:
-    task = _worker_task()
+@pytest.mark.parametrize("mode", ["worker_probe", "evidence_probe"])
+async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str) -> None:
+    task = DocumentSummaryTaskset(DocumentSummaryConfig(mode=mode)).load()[0]
 
     class Runtime:
         def __init__(self):
@@ -1013,9 +1017,57 @@ async def test_worker_setup_writes_only_runtime_source_and_contract() -> None:
     runtime = Runtime()
     await task.setup(SimpleNamespace(), runtime)
 
-    assert set(runtime.writes) == {task.data.job["path"], GATE_PATH}
-    assert json.loads(runtime.writes[task.data.job["path"]])["paragraphs"]
+    if mode == "worker_probe":
+        assert set(runtime.writes) == {task.data.job["path"], GATE_PATH}
+        assert json.loads(runtime.writes[task.data.job["path"]])["paragraphs"]
+    else:
+        assert set(runtime.writes) == {EVIDENCE_SOURCE_PATH, GATE_PATH}
+        assert (
+            task.data.chapter["paragraphs"][0]["text"]
+            in runtime.writes[EVIDENCE_SOURCE_PATH].decode()
+        )
     assert "fact_groups" not in b"\n".join(runtime.writes.values()).decode()
+
+
+def test_evidence_gate_captures_notes_before_summary_without_judging_semantics(
+    tmp_path: Path,
+) -> None:
+    task = DocumentSummaryTaskset(
+        DocumentSummaryConfig(mode="evidence_probe", text_probe_chapter="exceptions")
+    ).load()[0]
+    gate = _evidence_gate_source(task.data.chapter).replace(ROOT, str(tmp_path))
+    assert task.data.chapter["paragraphs"][0]["text"] not in gate
+    notes = tmp_path / "notes.md"
+    snapshot = tmp_path / "notes-extracted.md"
+    summary = tmp_path / "summary.md"
+
+    def run_gate():
+        return subprocess.run(
+            [sys.executable, "-c", gate], capture_output=True, text=True, check=False
+        )
+
+    missing = run_gate()
+    assert missing.returncode == 1
+    assert "Read source.md" in missing.stderr
+    assert not snapshot.exists()
+    notes.write_text("exceptions-p01: worker-authored draft notes", encoding="utf-8")
+    summary.write_text("premature summary", encoding="utf-8")
+    assert "before notes were captured" in run_gate().stderr
+    assert not snapshot.exists()
+    summary.unlink()
+    captured = run_gate()
+    assert captured.returncode == 1
+    assert "at most 68 total words" in captured.stderr
+    assert snapshot.read_text() == notes.read_text()
+    original = snapshot.read_bytes()
+    notes.write_text("later scratch edits", encoding="utf-8")
+    assert run_gate().returncode == 1
+    assert snapshot.read_bytes() == original
+    summary.write_text("Semantically wrong but nonempty.", encoding="utf-8")
+    completed = run_gate()
+    assert completed.returncode == 0
+    assert "semantic review is separate" in completed.stdout
+    assert snapshot.read_bytes() == original
 
 
 @pytest.mark.asyncio

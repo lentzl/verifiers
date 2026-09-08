@@ -9,11 +9,26 @@ summarized into concise, source-grounded bullet points.
 assembles their typed reports. Job files carry the full summarization contract so a
 coordinator cannot accidentally paraphrase away critical worker instructions.
 
+`evidence_probe` uses two phases of the same terminal worker in its existing
+Prime Agent session. The worker reads `source.md`, writes its own source-linked
+`notes.md`, then stops. The workflow gate saves those bytes as `notes-extracted.md`
+and asks the worker to read them and write `summary.md`. Notes preserve obligations
+and qualifications without the final-summary word limit. The original source
+remains available. No teacher notes are provided, and no new expert is introduced.
+
+The gate enforces artifact presence and phase order, not content quality. Its
+completion reward only means both artifacts exist; it must not be reported as a
+summary success rate. The original source, scratch notes, captured notes and final
+summary are saved in `trace.info`. Inspect source-to-notes and notes-to-summary
+meaning separately. Keyword-group proxies, paragraph-ID presence and word counts
+are diagnostics, not semantic certification. The captured file is retained by the
+workflow, not a security boundary against a worker rewriting its own sandbox.
+
 The runtime includes source paragraphs, stable IDs, and output contracts only.
-Hidden fact groups are used by the evaluator to measure decision-relevant coverage;
+Hidden fact groups are used by the evaluator as keyword-group proxies;
 they are never written into the sandbox.
 
-The `confirmation` split contains a separate facilities handbook reserved for
-post-training text probes. Its chapters never enter the development SFT exporter,
-so they measure transfer through the same Prime Agent revision scaffold without
-feeding confirmation text back into training.
+The `confirmation` split contains a separate facilities handbook used for the
+completed post-training text probes. Its chapters did not enter that SFT exporter,
+but the observed results now inform development. Use a new document for future
+fresh-confirmation claims; do not reuse this split as unseen evidence.

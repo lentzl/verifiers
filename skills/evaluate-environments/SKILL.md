@@ -46,6 +46,13 @@ When the user requests a full run, do not restrict the number of tasks. Ask for 
 
 A plugin id names an installed package (e.g. `my-taskset`); verifiers imports it and never installs anything itself.
 
+When evaluating a checkout that adds a harness, ensure the CLI imports that same
+Verifiers checkout, not a separately installed release. An isolated taskset
+environment can resolve its unconstrained dependency to a release missing the
+checkout's harness. Use the project runtime or set `PYTHONPATH` to the intended
+checkout and taskset package before both tests and the dry-run; do not patch the
+virtual environment to repair this mismatch.
+
 The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent — `--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a multi-agent one (there is no run-level `--harness.*`):
 
 ```bash
