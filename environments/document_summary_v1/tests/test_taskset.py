@@ -339,6 +339,15 @@ def test_text_revision_commit_sampling_disables_deliberation_only_for_feedback()
         "max_completion_tokens": 4096,
         "temperature": 0.2,
         "reasoning_effort": "high",
+        "messages": [
+            {"role": "user", "content": "source"},
+            {
+                "role": "assistant",
+                "content": "draft",
+                "reasoning_content": "stale deliberation",
+            },
+            {"role": "user", "content": revision.messages[-1].content},
+        ],
     }
 
     assert _apply_text_revision_commit_sampling(body, revision) is True
@@ -347,6 +356,11 @@ def test_text_revision_commit_sampling_disables_deliberation_only_for_feedback()
         "temperature": 0.0,
         "reasoning_effort": "none",
         "chat_template_kwargs": {"enable_thinking": False},
+        "messages": [
+            {"role": "user", "content": "source"},
+            {"role": "assistant", "content": "draft"},
+            {"role": "user", "content": revision.messages[-1].content},
+        ],
     }
 
     initial = vf.Request(messages=[vf.UserMessage(content=task.data.prompt_text)])
@@ -363,7 +377,7 @@ def test_text_revision_commit_sampling_disables_deliberation_only_for_feedback()
     }
 
 
-def test_text_revision_feedback_strips_only_historical_assistant_reasoning() -> None:
+def test_text_revision_feedback_leaves_historical_assistant_message_untouched() -> None:
     task = _text_task("operations")
     trace = vf.Trace(
         id="text-revision-history",
@@ -397,11 +411,8 @@ def test_text_revision_feedback_strips_only_historical_assistant_reasoning() -> 
 
     assert rewritten is not None
     assert rewritten.messages[0] == request.messages[0]
-    assert rewritten.messages[1].content == draft
-    assert rewritten.messages[1].reasoning_content is None
-    assert rewritten.messages[1].provider_state is None
+    assert rewritten.messages[1] == assistant
     assert request.messages[1] == assistant
-    assert trace.info["text_revision_history_reasoning_stripped"] == 1
 
 
 def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts() -> None:

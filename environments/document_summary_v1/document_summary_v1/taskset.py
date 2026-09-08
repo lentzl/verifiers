@@ -303,26 +303,13 @@ def _rewrite_text_revision_feedback(
         + TEXT_REVISION_COMMIT_REQUIREMENT.format(bullet_count=len(bullets))
         + final_instruction
     )
-    messages = [
-        message.model_copy(
-            update={"reasoning_content": None, "provider_state": None}
-        )
-        if isinstance(message, AssistantMessage)
-        and (message.reasoning_content is not None or message.provider_state is not None)
-        else message
-        for message in request.messages
-    ]
+    messages = list(request.messages)
     messages[-1] = message.model_copy(
         update={"content": feedback}
     )
     trace.info["text_revision_feedback_count"] = int(
         trace.info.get("text_revision_feedback_count", 0)
     ) + 1
-    trace.info["text_revision_history_reasoning_stripped"] = sum(
-        isinstance(message, AssistantMessage)
-        and (message.reasoning_content is not None or message.provider_state is not None)
-        for message in request.messages[:-1]
-    )
     return request.model_copy(update={"messages": messages})
 
 
@@ -349,6 +336,16 @@ def _apply_text_revision_commit_sampling(
     body["temperature"] = 0.0
     body["reasoning_effort"] = "none"
     body["chat_template_kwargs"] = {"enable_thinking": False}
+    for message in body.get("messages") or []:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        for key in (
+            "reasoning",
+            "reasoning_content",
+            "reasoning_details",
+            "provider_state",
+        ):
+            message.pop(key, None)
     return True
 
 
