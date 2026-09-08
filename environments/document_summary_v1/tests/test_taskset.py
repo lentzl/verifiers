@@ -341,6 +341,9 @@ def test_text_revision_commit_sampling_disables_deliberation_only_for_feedback()
         "max_completion_tokens": 4096,
         "temperature": 0.2,
         "reasoning_effort": "high",
+        "tools": [{"type": "function", "function": {"name": "ipython"}}],
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
         "messages": [
             {"role": "user", "content": "source"},
             {

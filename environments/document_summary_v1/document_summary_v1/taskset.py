@@ -340,6 +340,9 @@ def _apply_text_revision_commit_sampling(
     body["temperature"] = 0.0
     body["reasoning_effort"] = "none"
     body["chat_template_kwargs"] = {"enable_thinking": False}
+    body.pop("tools", None)
+    body.pop("tool_choice", None)
+    body.pop("parallel_tool_calls", None)
     for message in body.get("messages") or []:
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
