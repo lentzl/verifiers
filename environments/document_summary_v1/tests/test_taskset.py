@@ -543,6 +543,10 @@ def test_worker_gate_rejects_an_exact_source_paragraph_without_embedding_facts()
 def test_owner_gate_is_valid_python(tmp_path: Path) -> None:
     compile(_owner_gate_source(_owner_task().data), "completion_gate.py", "exec")
     task = _owner_task("owner_direct")
+    assert "at depth zero, own delegation" in task.data.system_prompt
+    assert "as a chapter child, author only your assigned summary" in task.data.system_prompt
+    assert "retained handles do not disappear" in task.data.prompt
+    assert all("characters written, not the word count" in job["prompt"] for job in task.data.jobs.values())
     jobs = {
         worker: {**job, "summary_path": str(tmp_path / f"{worker}.md")}
         for worker, job in task.data.jobs.items()

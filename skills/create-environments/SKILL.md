@@ -189,11 +189,22 @@ the actual index fields, keep receipt-before-assembly requirements, and do not
 send owner delegation instructions to a terminal child. Auxiliary /refine calls
 can use the worker route without any chapter child being spawned: inspect their
 graph roots and session IDs before claiming delegation.
+Prime Agent children can inherit the task's appended system instruction. Make
+that shared text role-aware; an unconditional owner identity conflicts with a
+child assignment even when the per-request recovery feedback uses the right
+depth. A retained handle dictionary is not a pending-job queue and does not empty
+when children finish. Teach owners to end their turn for messages, not sleep in
+a cell that cannot return. Keep these interface explanations separate from
+model-authored summaries and semantic review.
 For a static lint check that needs no project imports, an isolated
 `uv run --no-project --with ruff ruff check <absolute-paths>` from a temporary
 directory avoids rebuilding the project. This is useful when editable-package
 version discovery stalls in Git; keep runtime tests pointed at the actual
 checkout rather than changing package versions or editing the virtualenv.
+When an isolated taskset environment lacks test tooling, run its existing tests
+with `uv run --with pytest --with pytest-asyncio pytest ...`. Pytest alone cannot
+execute the taskset's asynchronous lifecycle tests. Keep fixture discovery
+scoped to the intended tests and do not repair this by editing `.venv` files.
 
 ## Tools
 
