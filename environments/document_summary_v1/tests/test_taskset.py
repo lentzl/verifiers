@@ -14,6 +14,7 @@ from document_summary_v1.taskset import (
     REPEATED_IPYTHON_FAILURE_FEEDBACK,
     REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK,
     TERMINAL_WORKER_RECOVERY_FEEDBACK,
+    TEXT_REVISION_COMMIT_REQUIREMENT,
     TEXT_REVISION_FEEDBACK,
     TEXT_REVISION_COMMIT_MAX_TOKENS,
     TEXT_REVISION_MARKER,
@@ -299,11 +300,19 @@ def test_text_revision_feedback_removes_generic_tool_seeking_language() -> None:
     )
 
     assert rewritten is not None
-    assert rewritten.messages[-1].content == TEXT_REVISION_FEEDBACK.format(
-        draft_word_count=81,
-        bullet_count=4,
-        word_budget=68,
-        reduction_needed=13,
+    assert rewritten.messages[-1].content == (
+        TEXT_REVISION_FEEDBACK.format(
+            draft_word_count=81,
+            bullet_count=4,
+            word_budget=68,
+            reduction_needed=13,
+        ).removesuffix("Return only the revised bullets.")
+        + TEXT_REVISION_COMMIT_REQUIREMENT.format(bullet_count=4)
+        + "Return only the revised bullets."
+    )
+    assert "Return exactly 4 bullets" in str(rewritten.messages[-1].content)
+    assert "do not return the over-budget draft unchanged" in str(
+        rewritten.messages[-1].content
     )
     assert "Fix the failure" not in str(rewritten.messages[-1].content)
     assert "terminal evidence" not in str(rewritten.messages[-1].content)

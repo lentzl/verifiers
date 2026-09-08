@@ -26,6 +26,10 @@ INDEX_PATH = f"{ROOT}/index.json"
 GATE_PATH = f"{ROOT}/completion_gate.py"
 TEXT_REVISION_MARKER = f"{ROOT}/text-summary-revision-requested"
 TEXT_REVISION_COMMIT_MAX_TOKENS = 256
+TEXT_REVISION_COMMIT_REQUIREMENT = (
+    "Return exactly {bullet_count} bullets. Shorten wording inside every bullet; do not "
+    "delete a bullet or fact, and do not return the over-budget draft unchanged. "
+)
 _TEXT_REVISION_CHAT_PATCH_MARKER = "_document_summary_revision_commit_scaffold_v1"
 OUTPUT_PATH = "/logs/artifacts/document-summary-v1/summary.json"
 WORKER_OUTPUT_PATH = "/logs/artifacts/document-summary-v1/worker-report.json"
@@ -288,16 +292,23 @@ def _rewrite_text_revision_feedback(
     bullets = _plain_summary_bullets(prior_draft)
     draft_word_count = sum(len(bullet.split()) for bullet in bullets)
     word_budget = _text_word_budget(chapter)
+    feedback = TEXT_REVISION_FEEDBACK.format(
+        draft_word_count=draft_word_count,
+        bullet_count=len(bullets),
+        word_budget=word_budget,
+        reduction_needed=max(0, draft_word_count - word_budget),
+    )
+    final_instruction = "Return only the revised bullets."
+    if not feedback.endswith(final_instruction):
+        raise RuntimeError("text revision feedback suffix differs")
+    feedback = (
+        feedback[: -len(final_instruction)]
+        + TEXT_REVISION_COMMIT_REQUIREMENT.format(bullet_count=len(bullets))
+        + final_instruction
+    )
     messages = list(request.messages)
     messages[-1] = message.model_copy(
-        update={
-            "content": TEXT_REVISION_FEEDBACK.format(
-                draft_word_count=draft_word_count,
-                bullet_count=len(bullets),
-                word_budget=word_budget,
-                reduction_needed=max(0, draft_word_count - word_budget),
-            )
-        }
+        update={"content": feedback}
     )
     trace.info["text_revision_feedback_count"] = int(
         trace.info.get("text_revision_feedback_count", 0)
