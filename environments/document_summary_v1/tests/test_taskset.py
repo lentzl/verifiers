@@ -749,6 +749,16 @@ def test_repeated_failed_ipython_call_gets_progress_feedback() -> None:
     assert REPEATED_IPYTHON_FAILURE_FEEDBACK not in request.messages[-1].content
     assert trace.info["repeated_ipython_failure_feedback_count"] == 1
 
+    evidence_task = DocumentSummaryTaskset(
+        DocumentSummaryConfig(mode="evidence_probe", split="development")
+    ).load()[0]
+    evidence_rewritten = evidence_task.scaffold_empty_ipython(request, trace)
+    assert evidence_rewritten is not None
+    guidance = evidence_rewritten.messages[-1].content
+    assert "pathlib.Path(destination).write_text(text" in guidance
+    assert "did not define the variable" in guidance
+    assert "bypass" not in guidance
+
 
 def test_first_failed_ipython_call_is_not_labeled_as_repeated() -> None:
     trace = vf.Trace(

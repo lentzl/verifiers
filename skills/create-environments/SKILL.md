@@ -155,6 +155,9 @@ records even when every call succeeds. Check required structural identifiers and
 give a concrete single-write repair instruction when records are missing; keep
 this separate from semantic scoring. Continuation feedback should name the next
 task action without suggesting edits to the gate program itself.
+When a file write raises a Python error, do not call it a scratch check that can
+be bypassed. Explain the actual API contract and failed-assignment semantics;
+keep model-authored content separate from the structural repair instructions.
 
 ## Tools
 

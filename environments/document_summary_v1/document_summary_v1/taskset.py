@@ -61,6 +61,17 @@ REPEATED_IPYTHON_NO_PROGRESS_FEEDBACK = (
     "concrete write or edit to advance the required artifact; if the artifact already "
     "exists, stop calling tools and return a concise final answer."
 )
+EVIDENCE_FILE_WRITE_RECOVERY_FEEDBACK = (
+    "Prime Agent file-write recovery: use the ipython tool, not bash or a goal helper. "
+    "write_text is a method of pathlib.Path, not of a text string. In ONE cell, "
+    "first assign text to your complete source-grounded notes or summary string; "
+    "then call pathlib.Path(destination).write_text(text, encoding='utf-8'), "
+    "where destination is the requested notes.md or summary.md path. "
+    "Do not append .write_text to a quoted string. An assignment whose right-hand "
+    "side raised an error did not define the variable; define its text again. "
+    "Join multiple records into one string before writing once. "
+    "After a successful write, reply Done."
+)
 TERMINAL_WORKER_RECOVERY_FEEDBACK = (
     "Prime Agent terminal-worker recovery: this retry cannot repair the report. There is "
     "no parent receiver, so do not call agent_message. Do not edit the input job or parse "
@@ -1057,7 +1068,9 @@ class DocumentSummaryEvidenceTask(vf.Task[DocumentSummaryTextData]):
         self, request: vf.Request, trace: vf.Trace
     ) -> vf.Request | None:
         rewritten = _rewrite_evidence_feedback(request, trace)
-        return rewritten if rewritten is not None else _scaffold_ipython_feedback(request, trace)
+        return rewritten if rewritten is not None else _scaffold_ipython_feedback(
+            request, trace, repeated_feedback=EVIDENCE_FILE_WRITE_RECOVERY_FEEDBACK
+        )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         result = await runtime.run(["mkdir", "-p", ROOT], {})
