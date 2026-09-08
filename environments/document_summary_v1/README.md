@@ -16,7 +16,11 @@ and asks the worker to read them and write `summary.md`. Notes preserve obligati
 and qualifications without the final-summary word limit. The original source
 remains available. No teacher notes are provided, and no new expert is introduced.
 
-The gate enforces artifact presence and phase order, not content quality. Its
+The gate enforces artifact presence, source-ID presence in notes and phase order,
+not content quality. Missing IDs produce a one-write repair instruction because
+repeated `write_text` calls overwrite earlier records. Continuation interception
+removes the generic failed-quality-gate wrapper and describes the next file step;
+it supplies no source facts or authored answers. Its
 completion reward only means both artifacts exist; it must not be reported as a
 summary success rate. The original source, scratch notes, captured notes and final
 summary are saved in `trace.info`. Inspect source-to-notes and notes-to-summary

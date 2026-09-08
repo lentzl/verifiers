@@ -120,11 +120,13 @@ def _evidence_source(chapter: dict[str, Any]) -> str:
 def _evidence_gate_source(chapter: dict[str, Any]) -> str:
     """Advance the artifact workflow; do not certify semantic correctness."""
     return f'''from pathlib import Path
+import re
 import sys
 
 notes = Path({EVIDENCE_NOTES_PATH!r})
 snapshot = Path({EVIDENCE_SNAPSHOT_PATH!r})
 summary = Path({EVIDENCE_SUMMARY_PATH!r})
+required_ids = {[row['id'] for row in chapter['paragraphs']]!r}
 
 def continue_with(message):
     print("evidence workflow: " + message, file=sys.stderr)
@@ -138,17 +140,46 @@ if not snapshot.exists():
         continue_with("Read source.md and write your source-linked obligation notes to "
                       "notes.md. Preserve actors, conditions, actions and qualifications. "
                       "Do not write the final summary yet; stop after writing the notes.")
+    text = notes.read_text(encoding="utf-8")
+    missing = [source_id for source_id in required_ids
+               if not re.search(r"(?<![\\w-])" + re.escape(source_id) + r"(?![\\w-])", text)]
+    if missing:
+        continue_with("The saved notes are missing source IDs: " + ", ".join(missing) +
+                      ". Re-read source.md and write ALL notes to notes.md in ONE write. "
+                      "Calling write_text inside a loop replaces earlier records. "
+                      "Join the complete records first, write once, and stop for capture.")
     snapshot.write_bytes(notes.read_bytes())
-    continue_with("Your notes are now saved in notes-extracted.md. Read that file and "
-                  "use it to write summary.md: 3-5 English Markdown bullets, 5-45 words "
+    continue_with("Your notes are now saved in {EVIDENCE_SNAPSHOT_PATH}. Read that file and "
+                  "use it to write {EVIDENCE_SUMMARY_PATH}: 3-5 English Markdown bullets, 5-45 words "
                   "each, at most {_text_word_budget(chapter)} total words. Preserve the "
-                  "recorded obligations and qualifiers. The original source.md remains "
+                  "recorded obligations and qualifiers. The original {EVIDENCE_SOURCE_PATH} remains "
                   "available if needed. Do not modify notes-extracted.md. Write the "
                   "summary, then stop; no child or parent-message call is needed.")
 if not summary.exists() or not summary.read_text(encoding="utf-8").strip():
     continue_with("Read notes-extracted.md and write summary.md, then stop.")
 print("evidence workflow: both artifacts captured; semantic review is separate")
 '''
+
+
+def _rewrite_evidence_feedback(request: vf.Request, trace: vf.Trace) -> vf.Request | None:
+    if not request.messages or not isinstance(request.messages[-1], UserMessage):
+        return None
+    message = request.messages[-1]
+    content = content_text(message.content)
+    if not all(marker in content for marker in (
+        "Autonomous quality gate failed", GATE_PATH, "evidence workflow: "
+    )):
+        return None
+    feedback = content.split("evidence workflow: ", 1)[1].split("\n\nContinue working.", 1)[0].strip()
+    messages = list(request.messages)
+    messages[-1] = message.model_copy(update={"content": (
+        "Chapter summarization: next file step.\n" + feedback +
+        "\nUse the existing IPython kernel and pathlib.Path for this file write. "
+        "No goal, refinement, child, or messaging call is needed. "
+        "After the requested file write, stop calling tools and reply Done."
+    )})
+    trace.info["evidence_feedback_rewrites"] = int(trace.info.get("evidence_feedback_rewrites", 0)) + 1
+    return request.model_copy(update={"messages": messages})
 
 
 def _build_jobs(
@@ -1025,7 +1056,8 @@ class DocumentSummaryEvidenceTask(vf.Task[DocumentSummaryTextData]):
     def scaffold_empty_ipython(
         self, request: vf.Request, trace: vf.Trace
     ) -> vf.Request | None:
-        return _scaffold_ipython_feedback(request, trace)
+        rewritten = _rewrite_evidence_feedback(request, trace)
+        return rewritten if rewritten is not None else _scaffold_ipython_feedback(request, trace)
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         result = await runtime.run(["mkdir", "-p", ROOT], {})

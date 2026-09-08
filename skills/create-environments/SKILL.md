@@ -149,6 +149,13 @@ Implement `Task.validate(self, runtime)` whenever ground truth can be checked wi
 
 Persist inspectable artifacts in JSON-serializable `trace.info`. Put counters and live coordination in a typed `vf.State` subclass.
 
+For staged file workflows, inspect the saved bytes before advancing, not just the
+agent's completion message. Repeated `write_text` calls in a loop replace earlier
+records even when every call succeeds. Check required structural identifiers and
+give a concrete single-write repair instruction when records are missing; keep
+this separate from semantic scoring. Continuation feedback should name the next
+task action without suggesting edits to the gate program itself.
+
 ## Tools
 
 Some tasksets require custom tools. These should be the exception as they don’t work with every harness and are registered as MCP servers.

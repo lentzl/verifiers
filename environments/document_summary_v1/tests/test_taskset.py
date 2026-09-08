@@ -33,6 +33,7 @@ from document_summary_v1.taskset import (
     _plain_summary_components,
     _report_components,
     _rewrite_empty_ipython_feedback,
+    _rewrite_evidence_feedback,
     _rewrite_repeated_ipython_failure,
     _rewrite_repeated_ipython_no_progress,
     _rewrite_text_revision_feedback,
@@ -1067,6 +1068,14 @@ def test_evidence_gate_captures_notes_before_summary_without_judging_semantics(
     assert "before notes were captured" in run_gate().stderr
     assert not snapshot.exists()
     summary.unlink()
+    incomplete = run_gate()
+    assert incomplete.returncode == 1
+    assert "missing source IDs" in incomplete.stderr
+    assert "write_text inside a loop replaces earlier records" in incomplete.stderr
+    assert not snapshot.exists()
+    notes.write_text("\n".join(
+        f"{p['id']}: worker-authored draft notes" for p in task.data.chapter["paragraphs"]
+    ), encoding="utf-8")
     captured = run_gate()
     assert captured.returncode == 1
     assert "at most 68 total words" in captured.stderr
@@ -1075,6 +1084,20 @@ def test_evidence_gate_captures_notes_before_summary_without_judging_semantics(
     notes.write_text("later scratch edits", encoding="utf-8")
     assert run_gate().returncode == 1
     assert snapshot.read_bytes() == original
+    request = vf.Request(messages=[vf.UserMessage(content=(
+        f"Autonomous quality gate failed: {GATE_PATH}\n\nOutput:\n{captured.stderr}"
+        "\n\nContinue working. Fix the failure, then produce terminal evidence."
+    ))])
+    trace = SimpleNamespace(info={})
+    rewritten = _rewrite_evidence_feedback(request, trace)
+    assert rewritten is not None
+    feedback = rewritten.messages[-1].content
+    assert "Your notes are now saved" in feedback
+    assert "completion_gate.py" not in feedback
+    assert "quality gate failed" not in feedback
+    assert "produce terminal evidence" not in feedback
+    assert "No goal" in feedback
+    assert trace.info["evidence_feedback_rewrites"] == 1
     summary.write_text("Semantically wrong but nonempty.", encoding="utf-8")
     completed = run_gate()
     assert completed.returncode == 0
