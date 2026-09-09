@@ -196,6 +196,12 @@ depth. A retained handle dictionary is not a pending-job queue and does not empt
 when children finish. Teach owners to end their turn for messages, not sleep in
 a cell that cannot return. Keep these interface explanations separate from
 model-authored summaries and semantic review.
+For opt-in document-summary acquisition, keep teacher help confined to existing
+TRAIN cases and label assisted results separately. Match the exact paragraph-labelled
+source used by the SFT exporter, not the raw Markdown hash. Help files can supply
+answers or procedures, but setup must not execute the model's writes or sends.
+Continue weights from useful assisted actions and corrections, then withdraw one
+kind of help; successive assisted tests alone do not teach the capability.
 For a static lint check that needs no project imports, an isolated
 `uv run --no-project --with ruff ruff check <absolute-paths>` from a temporary
 directory avoids rebuilding the project. This is useful when editable-package
@@ -205,6 +211,9 @@ When an isolated taskset environment lacks test tooling, run its existing tests
 with `uv run --with pytest --with pytest-asyncio pytest ...`. Pytest alone cannot
 execute the taskset's asynchronous lifecycle tests. Keep fixture discovery
 scoped to the intended tests and do not repair this by editing `.venv` files.
+An explicit Python executable bypasses uv's `--with` overlay. Select it with
+`--python /path/to/taskset/python`, then run `python -m pytest` inside the overlay;
+use `PYTHONPATH` for the checkout and existing taskset dependencies when needed.
 
 ## Tools
 

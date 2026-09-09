@@ -161,6 +161,9 @@ class DocumentSummaryData(vf.TaskData):
     jobs: dict[str, dict[str, Any]]
     fact_groups: dict[str, tuple[tuple[str, ...], ...]]
     output_path: str = OUTPUT_PATH
+    acquisition_level: Literal["none", "worked", "procedure"] = "none"
+    acquisition_guidance: dict[str, str] = Field(default_factory=dict)
+    acquisition_cases_sha256: str | None = None
 
 
 class DocumentSummaryWorkerData(vf.TaskData):
@@ -1085,6 +1088,132 @@ def _assembled_markdown(
     ) + "\n"
 
 
+def _owner_acquisition_recipe() -> str:
+    return f"""
+
+TRAINING ACQUISITION HELP: the following is supplied procedure, not evidence that
+any action has happened. Execute the cells yourself with the native ipython tool.
+Do not delete children, clear handles or send follow-ups merely to wait.
+
+First read and display the index:
+```python
+import json
+from pathlib import Path
+index = json.loads(Path({INDEX_PATH!r}).read_text(encoding='utf-8'))
+print(json.dumps(index, indent=2))
+```
+
+Next, execute this initialization and admission cell ONCE:
+```python
+chapters = index['chapters']
+handles = {{}}
+receipts = {{}}
+for job in chapters:
+    handles[job['worker']] = await rlm(job['prompt'], name=job['worker'])
+print(json.dumps(list(handles)))
+
+def record_receipt(worker, received_json):
+    job = next(job for job in chapters if job['worker'] == worker)
+    payload = json.loads(received_json)
+    expected = {{'chapter_id': job['chapter_id'], 'summary_path': job['summary_path']}}
+    assert payload == expected
+    receipts[worker] = payload
+    print(json.dumps(sorted(receipts)))
+```
+
+Then end the assistant turn with 'Waiting for the chapter receipts.' and NO tool
+call. The printed names are admitted children, not outstanding results. Their
+handles stay in the dictionary. A duplicate-name error does not delete an agent.
+
+When an actual child message arrives, call record_receipt with its exact sender
+worker name and its actual JSON payload as two strings. Do not manufacture a
+payload from this recipe or from the index. A completed-without-reply notice or
+an outgoing send result is NOT a receipt. Store each matching incoming receipt;
+if any are missing, end the turn again without polling or respawning.
+
+Only after all actual matching receipts have been stored, execute:
+```python
+expected = {{job['worker']: {{'chapter_id': job['chapter_id'], 'summary_path': job['summary_path']}}
+            for job in chapters}}
+assert receipts == expected
+document_text = '\\n\\n'.join(job['heading'] + '\\n\\n' +
+    Path(job['summary_path']).read_text(encoding='utf-8').strip()
+    for job in chapters) + '\\n'
+written_chars = Path(index['output_path']).write_text(document_text, encoding='utf-8')
+print(f'Saved {{len(chapters)}} chapters; {{written_chars}} characters')
+```
+An integer write return is a character count, not an HTTP status. Return the
+saved document path and chapter count, then stop. A genuine cancellation changes
+the assignment; report actual saved/unsaved state, never fabricate completion.
+"""
+
+
+def _acquisition_guidance(
+    dataset_dir: str, chapter_paths: list[str], jobs: dict[str, dict[str, str]], level: str,
+) -> tuple[dict[str, str], str]:
+    dataset = Path(dataset_dir)
+    manifest = json.loads((dataset / "MANIFEST.json").read_text())
+    raw_cases = (dataset / "CASES.json").read_bytes()
+    cases_sha = hashlib.sha256(raw_cases).hexdigest()
+    if (manifest.get("schema_version") != "qwen35-2b-document-summary-direct-sft/v1"
+            or manifest.get("status") != "complete" or cases_sha != manifest.get("cases_sha256")):
+        raise ValueError("acquisition requires a matching complete TRAIN case manifest")
+    cases = [case for case in json.loads(raw_cases)
+             if case["family"] in {"retained_train", "public_chapter"}]
+    by_slug = {case["slug"]: case for case in cases}
+    if len(by_slug) != len(cases):
+        raise ValueError("duplicate base TRAIN source in acquisition dataset")
+    guidance = {}
+    for filename, job in zip(chapter_paths, jobs.values(), strict=True):
+        path = Path(filename)
+        case = by_slug.get(path.stem)
+        source = path.read_text(encoding="utf-8").strip()
+        rendered_source = _evidence_source({"paragraphs": [
+            {"id": f"chapter-p{number:03d}", "text": paragraph}
+            for number, paragraph in enumerate(re.split(r"\n\s*\n", source), 1)
+        ]})
+        if (case is None or rendered_source != case["source"]
+                or hashlib.sha256(rendered_source.encode()).hexdigest() != case["source_sha256"]):
+            raise ValueError(f"acquisition chapter must match an existing TRAIN source: {path}")
+        bullets = _plain_summary_bullets(case["summary"])
+        if (not 3 <= len(bullets) <= 5 or any(not 5 <= len(b.split()) <= 45 for b in bullets)
+                or sum(len(b.split()) for b in bullets) > int(len(source.split()) * 0.8)):
+            raise ValueError(f"invalid reviewed TRAIN summary: {path.stem}")
+        help_path = job["summary_path"].rsplit("/", 1)[0] + "/training-help.md"
+        receipt = {"chapter_id": job["chapter_id"], "summary_path": job["summary_path"]}
+        summary_assignment = (
+            f"summary_text = {case['summary']!r}\n" if level == "worked" else ""
+        )
+        guidance[help_path] = (
+            f"# TRAIN acquisition help: {level}\n\n"
+            "Read and display the complete assigned source first. "
+            + ("This source-reviewed teacher summary is deliberately supplied for acquisition. "
+               "You may use this wording for this assisted task; this is not independent summarization.\n\n"
+               if level == "worked" else
+               "No key points or summary are supplied. Author 3-5 faithful English Markdown bullets "
+               "from the source and bind the complete string to summary_text before using this cell.\n\n")
+            + "Execute the write, readback and parent send yourself. Do not execute this cell again "
+            "if its send already succeeded. A failed send is not completion; a failed write does "
+            "not create a summary. Stop or clarify genuine cancellation without inventing a receipt.\n\n"
+            "```python\nimport json\nfrom pathlib import Path\n" + summary_assignment
+            + f"written_chars = Path({job['summary_path']!r}).write_text(summary_text, encoding='utf-8')\n"
+            + "print(f'Wrote {written_chars} characters; this is not an HTTP status')\n"
+            + f"saved_text = Path({job['summary_path']!r}).read_text(encoding='utf-8')\n"
+            + "assert saved_text == summary_text\n"
+            + f"await agent_message.send(json.dumps({receipt!r}), receiver_role='parent')\n```\n"
+            "After successful send, reply Done with no further tool call.\n"
+        )
+        job["prompt"] += (
+            f"\n\nTRAIN acquisition ({level}): after displaying your complete source, "
+            f"read and display `{help_path}` using pathlib.Path.read_text. It contains "
+            "authorized training help, not an accomplished action. "
+            + ("For this assisted task you may use the supplied teacher wording instead of authoring new wording. "
+               if level == "worked" else "You must still select and author the key points yourself. ")
+            + "Only you execute the write and send; the helper file does not create a summary or receipt."
+        )
+    return guidance, cases_sha
+
+
 def _markdown_owner_gate_source(data: DocumentSummaryData) -> str:
     paths = {worker: job["summary_path"] for worker, job in data.jobs.items()}
     headings = {worker: job["heading"] for worker, job in data.jobs.items()}
@@ -1146,9 +1275,17 @@ class DocumentSummaryMarkdownTask(vf.Task[DocumentSummaryData]):
         }, indent=2) + "\n").encode())
         for chapter, job in zip(self.data.document["chapters"], self.data.jobs.values(), strict=True):
             await runtime.write(job["source_path"], _evidence_source(chapter).encode())
+        for path, guidance in self.data.acquisition_guidance.items():
+            await runtime.write(path, guidance.encode())
         await runtime.write(GATE_PATH, _markdown_owner_gate_source(self.data).encode())
 
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        if self.data.acquisition_level != "none":
+            trace.info["training_acquisition"] = {
+                "level": self.data.acquisition_level,
+                "cases_sha256": self.data.acquisition_cases_sha256,
+                "independent_capability_measurement": False,
+            }
         trace.info["chapter_summary_files"] = {}
         trace.info["chapter_sources"] = {
             chapter["id"]: _evidence_source(chapter) for chapter in self.data.document["chapters"]
@@ -1487,6 +1624,8 @@ class DocumentSummaryConfig(vf.TasksetConfig):
     num_tasks: int = Field(1, ge=1, le=1)
     chapter_path: str | None = None
     chapter_paths: list[str] = Field(default_factory=list)
+    acquisition_level: Literal["none", "worked", "procedure"] = "none"
+    acquisition_dataset: str | None = None
     mode: Literal["owner", "owner_direct", "worker_probe", "text_probe", "evidence_probe", "direct_probe"] = (
         "worker_probe"
     )
@@ -1507,6 +1646,12 @@ class DocumentSummaryTaskset(
         | DocumentSummaryTextTask
         | DocumentSummaryEvidenceTask
     ]:
+        if self.config.acquisition_level != "none":
+            if (self.config.mode != "owner_direct" or self.config.split != "development"
+                    or not self.config.chapter_paths or not self.config.acquisition_dataset):
+                raise ValueError("acquisition requires development owner_direct, chapter_paths and a TRAIN dataset")
+        elif self.config.acquisition_dataset is not None:
+            raise ValueError("acquisition_dataset requires an explicit acquisition_level")
         if self.config.chapter_paths:
             if (self.config.mode != "owner_direct" or self.config.split != "development"
                     or self.config.chapter_path is not None):
@@ -1557,6 +1702,12 @@ class DocumentSummaryTaskset(
             document, fact_groups = build_fixture()
         if self.config.mode == "owner_direct":
             jobs = _markdown_jobs(document)
+            guidance, cases_sha = {}, None
+            if self.config.acquisition_level != "none":
+                guidance, cases_sha = _acquisition_guidance(
+                    self.config.acquisition_dataset, self.config.chapter_paths, jobs,
+                    self.config.acquisition_level,
+                )
             data = DocumentSummaryData(
                 idx=0,
                 name=f"{document['document_id']}-delegated-markdown-v1",
@@ -1594,7 +1745,15 @@ class DocumentSummaryTaskset(
                 jobs=jobs,
                 fact_groups=fact_groups,
                 output_path=MARKDOWN_OUTPUT_PATH,
+                acquisition_level=self.config.acquisition_level,
+                acquisition_guidance=guidance,
+                acquisition_cases_sha256=cases_sha,
             )
+            if self.config.acquisition_level != "none":
+                data = data.model_copy(update={
+                    "name": data.name + "-acquisition-" + self.config.acquisition_level,
+                    "prompt": data.prompt_text + _owner_acquisition_recipe(),
+                })
             return [DocumentSummaryMarkdownTask(data, self.config.task)]
         if self.config.mode in {"evidence_probe", "direct_probe"}:
             chapter = next(

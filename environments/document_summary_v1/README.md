@@ -18,6 +18,20 @@ unchanged under the index headings, in order. No per-paragraph notes or typed
 bullet reports are required. Use `chapter_paths` for an ordered list of UTF-8
 chapter files in development; without it, the selected fixture supplies chapters.
 
+For TRAIN acquisition, `owner_direct` also accepts `acquisition_level = "worked"`
+or `"procedure"` with `chapter_paths` and `acquisition_dataset` pointing to a
+complete direct-summary SFT dataset. Selected chapters must match existing base
+TRAIN cases exactly, including their paragraph-labelled source hashes. Worked
+help supplies reviewed teacher bullets in each child's `training-help.md`;
+procedure help removes those bullets while retaining the execution example.
+Both supply the same owner read/admit/receive/assemble recipe. The owner index
+contains help paths, not teacher summaries. Setup creates no summaries or receipts:
+models must execute all native actions themselves. Acquisition is recorded in
+`trace.info.training_acquisition` and is not independent capability measurement.
+Train from useful assisted behavior and corrected attempts before withdrawing
+help; merely testing successive levels is not a learning curriculum. The default
+`"none"` level supplies no acquisition help and requires no acquisition dataset.
+
 The owner gate checks file presence and unchanged assembly, not messages or
 meaning. The completion reward additionally requires matching child receipts in
 the native trace. It does not certify semantic quality, exactly-once execution,
@@ -61,7 +75,8 @@ no teacher notes or keyword reference groups: inspect the source, captured notes
 and summary for factual faithfulness. It is not an automatic semantic pass and
 does not turn a previously inspected document into fresh confirmation.
 
-The runtime includes source paragraphs, stable IDs, and output contracts only.
+Outside explicit TRAIN acquisition, the runtime includes source paragraphs,
+stable IDs, and output contracts only.
 Hidden fact groups are used by the evaluator as keyword-group proxies;
 they are never written into the sandbox.
 

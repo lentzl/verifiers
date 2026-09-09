@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import sys
@@ -1154,17 +1155,48 @@ def test_owner_mode_binds_three_exact_jobs_and_no_legacy_polling(mode: str) -> N
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["worker_probe", "evidence_probe", "evidence_file", "direct_file", "owner_direct", "owner_files"])
+@pytest.mark.parametrize("mode", ["worker_probe", "evidence_probe", "evidence_file", "direct_file", "owner_direct", "owner_files", "acquisition_worked", "acquisition_procedure"])
 async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str, tmp_path: Path) -> None:
-    if mode == "owner_files":
+    acquisition = mode.startswith("acquisition_")
+    if mode == "owner_files" or acquisition:
         paths = [tmp_path / "Second.md", tmp_path / "First.md"]
         for index, path in enumerate(paths):
-            path.write_text(f"Complete source {index}.\n\nDistinct final paragraph {index}.\n", encoding="utf-8")
+            path.write_text((f"Complete source {index}.\n\nDistinct final paragraph {index}.\n") *
+                            (10 if acquisition else 1), encoding="utf-8")
         config = DocumentSummaryConfig(mode="owner_direct", chapter_paths=[str(p) for p in paths])
         for invalid in ({"mode": "direct_probe"}, {"split": "confirmation"},
                         {"chapter_path": str(paths[0])}):
             with pytest.raises(ValueError, match="chapter_paths requires"):
                 DocumentSummaryTaskset(config.model_copy(update=invalid)).load()
+        if acquisition:
+            summary = "- Teacher wording belongs only in the worked acquisition condition.\n" * 3
+            cases = []
+            for p in paths:
+                source = "\n\n".join(f"[chapter-p{n:03d}] {text}" for n, text in
+                                     enumerate(p.read_text().strip().split("\n\n"), 1)) + "\n"
+                cases.append({"slug": p.stem, "family": "public_chapter", "summary": summary,
+                              "source": source, "source_sha256": hashlib.sha256(source.encode()).hexdigest()})
+            raw_cases = json.dumps(cases).encode()
+            (tmp_path / "CASES.json").write_bytes(raw_cases)
+            manifest = {"schema_version": "qwen35-2b-document-summary-direct-sft/v1",
+                        "status": "complete", "cases_sha256": hashlib.sha256(raw_cases).hexdigest()}
+            (tmp_path / "MANIFEST.json").write_text(json.dumps(manifest))
+            config = config.model_copy(update={"acquisition_level": mode.split("_")[1],
+                                               "acquisition_dataset": str(tmp_path)})
+            for invalid in ({"mode": "direct_probe"}, {"split": "confirmation"},
+                            {"chapter_paths": []}, {"acquisition_dataset": None},
+                            {"acquisition_level": "none"}):
+                with pytest.raises(ValueError, match="acquisition"):
+                    DocumentSummaryTaskset(config.model_copy(update=invalid)).load()
+            (tmp_path / "CASES.json").write_bytes(raw_cases + b" ")
+            with pytest.raises(ValueError, match="TRAIN case manifest"):
+                DocumentSummaryTaskset(config).load()
+            (tmp_path / "CASES.json").write_bytes(raw_cases)
+            original = paths[0].read_bytes()
+            paths[0].write_bytes(original + b"Changed source.")
+            with pytest.raises(ValueError, match="existing TRAIN source"):
+                DocumentSummaryTaskset(config).load()
+            paths[0].write_bytes(original)
     elif mode in {"evidence_file", "direct_file"}:
         path = tmp_path / "chapter.md"
         path.write_text("The first source paragraph.\n\nThe second source paragraph.\n", encoding="utf-8")
@@ -1198,8 +1230,8 @@ async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str, t
     if mode == "worker_probe":
         assert set(runtime.writes) == {task.data.job["path"], GATE_PATH}
         assert json.loads(runtime.writes[task.data.job["path"]])["paragraphs"]
-    elif mode in {"owner_direct", "owner_files"}:
-        assert set(runtime.writes) == {INDEX_PATH, GATE_PATH} | {
+    elif mode in {"owner_direct", "owner_files"} or acquisition:
+        assert set(runtime.writes) == set(task.data.acquisition_guidance) | {INDEX_PATH, GATE_PATH} | {
             job["source_path"] for job in task.data.jobs.values()
         }
         index = json.loads(runtime.writes[INDEX_PATH])
@@ -1209,6 +1241,16 @@ async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str, t
             for paragraph in chapter["paragraphs"]:
                 assert paragraph["text"] in runtime.writes[job["source_path"]].decode()
                 assert paragraph["text"] not in runtime.writes[INDEX_PATH].decode()
+        if acquisition:
+            assert task.data.acquisition_level == mode.split("_")[1]
+            assert len(task.data.acquisition_guidance) == 2
+            assert summary not in runtime.writes[INDEX_PATH].decode()
+            assert summary not in task.data.prompt_text
+            for path, guidance in task.data.acquisition_guidance.items():
+                assert runtime.writes[path].decode() == guidance
+                assert ("Teacher wording belongs" in guidance) == (mode == "acquisition_worked")
+            assert all(job["summary_path"] not in runtime.writes for job in task.data.jobs.values())
+            assert MARKDOWN_OUTPUT_PATH not in runtime.writes
         if mode == "owner_files":
             assert [chapter["heading"] for chapter in index["chapters"]] == ["## Second", "## First"]
             assert all(groups == () for groups in task.data.fact_groups.values())
@@ -1217,6 +1259,9 @@ async def test_worker_setup_writes_only_runtime_source_and_contract(mode: str, t
         trace = vf.Trace(task=vf.TraceTask(type=type(task).__name__, data=task.data),
                          agent=vf.AgentInfo(config=vf.AgentConfig()), nodes=[])
         await task.finalize(trace, runtime)
+        if acquisition:
+            assert trace.info["training_acquisition"]["level"] == task.data.acquisition_level
+            assert trace.info["training_acquisition"]["independent_capability_measurement"] is False
         assert all(text is None for text in trace.info["chapter_summary_files"].values())
         assert trace.info["document_summary_markdown"] is None
         first_worker, first_job = next(iter(task.data.jobs.items()))
